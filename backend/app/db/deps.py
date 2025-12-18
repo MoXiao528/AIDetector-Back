@@ -1,24 +1,53 @@
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.security import hash_api_key
 from app.db.session import get_db
+from app.models.api_key import APIKey, APIKeyStatus
 from app.models.user import User
 from app.schemas import TokenPayload
 
 settings = get_settings()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 SessionDep = Annotated[Session, Depends(get_db)]
-TokenDep = Annotated[str, Depends(oauth2_scheme)]
+TokenDep = Annotated[str | None, Depends(oauth2_scheme)]
+APIKeyHeaderDep = Annotated[str | None, Header(default=None, alias="X-API-Key")]
 
 
-def get_current_user(db: SessionDep, token: TokenDep) -> User:
+def get_current_user(db: SessionDep, token: TokenDep, api_key_header: APIKeyHeaderDep) -> User:
+    if api_key_header:
+        key_hash = hash_api_key(api_key_header)
+        api_key = db.scalar(
+            select(APIKey).where(APIKey.key_hash == key_hash, APIKey.status == APIKeyStatus.ACTIVE)
+        )
+        if api_key is None or api_key.user is None or not api_key.user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+                headers={"WWW-Authenticate": "API-Key"},
+            )
+
+        api_key.last_used_at = datetime.utcnow()
+        db.add(api_key)
+        db.commit()
+        return api_key.user
+
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
         token_data = TokenPayload(**payload)
