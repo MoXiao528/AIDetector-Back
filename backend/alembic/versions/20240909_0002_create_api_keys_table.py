@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -18,11 +19,26 @@ branch_labels = None
 depends_on = None
 
 
-api_key_status_enum = sa.Enum("active", "inactive", name="api_key_status")
+api_key_status_enum = postgresql.ENUM(
+    "active",
+    "inactive",
+    name="api_key_status",
+    create_type=False,
+)
 
 
 def upgrade() -> None:
-    api_key_status_enum.create(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'api_key_status') THEN
+                CREATE TYPE api_key_status AS ENUM ('active', 'inactive');
+            END IF;
+        END
+        $$;
+        """
+    )
 
     op.create_table(
         "api_keys",
@@ -44,4 +60,4 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_api_keys_status"), table_name="api_keys")
     op.drop_index(op.f("ix_api_keys_user_id"), table_name="api_keys")
     op.drop_table("api_keys")
-    api_key_status_enum.drop(op.get_bind(), checkfirst=True)
+    op.execute("DROP TYPE IF EXISTS api_key_status")
