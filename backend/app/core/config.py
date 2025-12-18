@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     postgres_user: str = Field(default="postgres")
     postgres_password: str = Field(default="postgres")
     postgres_db: str = Field(default="aidetector")
+    access_token_expire_minutes: int = Field(default=60, ge=1, le=1440)
 
     @field_validator("backend_cors_origins", mode="before")
     @classmethod
