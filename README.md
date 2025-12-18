@@ -51,22 +51,26 @@ uvicorn app.main:app --reload
 
 ## 验收与自测
 
-以下命令在 Docker Compose 启动并完成迁移后执行：
+以下命令在 Docker Compose 启动并完成迁移后执行，用于验收：
 
 ```bash
 # 1) 健康检查
 curl -i http://localhost:8000/health
 
-# 2) 根路由欢迎信息
+# 2) 数据库连通性检查
+curl -i http://localhost:8000/db/ping
+
+# 3) 根路由欢迎信息
 curl -i http://localhost:8000/
 
-# 3) 获取 OpenAPI JSON（docs 页面的后端数据）
+# 4) 获取 OpenAPI JSON（docs 页面的后端数据）
 curl -i http://localhost:8000/openapi.json
 
-# 4) 数据库迁移状态（可选）
-docker compose exec api alembic history --verbose
+# 5) 运行数据库迁移到最新
+docker compose exec api alembic upgrade head
 ```
 
 预期：
-- `/health` 返回 `{ "status": "ok" }` 且状态码 200。
-- `/docs` 页面可正常打开。
+- `/health` 与 `/db/ping` 均返回 `{ "status": "ok" }` 且状态码 200。
+- `/` 返回欢迎消息，`/docs` 页面可正常打开。
+- `alembic upgrade head` 成功执行且重复启动不会丢失数据。

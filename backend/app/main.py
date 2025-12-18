@@ -3,6 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.database import router as database_router
 from app.api.v1.health import router as health_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -67,3 +68,4 @@ async def root() -> WelcomeResponse:
 
 
 app.include_router(health_router, prefix="")
+app.include_router(database_router, prefix="")
