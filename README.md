@@ -83,6 +83,18 @@ TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
   -d '{"email": "tester@example.com", "password": "StrongPass!23"}' | jq -r '.access_token')
 
 curl -i http://localhost:8000/auth/me -H "Authorization: Bearer ${TOKEN}"
+
+# 7) 创建 API Key（仅返回一次明文 key）
+API_KEY=$(curl -s -X POST http://localhost:8000/keys \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "CI self-test"}' | jq -r '.key')
+
+# 8) 使用 JWT 或 API Key 列出当前 Keys（示例使用 JWT）
+curl -i http://localhost:8000/keys -H "Authorization: Bearer ${TOKEN}"
+
+# 9) 使用新创建的 API Key 自检（验收必需）
+curl -i http://localhost:8000/keys/self-test -H "X-API-Key: ${API_KEY}"
 ```
 
 预期：

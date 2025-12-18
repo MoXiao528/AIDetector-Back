@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict
+import hashlib
+import secrets
 
 import jwt
 from passlib.context import CryptContext
@@ -24,3 +26,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
+
+
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def generate_api_key() -> tuple[str, str]:
+    plain_key = secrets.token_urlsafe(40)
+    return plain_key, hash_api_key(plain_key)
