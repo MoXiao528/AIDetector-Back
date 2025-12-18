@@ -15,6 +15,12 @@ class WelcomeResponse(BaseModel):
     message: str = Field(..., example="Welcome to AIDetector API")
 
 
+class DatabasePingResponse(BaseModel):
+    """数据库连通性检查响应。"""
+
+    status: str = Field(..., example="ok")
+
+
 class ErrorResponse(BaseModel):
     """统一错误响应模型。"""
 

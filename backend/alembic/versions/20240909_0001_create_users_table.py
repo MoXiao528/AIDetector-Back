@@ -22,15 +22,13 @@ def upgrade() -> None:
         "users",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("email", sa.String(length=255), nullable=False),
-        sa.Column("hashed_password", sa.String(length=255), nullable=False),
-        sa.Column("full_name", sa.String(length=255), nullable=True),
+        sa.Column("password_hash", sa.String(length=255), nullable=False),
+        sa.Column("role", sa.String(length=50), nullable=False, server_default=sa.text("'INDIVIDUAL'")),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column(
-            "updated_at",
+            "created_at",
             sa.DateTime(timezone=True),
             server_default=sa.func.now(),
-            server_onupdate=sa.func.now(),
             nullable=False,
         ),
     )
