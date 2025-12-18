@@ -19,3 +19,6 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     api_keys: Mapped[list["APIKey"]] = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
+    detections: Mapped[list["Detection"]] = relationship(
+        "Detection", back_populates="user", cascade="all, delete-orphan"
+    )

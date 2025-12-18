@@ -95,6 +95,22 @@ curl -i http://localhost:8000/keys -H "Authorization: Bearer ${TOKEN}"
 
 # 9) 使用新创建的 API Key 自检（验收必需）
 curl -i http://localhost:8000/keys/self-test -H "X-API-Key: ${API_KEY}"
+
+# 10) 使用 JWT 进行检测（会落库 detections 表）
+curl -i -X POST http://localhost:8000/detect \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "This is a human written text."}'
+
+# 11) 使用 API Key 进行检测（等价于 JWT）
+curl -i -X POST http://localhost:8000/detect \
+  -H "X-API-Key: ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "aaaa aaaa aaaa", "options": {"language": "en"}}'
+
+# 12) 查询检测记录，分页 + 时间过滤
+curl -i "http://localhost:8000/detections?page=1&page_size=5&from=2024-01-01T00:00:00Z" \
+  -H "Authorization: Bearer ${TOKEN}"
 ```
 
 预期：
