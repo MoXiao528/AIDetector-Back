@@ -57,16 +57,20 @@ uvicorn app.main:app --reload
 # 1) 健康检查
 curl -i http://localhost:8000/health
 
-# 2) 根路由欢迎信息
+# 2) 数据库连通性检查
+curl -i http://localhost:8000/db/ping
+
+# 3) 查看根路由欢迎信息
 curl -i http://localhost:8000/
 
-# 3) 获取 OpenAPI JSON（docs 页面的后端数据）
-curl -i http://localhost:8000/openapi.json
+# 4) 运行数据库迁移（确保字段/索引创建）
+docker compose exec api alembic upgrade head
 
-# 4) 数据库迁移状态（可选）
+# 5) 查看迁移历史（可选）
 docker compose exec api alembic history --verbose
 ```
 
 预期：
 - `/health` 返回 `{ "status": "ok" }` 且状态码 200。
+- `/db/ping` 返回 `{ "status": "ok" }` 且状态码 200，重复启动不会丢数据。
 - `/docs` 页面可正常打开。
