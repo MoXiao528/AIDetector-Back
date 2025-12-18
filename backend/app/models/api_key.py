@@ -27,7 +27,12 @@ class APIKey(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     status: Mapped[APIKeyStatus] = mapped_column(
-        SqlEnum(APIKeyStatus, name="api_key_status"), server_default=APIKeyStatus.ACTIVE.value, nullable=False
+        SqlEnum(
+            APIKeyStatus,
+            name="api_key_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+        , server_default=APIKeyStatus.ACTIVE.value, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
