@@ -68,6 +68,21 @@ docker compose exec api alembic upgrade head
 
 # 5) 查看迁移历史（可选）
 docker compose exec api alembic history --verbose
+
+# 6) 认证流程（注册 → 登录 → 获取当前用户）
+curl -i -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "tester@example.com", "password": "StrongPass!23"}'
+
+curl -i -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "tester@example.com", "password": "StrongPass!23"}'
+
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "tester@example.com", "password": "StrongPass!23"}' | jq -r '.access_token')
+
+curl -i http://localhost:8000/auth/me -H "Authorization: Bearer ${TOKEN}"
 ```
 
 预期：
