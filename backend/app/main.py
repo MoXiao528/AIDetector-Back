@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.health import router as health_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.schemas import ErrorResponse, WelcomeResponse
 
 settings = get_settings()
 logger = configure_logging()
@@ -26,22 +27,43 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     logger.warning("HTTPException raised", extra={"path": request.url.path, "status_code": exc.status_code})
     return JSONResponse(
         status_code=exc.status_code,
-        content={"code": exc.status_code, "message": exc.detail, "detail": exc.detail},
+        content=ErrorResponse(code=exc.status_code, message=str(exc.detail), detail=exc.detail).model_dump(),
     )
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    logger.warning("Validation error", extra={"path": request.url.path, "errors": exc.errors()})
+    sanitized_errors = [
+        {"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")}
+        for error in exc.errors()
+    ]
+    logger.warning(
+        "Validation error",
+        extra={"path": request.url.path, "error_count": len(sanitized_errors)},
+    )
     return JSONResponse(
         status_code=422,
-        content={"code": 422, "message": "Validation Error", "detail": exc.errors()},
+        content=ErrorResponse(code=422, message="Validation Error", detail=sanitized_errors).model_dump(),
     )
 
 
-@app.get("/")
-async def root() -> dict[str, str]:
-    return {"message": "Welcome to AIDetector API"}
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error("Unhandled server error", exc_info=exc, extra={"path": request.url.path})
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(code=500, message="Internal Server Error", detail="Internal Server Error").model_dump(),
+    )
+
+
+@app.get(
+    "/",
+    response_model=WelcomeResponse,
+    summary="根路由",
+    responses={404: {"model": ErrorResponse}},
+)
+async def root() -> WelcomeResponse:
+    return WelcomeResponse(message="Welcome to AIDetector API")
 
 
 app.include_router(health_router, prefix="")

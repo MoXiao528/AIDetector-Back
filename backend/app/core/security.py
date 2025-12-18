@@ -15,7 +15,7 @@ def create_access_token(subject: str, expires_delta: timedelta | None = None) ->
     to_encode: Dict[str, Any] = {"sub": subject}
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=30))
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.app_name, algorithm="HS256")
+    return jwt.encode(to_encode, settings.secret_key, algorithm="HS256")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

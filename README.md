@@ -25,11 +25,16 @@ backend/requirements.txt # 依赖
    ```bash
    cp .env.example .env
    ```
+   建议修改 `.env` 中的 `SECRET_KEY` 为自定义的强随机值。
 2. 启动服务（需要 Docker 与 Docker Compose）：
    ```bash
    docker compose up --build
    ```
-3. 访问健康检查与文档：
+3. 运行数据库迁移（首次启动或模型更新后执行）：
+   ```bash
+   docker compose exec api alembic upgrade head
+   ```
+4. 访问健康检查与文档：
    - 健康检查：http://localhost:8000/health
    - OpenAPI 文档：http://localhost:8000/docs
 
@@ -46,7 +51,7 @@ uvicorn app.main:app --reload
 
 ## 验收与自测
 
-以下命令在 Docker Compose 启动后执行：
+以下命令在 Docker Compose 启动并完成迁移后执行：
 
 ```bash
 # 1) 健康检查
@@ -57,6 +62,9 @@ curl -i http://localhost:8000/
 
 # 3) 获取 OpenAPI JSON（docs 页面的后端数据）
 curl -i http://localhost:8000/openapi.json
+
+# 4) 数据库迁移状态（可选）
+docker compose exec api alembic history --verbose
 ```
 
 预期：
