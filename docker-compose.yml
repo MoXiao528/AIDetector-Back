@@ -16,11 +16,11 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-aidetector}
+      POSTGRES_DB: ${POSTGRES_DB:-AIDetector}
     ports:
       - "5432:5432"
     volumes:
