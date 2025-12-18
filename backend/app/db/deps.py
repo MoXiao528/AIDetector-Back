@@ -20,7 +20,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 SessionDep = Annotated[Session, Depends(get_db)]
 TokenDep = Annotated[str | None, Depends(oauth2_scheme)]
-APIKeyHeaderDep = Annotated[str | None, Header(default=None, alias="X-API-Key")]
+# FastAPI does not allow setting defaults inside Annotated; pass default via Header
+APIKeyHeaderDep = Annotated[str | None, Header(None, alias="X-API-Key")]
 
 
 def get_current_user(db: SessionDep, token: TokenDep, api_key_header: APIKeyHeaderDep) -> User:
