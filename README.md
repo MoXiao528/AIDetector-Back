@@ -1,0 +1,64 @@
+# AIDetector Backend
+
+本项目基于 **FastAPI + PostgreSQL + SQLAlchemy 2.0 + Alembic + JWT + bcrypt** 构建，当前实现最小可运行后端与健康检查。
+
+## 目录结构
+
+```
+backend/
+  app/
+    main.py              # 入口
+    core/                # 配置、安全、日志
+    db/                  # 数据库初始化与会话
+    models/              # ORM 模型（预留）
+    schemas/             # Pydantic 模型（预留）
+    api/v1/              # 路由（当前含健康检查）
+    services/            # 业务逻辑（预留）
+backend/Dockerfile       # 后端镜像构建
+backend/requirements.txt # 依赖
+.env.example             # 环境变量示例
+```
+
+## 快速开始（Docker Compose）
+
+1. 复制环境变量示例：
+   ```bash
+   cp .env.example .env
+   ```
+2. 启动服务（需要 Docker 与 Docker Compose）：
+   ```bash
+   docker compose up --build
+   ```
+3. 访问健康检查与文档：
+   - 健康检查：http://localhost:8000/health
+   - OpenAPI 文档：http://localhost:8000/docs
+
+PostgreSQL 数据使用 `postgres_data` 卷持久化。
+
+## 本地开发（可选）
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn app.main:app --reload
+```
+
+## 验收与自测
+
+以下命令在 Docker Compose 启动后执行：
+
+```bash
+# 1) 健康检查
+curl -i http://localhost:8000/health
+
+# 2) 根路由欢迎信息
+curl -i http://localhost:8000/
+
+# 3) 获取 OpenAPI JSON（docs 页面的后端数据）
+curl -i http://localhost:8000/openapi.json
+```
+
+预期：
+- `/health` 返回 `{ "status": "ok" }` 且状态码 200。
+- `/docs` 页面可正常打开。
