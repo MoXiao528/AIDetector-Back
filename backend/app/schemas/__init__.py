@@ -13,6 +13,14 @@ from app.schemas.detection import DetectionItem, DetectionListResponse, Detectio
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
 from app.schemas.user import UserBase, UserCreate, UserResponse
+from app.schemas.team import (
+    TeamCreateRequest,
+    TeamMemberCreateRequest,
+    TeamMemberResponse,
+    TeamResponse,
+    TeamStatsItem,
+    TeamStatsResponse,
+)
 from app.core.roles import UserRole
 
 __all__ = [
@@ -32,6 +40,12 @@ __all__ = [
     "HealthResponse",
     "LoginRequest",
     "RegisterRequest",
+    "TeamCreateRequest",
+    "TeamMemberCreateRequest",
+    "TeamMemberResponse",
+    "TeamResponse",
+    "TeamStatsItem",
+    "TeamStatsResponse",
     "Token",
     "TokenPayload",
     "UserBase",

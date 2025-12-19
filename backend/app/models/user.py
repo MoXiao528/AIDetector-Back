@@ -28,3 +28,6 @@ class User(Base):
     detections: Mapped[list["Detection"]] = relationship(
         "Detection", back_populates="user", cascade="all, delete-orphan"
     )
+    team_memberships: Mapped[list["TeamMember"]] = relationship(
+        "TeamMember", back_populates="user", cascade="all, delete-orphan"
+    )

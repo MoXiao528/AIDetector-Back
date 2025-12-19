@@ -9,6 +9,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.keys import router as api_keys_router
 from app.api.v1.detections import router as detection_router
 from app.api.v1.admin import router as admin_router
+from app.api.v1.teams import router as teams_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
@@ -77,3 +78,4 @@ app.include_router(auth_router, prefix="")
 app.include_router(api_keys_router, prefix="")
 app.include_router(detection_router, prefix="")
 app.include_router(admin_router, prefix="")
+app.include_router(teams_router, prefix="")

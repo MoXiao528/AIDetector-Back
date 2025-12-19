@@ -139,6 +139,22 @@ curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${TOKEN}"
 
 # 15) 用 SYS_ADMIN Token 访问 /admin/status（预期 200）
 curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${ADMIN_TOKEN}"
+
+# 16) 团队：创建团队（创建者自动成为 OWNER）
+TEAM_ID=$(curl -s -X POST http://localhost:8000/teams \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "demo-team"}' | jq -r '.id')
+
+# 17) 团队：添加成员（仅 OWNER/ADMIN 可操作）
+curl -i -X POST http://localhost:8000/teams/${TEAM_ID}/members \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": 2, "role": "MEMBER"}'  # 将 user_id 替换为实际用户 ID
+
+# 18) 团队：查看按天聚合的检测统计（仅团队成员可访问）
+curl -i "http://localhost:8000/teams/${TEAM_ID}/stats?start=2024-01-01T00:00:00Z&end=2024-12-31T00:00:00Z" \
+  -H "Authorization: Bearer ${TOKEN}"
 ```
 
 预期：
