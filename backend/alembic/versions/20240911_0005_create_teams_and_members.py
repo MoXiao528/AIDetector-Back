@@ -19,8 +19,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    team_member_role = sa.Enum("OWNER", "ADMIN", "MEMBER", name="team_member_role")
-    team_member_role.create(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'team_member_role') THEN
+                CREATE TYPE team_member_role AS ENUM ('OWNER', 'ADMIN', 'MEMBER');
+            END IF;
+        END
+        $$;
+        """
+    )
+    team_member_role = sa.Enum("OWNER", "ADMIN", "MEMBER", name="team_member_role", create_type=False)
 
     op.create_table(
         "teams",
