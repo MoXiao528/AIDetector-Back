@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Path, status
 from sqlalchemy import select
 
 from app.core.security import generate_api_key
-from app.db.deps import CurrentUserDep, SessionDep
+from app.db.deps import ActiveMemberDep, SessionDep
 from app.models.api_key import APIKey, APIKeyStatus
 from app.schemas import (
     APIKeyCreateRequest,
@@ -20,9 +20,9 @@ router = APIRouter(prefix="/keys", tags=["api_keys"])
     response_model=APIKeyCreateResponse,
     status_code=status.HTTP_201_CREATED,
     summary="创建新的 API Key（仅返回一次明文 key）",
-    responses={401: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
-async def create_api_key(payload: APIKeyCreateRequest, db: SessionDep, current_user: CurrentUserDep) -> APIKeyCreateResponse:
+async def create_api_key(payload: APIKeyCreateRequest, db: SessionDep, current_user: ActiveMemberDep) -> APIKeyCreateResponse:
     plain_key, key_hash = generate_api_key()
 
     existing_key = db.scalar(select(APIKey).where(APIKey.key_hash == key_hash))
@@ -48,9 +48,9 @@ async def create_api_key(payload: APIKeyCreateRequest, db: SessionDep, current_u
     "",
     response_model=list[APIKeyResponse],
     summary="列出当前用户的 API Keys",
-    responses={401: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-async def list_api_keys(current_user: CurrentUserDep, db: SessionDep) -> list[APIKeyResponse]:
+async def list_api_keys(current_user: ActiveMemberDep, db: SessionDep) -> list[APIKeyResponse]:
     api_keys = db.scalars(select(APIKey).where(APIKey.user_id == current_user.id).order_by(APIKey.created_at.desc())).all()
     return api_keys
 
@@ -59,10 +59,10 @@ async def list_api_keys(current_user: CurrentUserDep, db: SessionDep) -> list[AP
     "/{key_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="禁用 API Key（软删除）",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 async def deactivate_api_key(
-    current_user: CurrentUserDep,
+    current_user: ActiveMemberDep,
     db: SessionDep,
     key_id: int = Path(..., description="要禁用的 Key ID"),
 ) -> None:
@@ -79,7 +79,7 @@ async def deactivate_api_key(
     "/self-test",
     response_model=APIKeySelfTestResponse,
     summary="使用 API Key 自检",  # 用于验收
-    responses={401: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-async def api_key_self_test(current_user: CurrentUserDep) -> APIKeySelfTestResponse:
+async def api_key_self_test(current_user: ActiveMemberDep) -> APIKeySelfTestResponse:
     return APIKeySelfTestResponse(message=f"API key valid for {current_user.email}")

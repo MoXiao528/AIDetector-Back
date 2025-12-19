@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.roles import UserRole, has_required_role, normalize_role
 from app.core.security import hash_api_key
 from app.db.session import get_db
 from app.models.api_key import APIKey, APIKeyStatus
@@ -39,7 +40,7 @@ def get_current_user(
                 headers={"WWW-Authenticate": "API-Key"},
             )
 
-        api_key.last_used_at = datetime.utcnow()
+        api_key.last_used_at = datetime.now(timezone.utc)
         db.add(api_key)
         db.commit()
         return api_key.user
@@ -95,3 +96,30 @@ def get_current_user(
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+def require_roles(allowed_roles: list[UserRole]):
+    """基于角色的依赖封装。"""
+
+    def _checker(current_user: CurrentUserDep) -> User:
+        try:
+            user_role = normalize_role(current_user.role)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid role",
+            ) from exc
+
+        if not has_required_role(user_role, allowed_roles):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient role",
+            )
+        return current_user
+
+    return Depends(_checker)
+
+
+# 常用角色依赖别名，便于复用
+ActiveMemberDep = Annotated[User, require_roles([UserRole.INDIVIDUAL, UserRole.TEAM_ADMIN, UserRole.SYS_ADMIN])]
+SysAdminDep = Annotated[User, require_roles([UserRole.SYS_ADMIN])]

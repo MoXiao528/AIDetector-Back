@@ -2,6 +2,18 @@
 
 本项目基于 **FastAPI + PostgreSQL + SQLAlchemy 2.0 + Alembic + JWT + bcrypt** 构建，当前实现最小可运行后端与健康检查。
 
+## RBAC 角色
+
+- VISITOR：只读/未登录视角（当前 API 需要认证后才可用）。
+- INDIVIDUAL：默认注册用户，拥有常规 API 权限（检测、管理自身 API Key）。
+- TEAM_ADMIN：团队管理员（预留，权限高于 INDIVIDUAL）。
+- SYS_ADMIN：系统管理员，可访问 `/admin/*`。
+
+权限摘要：
+- `/admin/*`：仅 SYS_ADMIN。
+- `/keys/*`：必须使用 JWT 或有效 `X-API-Key`，仅限 INDIVIDUAL/TEAM_ADMIN/SYS_ADMIN。
+- `/detect`：必须使用 JWT 或有效 `X-API-Key`（二选一，任选其一即可）。
+
 ## 目录结构
 
 ```
@@ -90,13 +102,13 @@ API_KEY=$(curl -s -X POST http://localhost:8000/keys \
   -H "Content-Type: application/json" \
   -d '{"name": "CI self-test"}' | jq -r '.key')
 
-# 8) 使用 JWT 或 API Key 列出当前 Keys（示例使用 JWT）
+# 8) 使用 JWT 列出当前 Keys（示例）
 curl -i http://localhost:8000/keys -H "Authorization: Bearer ${TOKEN}"
 
 # 9) 使用新创建的 API Key 自检（验收必需）
 curl -i http://localhost:8000/keys/self-test -H "X-API-Key: ${API_KEY}"
 
-# 10) 使用 JWT 进行检测（会落库 detections 表）
+# 10) 使用 JWT 进行检测（会落库 detections 表；/detect 支持 Bearer 或 X-API-Key）
 curl -i -X POST http://localhost:8000/detect \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
@@ -111,9 +123,26 @@ curl -i -X POST http://localhost:8000/detect \
 # 12) 查询检测记录，分页 + 时间过滤
 curl -i "http://localhost:8000/detections?page=1&page_size=5&from=2024-01-01T00:00:00Z" \
   -H "Authorization: Bearer ${TOKEN}"
+
+# 13)（RBAC 验收）准备一个管理员用户并提升为 SYS_ADMIN
+curl -i -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@example.com", "password": "StrongPass!23"}'
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@example.com", "password": "StrongPass!23"}' | jq -r '.access_token')
+# 提升角色（需要数据库容器名为 db，数据库名来自 .env.example）
+docker compose exec db psql -U postgres -d AIDetector -c "UPDATE users SET role='SYS_ADMIN' WHERE email='admin@example.com';"
+
+# 14) 用普通用户的 Token 访问 /admin/status（预期 403，返回 {code,message,detail}）
+curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${TOKEN}"
+
+# 15) 用 SYS_ADMIN Token 访问 /admin/status（预期 200）
+curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 预期：
 - `/health` 返回 `{ "status": "ok" }` 且状态码 200。
 - `/db/ping` 返回 `{ "status": "ok" }` 且状态码 200，重复启动不会丢数据。
 - `/docs` 页面可正常打开。
+- `/admin/status` 普通用户 403，SYS_ADMIN 200。
