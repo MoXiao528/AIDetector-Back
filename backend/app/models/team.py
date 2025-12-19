@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Enum as SqlEnum
 
 from app.db.base_class import Base
+from app.models.user import User
+
+if TYPE_CHECKING:  # pragma: no cover - 类型检查辅助
+    pass
 
 
 class Team(Base):
@@ -19,7 +24,7 @@ class Team(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    created_by: Mapped["User" | None] = relationship("User", foreign_keys=[created_by_id])
+    created_by: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id])
     members: Mapped[list["TeamMember"]] = relationship(
         "TeamMember", back_populates="team", cascade="all, delete-orphan"
     )
