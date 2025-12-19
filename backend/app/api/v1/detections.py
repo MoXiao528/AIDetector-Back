@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.db.deps import CurrentUserDep, SessionDep
+from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import (
     DetectionListResponse,
     DetectionRequest,
@@ -19,12 +19,12 @@ router = APIRouter(tags=["detections"])
     "/detect",
     response_model=DetectionResponse,
     summary="对文本进行检测（stub 版）",
-    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    current_user: CurrentUserDep,
+    current_user: ActiveMemberDep,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
@@ -50,11 +50,11 @@ async def detect(
     "/detections",
     response_model=DetectionListResponse,
     summary="分页查询检测记录",
-    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def list_detections(
     db: SessionDep,
-    current_user: CurrentUserDep,
+    current_user: ActiveMemberDep,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(10, ge=1, le=100, description="每页数量"),
     from_time: datetime | None = Query(

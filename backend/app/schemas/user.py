@@ -1,12 +1,8 @@
 from datetime import datetime
-from enum import Enum
 
 from pydantic import BaseModel, EmailStr, Field
 
-
-class UserRole(str, Enum):
-    INDIVIDUAL = "INDIVIDUAL"
-    ADMIN = "ADMIN"
+from app.core.roles import UserRole
 
 
 class UserBase(BaseModel):
