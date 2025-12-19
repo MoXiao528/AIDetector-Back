@@ -9,3 +9,5 @@ passlib[bcrypt]==1.7.4
 bcrypt<4
 PyJWT
 pydantic[email]
+pytest
+ruff

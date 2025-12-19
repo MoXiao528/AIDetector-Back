@@ -56,10 +56,21 @@ class DetectionService:
 
         return DetectionResult(label=label, score=round(raw_score, 4), meta=meta)
 
+    def _sanitize_options(self, options: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not options:
+            return None
+
+        redacted_keys = {"password", "token", "secret", "api_key", "key"}
+        sanitized: dict[str, Any] = {}
+        for key, value in options.items():
+            normalized_key = key.lower().strip()
+            sanitized[normalized_key] = "***" if normalized_key in redacted_keys else value
+        return sanitized
+
     def create_detection(self, user_id: int, text: str, options: Mapping[str, Any] | None = None) -> Detection:
         detection_result = self._heuristic_score(text)
 
-        merged_meta: dict[str, Any] = {"options": dict(options) if options else None, **detection_result.meta}
+        merged_meta: dict[str, Any] = {"options": self._sanitize_options(options), **detection_result.meta}
 
         detection = Detection(
             user_id=user_id,
