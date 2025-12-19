@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
+
+if TYPE_CHECKING:  # pragma: no cover - 类型检查辅助
+    from app.models.user import User
 
 
 class APIKeyStatus(str, Enum):

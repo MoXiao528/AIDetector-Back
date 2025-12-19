@@ -58,8 +58,46 @@ PostgreSQL 数据使用 `postgres_data` 卷持久化。
 python -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-uvicorn app.main:app --reload
+
+# 开发模式热重载
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+## 生产部署建议
+
+### 使用 Uvicorn（轻量场景）
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+### 使用 Gunicorn + UvicornWorkers（推荐）
+```bash
+gunicorn -k uvicorn.workers.UvicornWorker app.main:app \
+  --bind 0.0.0.0:8000 \
+  --workers 4 \
+  --access-logfile -
+```
+
+## 本地验证（Lint + Test）
+
+在项目根目录下：
+```bash
+cd backend
+ruff check app tests
+pytest
+```
+
+## PR 验收步骤
+
+1. 查看 GitHub Actions：确认 CI 工作流 `CI / lint-and-test` 在本分支为绿色。
+2. 本地验证（可选）：在项目根目录执行 `cd backend && ruff check app tests && pytest`，确保无错误。
+3. 运行数据库迁移：`docker compose exec api alembic upgrade head`（确保新字段/索引已到位）。
+4. 端到端快速验证（任选其三条 curl 验证即可）：
+   - `curl -i http://localhost:8000/health`
+   - `curl -i http://localhost:8000/db/ping`
+   - `curl -i -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
+   - `curl -i -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
+   - `curl -i -X POST http://localhost:8000/detect -H "Content-Type: application/json" -d '{"text":"hello world"}'`
 
 ## 验收与自测
 
@@ -162,3 +200,4 @@ curl -i "http://localhost:8000/teams/${TEAM_ID}/stats?start=2024-01-01T00:00:00Z
 - `/db/ping` 返回 `{ "status": "ok" }` 且状态码 200，重复启动不会丢数据。
 - `/docs` 页面可正常打开。
 - `/admin/status` 普通用户 403，SYS_ADMIN 200。
+- 异常返回统一格式 `{code, message, detail}`，其中 `detail` 会根据场景给出具体信息（表单校验、权限不足等）。
