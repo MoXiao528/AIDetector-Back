@@ -87,6 +87,18 @@ ruff check app tests
 pytest
 ```
 
+## PR 验收步骤
+
+1. 查看 GitHub Actions：确认 CI 工作流 `CI / lint-and-test` 在本分支为绿色。
+2. 本地验证（可选）：在项目根目录执行 `cd backend && ruff check app tests && pytest`，确保无错误。
+3. 运行数据库迁移：`docker compose exec api alembic upgrade head`（确保新字段/索引已到位）。
+4. 端到端快速验证（任选其三条 curl 验证即可）：
+   - `curl -i http://localhost:8000/health`
+   - `curl -i http://localhost:8000/db/ping`
+   - `curl -i -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
+   - `curl -i -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
+   - `curl -i -X POST http://localhost:8000/detect -H "Content-Type: application/json" -d '{"text":"hello world"}'`
+
 ## 验收与自测
 
 以下命令在 Docker Compose 启动并完成迁移后执行：
