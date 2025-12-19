@@ -85,5 +85,5 @@ async def get_team_stats(
 
     service = TeamService(db)
     rows = service.get_team_stats(team_id=team_id, user_id=current_user.id, start=start, end=end)
-    items = [TeamStatsItem(date=row.day.date(), detections=row.count) for row in rows]
+    items = [TeamStatsItem(day=row.day.date(), detections=row.count) for row in rows]
     return TeamStatsResponse(team_id=team_id, items=items)

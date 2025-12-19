@@ -36,8 +36,11 @@ class TeamMemberResponse(BaseModel):
 
 
 class TeamStatsItem(BaseModel):
-    date: date = Field(..., example="2024-01-01")
+    day: date = Field(..., alias="date", example="2024-01-01")
     detections: int = Field(..., example=5)
+
+    class Config:
+        populate_by_name = True
 
 
 class TeamStatsResponse(BaseModel):
