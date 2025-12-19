@@ -29,6 +29,17 @@ class DetectionItem(BaseModel):
     created_at: datetime = Field(..., example="2024-01-01T00:00:00Z")
     meta_json: dict | None = Field(default=None, example={"length": 120, "repetition_score": 0.12})
 
+    @classmethod
+    def from_orm_detection(cls, d):
+        return cls(
+            id=d.id,
+            label=d.result_label,  # 👈 显式映射
+            score=d.score,
+            input_text=d.input_text,
+            created_at=d.created_at,
+            meta_json=d.meta_json,
+        )
+
     class Config:
         from_attributes = True
 
