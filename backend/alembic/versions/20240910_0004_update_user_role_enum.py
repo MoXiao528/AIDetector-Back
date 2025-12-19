@@ -29,6 +29,9 @@ user_role_enum = postgresql.ENUM(
 
 
 def upgrade() -> None:
+    # 先移除默认值，再转换类型，避免 text -> enum 的默认值冲突
+    op.execute("ALTER TABLE users ALTER COLUMN role DROP DEFAULT")
+
     op.execute(
         """
         DO $$
@@ -57,11 +60,12 @@ def upgrade() -> None:
         existing_type=sa.String(length=50),
         postgresql_using="role::user_role",
         existing_nullable=False,
-        server_default=sa.text("'INDIVIDUAL'"),
     )
+    op.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'INDIVIDUAL'")
 
 
 def downgrade() -> None:
+    op.execute("ALTER TABLE users ALTER COLUMN role DROP DEFAULT")
     op.alter_column(
         "users",
         "role",
@@ -69,6 +73,6 @@ def downgrade() -> None:
         existing_type=user_role_enum,
         postgresql_using="role::text",
         existing_nullable=False,
-        server_default=sa.text("'INDIVIDUAL'"),
     )
     op.execute("DROP TYPE IF EXISTS user_role")
+    op.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'INDIVIDUAL'")
