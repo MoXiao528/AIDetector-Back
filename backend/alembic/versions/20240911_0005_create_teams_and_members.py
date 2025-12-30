@@ -19,7 +19,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1) 幂等创建 PG enum type（只创建一次）
     op.execute(
         """
         DO $$
@@ -32,7 +31,6 @@ def upgrade() -> None:
         """
     )
 
-    # 2) 关键：使用 postgresql.ENUM + create_type=False，避免 SQLAlchemy 再次 CREATE TYPE
     team_member_role = postgresql.ENUM(
         "OWNER", "ADMIN", "MEMBER",
         name="team_member_role",
@@ -69,6 +67,3 @@ def downgrade() -> None:
     op.drop_index("ix_teams_name", table_name="teams")
     op.drop_table("teams")
 
-    # 注意：一般不建议在 downgrade 里 drop enum type（避免影响其他迁移/环境）
-    # 如你确实需要彻底回滚并确认无其他依赖，可放开：
-    # op.execute("DROP TYPE IF EXISTS team_member_role;")
