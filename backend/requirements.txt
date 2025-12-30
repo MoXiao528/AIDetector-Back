@@ -11,3 +11,4 @@ PyJWT
 pydantic[email]
 pytest
 ruff
+httpx
