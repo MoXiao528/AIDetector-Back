@@ -90,15 +90,14 @@ async def detect(
         user_id=current_user.id,
         text=payload.text,
         options=options,
-        # 如果你的 DetectionService.create_detection 支持传入 label/score，可以这样扩展参数：
-        # label=label,
-        # score=normalized_score,
+        label=label.lower(),
+        score=normalized_score,
     )
 
-    # 4) 对客户端返回统一结构（ID 来自数据库，结果来自 RepreGuard）
+    # 4) 对客户端返回统一结构
     return DetectionResponse(
         detection_id=detection.id,
-        label=label.lower(),  # 例如前端统一用 "ai" / "human"
+        label=label.lower(),
         score=normalized_score,
         model_name=model_name,
         raw_score=raw_score,

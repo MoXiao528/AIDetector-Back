@@ -67,16 +67,30 @@ class DetectionService:
             sanitized[normalized_key] = "***" if normalized_key in redacted_keys else value
         return sanitized
 
-    def create_detection(self, user_id: int, text: str, options: Mapping[str, Any] | None = None) -> Detection:
-        detection_result = self._heuristic_score(text)
+    def create_detection(self, user_id: int, text: str, options: Mapping[str, Any] | None = None, score: float | None = None,
+        label: str | None = None) -> Detection:
+        # 如果外部没传，用启发式兜底
+        if score is None or label is None:
+            detection_result = self._heuristic_score(text)
+            final_score = detection_result.score
+            final_label = detection_result.label
+            meta_extra = detection_result.meta
+        else:
+            # 真实模型结果
+            final_score = score
+            final_label = label
+            meta_extra = {"method": "repre_guard_v1"}
 
-        merged_meta: dict[str, Any] = {"options": self._sanitize_options(options), **detection_result.meta}
+        merged_meta: dict[str, Any] = {
+            "options": self._sanitize_options(options),
+            **meta_extra
+        }
 
         detection = Detection(
             user_id=user_id,
             input_text=text,
-            result_label=detection_result.label,
-            score=detection_result.score,
+            result_label=final_label,
+            score=final_score,
             meta_json=merged_meta,
         )
 
