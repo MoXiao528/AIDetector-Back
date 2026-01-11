@@ -1,203 +1,228 @@
 # AIDetector Backend
 
-本项目基于 **FastAPI + PostgreSQL + SQLAlchemy 2.0 + Alembic + JWT + bcrypt** 构建，当前实现最小可运行后端与健康检查。
+这是一个基于 **FastAPI** + **PostgreSQL** 构建的 AI 内容检测后端服务。它作为业务网关，管理用户认证、API Key、团队协作，并将具体的检测请求转发给底层的 **RepreGuard** 微服务进行推理。
 
-## RBAC 角色
+> ⚠️ **开发状态说明 (Development Status)**
+> * **后端接口**：核心功能（认证、检测、API Key、团队管理）已实现，部分高级管理接口仍在开发中。
+> * **前端对接**：目前后端服务**暂未与前端页面打通**，请使用 API 工具（如 Postman）或下方的 PowerShell 脚本进行测试。
+> * **外部依赖**：检测功能强依赖于 `RepreGuard` 微服务，请确保该服务已启动，否则 `/detect` 接口会报错。
 
-- VISITOR：只读/未登录视角（当前 API 需要认证后才可用）。
-- INDIVIDUAL：默认注册用户，拥有常规 API 权限（检测、管理自身 API Key）。
-- TEAM_ADMIN：团队管理员（预留，权限高于 INDIVIDUAL）。
-- SYS_ADMIN：系统管理员，可访问 `/admin/*`。
+## ✨ 已实现的核心功能
 
-权限摘要：
-- `/admin/*`：仅 SYS_ADMIN。
-- `/keys/*`：必须使用 JWT 或有效 `X-API-Key`，仅限 INDIVIDUAL/TEAM_ADMIN/SYS_ADMIN。
-- `/detect`：必须使用 JWT 或有效 `X-API-Key`（二选一，任选其一即可）。
+* ✅ **多方式鉴权**：支持 JWT (Bearer Token) 和 API Key (`X-API-Key`)。
+* ✅ **AI 检测集成**：对接 RepreGuard 微服务，包含自动重试与分数归一化。
+* ✅ **用户体系**：注册、登录、个人信息查询。
+* ✅ **团队协作**：创建团队、添加成员、查看团队维度的检测统计。
+* ✅ **历史记录**：检测记录持久化存储，支持按时间筛选与分页。
+* 🚧 **系统管理**：基础的管理员状态检查（高级管理面板开发中）。
 
-## 目录结构
+## 🛠 前置依赖
+
+在启动本项目之前，请确保环境满足以下要求：
+
+1.  **Docker & Docker Compose**
+2.  **RepreGuard 检测微服务**（关键）：
+    * 本项目默认连接 `http://host.docker.internal:9000`。
+    * 若不启动此微服务，调用 `/detect` 接口将返回 `502 Bad Gateway`。
+    * *配置修改：在 `.env` 中调整 `DETECT_SERVICE_URL`。*
+
+## 🚀 快速启动
+
+### 1. 配置环境变量
+
+复制示例配置文件：
+
+```bash
+cp .env.example .env
+```
+
+建议修改 `.env` 中的以下配置：
+
+* `SECRET_KEY`: 生成 JWT 的密钥。
+* `POSTGRES_PASSWORD`: 数据库密码。
+
+### 2. 启动服务 (Docker Compose)
+
+使用 Docker Compose 一键构建并启动 API 和 数据库服务：
+
+```bash
+docker compose up -d --build
+```
+
+### 3. 执行数据库迁移
+
+首次启动**必须**执行此命令以创建数据表：
+
+```bash
+docker compose exec api alembic upgrade head
+```
+
+---
+
+## 🧪 完整业务流程测试 (PowerShell)
+
+为了方便测试人员验证后端逻辑是否跑通，这里提供了一套完整的 **PowerShell** 指令。
+您可以按顺序在 PowerShell 终端中执行以下代码块，脚本会自动保存 Token 和 API Key 供后续步骤使用。
+
+### 1. 基础环境检查
+
+确保服务已启动且数据库连接正常。
+
+```powershell
+$BaseUrl = "http://localhost:8000"
+
+# 1. 服务健康检查
+Write-Host "--- 1. Health Check ---"
+Invoke-RestMethod -Uri "$BaseUrl/health" -Method Get
+# 预期输出: status=ok
+
+# 2. 数据库连接检查
+Write-Host "--- 2. DB Ping ---"
+Invoke-RestMethod -Uri "$BaseUrl/db/ping" -Method Get
+# 预期输出: status=ok
+```
+
+### 2. 用户认证流程
+
+注册一个新用户并登录获取 Token。
+
+```powershell
+# 3. 注册新用户
+Write-Host "--- 3. Register User ---"
+$UserEmail = "test_user_$(Get-Random)@example.com"
+$Body = @{ email = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
+try {
+    Invoke-RestMethod -Uri "$BaseUrl/auth/register" -Method Post -Body $Body -ContentType "application/json"
+    Write-Host "用户 $UserEmail 注册成功" -ForegroundColor Green
+} catch {
+    Write-Host "用户可能已存在，尝试直接登录..." -ForegroundColor Yellow
+}
+
+# 4. 登录并保存 Token
+Write-Host "--- 4. Login ---"
+try {
+    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $Body -ContentType "application/json"
+    $Token = $LoginResponse.access_token
+    $Headers = @{ Authorization = "Bearer $Token" }
+    Write-Host "Token 获取成功" -ForegroundColor Green
+} catch {
+    Write-Host "登录失败: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+# 5. 验证 Token (获取个人信息)
+Write-Host "--- 5. Get My Info ---"
+Invoke-RestMethod -Uri "$BaseUrl/auth/me" -Method Get -Headers $Headers
+```
+
+### 3. AI 检测流程 (核心功能)
+
+测试文本检测功能。**注意：需确保底层的 RepreGuard 服务已运行。**
+
+```powershell
+# 6. 发起检测请求 (使用 Bearer Token)
+Write-Host "--- 6. Detect Text (Bearer Token) ---"
+$DetectBody = @{ text = "This is a sample text generated by AI to test the detector." } | ConvertTo-Json
+
+try {
+    $DetectResult = Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $DetectBody -ContentType "application/json"
+    Write-Host "检测成功! Label: $($DetectResult.label) | Score: $($DetectResult.score)" -ForegroundColor Green
+    Write-Host "底层模型: $($DetectResult.model_name)"
+} catch {
+    $StatusCode = $_.Exception.Response.StatusCode.value__
+    Write-Host "检测失败 (HTTP $StatusCode)" -ForegroundColor Red
+    if ($StatusCode -eq 502) {
+        Write-Host "原因: 无法连接 RepreGuard 微服务，请检查 host.docker.internal:9000 是否可达" -ForegroundColor Yellow
+    }
+}
+```
+
+### 4. API Key 管理与调用
+
+模拟第三方通过 API Key 调用接口的场景。
+
+```powershell
+# 7. 创建 API Key
+Write-Host "--- 7. Create API Key ---"
+$KeyBody = @{ name = "Test Key PowerShell" } | ConvertTo-Json
+$KeyResponse = Invoke-RestMethod -Uri "$BaseUrl/keys" -Method Post -Headers $Headers -Body $KeyBody -ContentType "application/json"
+$ApiKey = $KeyResponse.key
+Write-Host "API Key 创建成功: $ApiKey" -ForegroundColor Green
+
+# 8. 使用 API Key 进行检测 (无需 Bearer Token)
+Write-Host "--- 8. Detect Text (X-API-Key) ---"
+$KeyHeaders = @{ "X-API-Key" = $ApiKey }
+try {
+    $KeyDetectResult = Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $KeyHeaders -Body $DetectBody -ContentType "application/json"
+    Write-Host "API Key 检测成功! Label: $($KeyDetectResult.label)" -ForegroundColor Green
+} catch {
+    Write-Host "API Key 检测失败: $($_.Exception.Message)" -ForegroundColor Red
+}
+```
+
+### 5. 团队与数据统计
+
+测试团队协作功能。
+
+```powershell
+# 9. 创建团队
+Write-Host "--- 9. Create Team ---"
+$TeamBody = @{ name = "Dev Team $(Get-Random)" } | ConvertTo-Json
+try {
+    $Team = Invoke-RestMethod -Uri "$BaseUrl/teams" -Method Post -Headers $Headers -Body $TeamBody -ContentType "application/json"
+    Write-Host "团队创建成功 ID: $($Team.id)" -ForegroundColor Green
+    
+    # 10. 查看团队统计
+    Write-Host "--- 10. Team Stats ---"
+    $Stats = Invoke-RestMethod -Uri "$BaseUrl/teams/$($Team.id)/stats" -Method Get -Headers $Headers
+    Write-Host "统计数据 (Items):"
+    $Stats.items | Format-Table date, detections
+} catch {
+    Write-Host "团队操作失败: $($_.Exception.Message)" -ForegroundColor Red
+}
+```
+
+### 6. 查看历史记录
+
+确认之前的检测操作均已落库。
+
+```powershell
+# 11. 分页查询检测历史
+Write-Host "--- 11. History ---"
+$History = Invoke-RestMethod -Uri "$BaseUrl/detections?page=1&page_size=5" -Method Get -Headers $Headers
+Write-Host "共找到 $($History.total) 条记录"
+$History.items | Select-Object id, label, score, created_at | Format-Table
+```
+
+---
+
+## 📂 目录结构说明
 
 ```
 backend/
-  app/
-    main.py              # 入口
-    core/                # 配置、安全、日志
-    db/                  # 数据库初始化与会话
-    models/              # ORM 模型（预留）
-    schemas/             # Pydantic 模型（预留）
-    api/v1/              # 路由（当前含健康检查）
-    services/            # 业务逻辑（预留）
-backend/Dockerfile       # 后端镜像构建
-backend/requirements.txt # 依赖
-.env.example             # 环境变量示例
+├── alembic/             # 数据库迁移脚本
+├── app/
+│   ├── api/v1/          # API 路由实现
+│   │   ├── auth.py      # 认证 (登录/注册)
+│   │   ├── detections.py# 检测逻辑 (核心)
+│   │   ├── keys.py      # API Key 管理
+│   │   └── teams.py     # 团队管理
+│   ├── core/            # 核心配置 (config, security)
+│   ├── models/          # 数据库模型 (User, Detection, Team)
+│   └── services/        # 业务服务层
+│       └── repre_guard_client.py # 与 AI 微服务通信的客户端
+└── tests/               # 单元测试
 ```
 
-## 快速开始（Docker Compose）
+## 🔌 常见问题 (FAQ)
 
-1. 复制环境变量示例：
-   ```bash
-   cp .env.example .env
-   ```
-   建议修改 `.env` 中的 `SECRET_KEY` 为自定义的强随机值。
-2. 启动服务（需要 Docker 与 Docker Compose）：
-   ```bash
-   docker compose up --build
-   ```
-3. 运行数据库迁移（首次启动或模型更新后执行）：
-   ```bash
-   docker compose exec api alembic upgrade head
-   ```
-4. 访问健康检查与文档：
-   - 健康检查：http://localhost:8000/health
-   - OpenAPI 文档：http://localhost:8000/docs
+**Q: 执行 `/detect` 时报错 `502 Bad Gateway`？**
+A: 这是因为后端连接不上 AI 检测微服务。
 
-PostgreSQL 数据使用 `postgres_data` 卷持久化。
+1. 请检查 `docker-compose.yml` 或 `.env` 中的 `DETECT_SERVICE_URL` 配置。
+2. 确保您已经在本地或服务器上启动了提供 `/detect` 接口的模型服务。
 
-## 本地开发（可选）
+**Q: 数据库连接失败？**
+A: 请确保 Docker 容器 `db` 正在运行，且 `POSTGRES_PASSWORD` 与 `.env` 文件一致。
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-
-# 开发模式热重载
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-## 生产部署建议
-
-### 使用 Uvicorn（轻量场景）
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-### 使用 Gunicorn + UvicornWorkers（推荐）
-```bash
-gunicorn -k uvicorn.workers.UvicornWorker app.main:app \
-  --bind 0.0.0.0:8000 \
-  --workers 4 \
-  --access-logfile -
-```
-
-## 本地验证（Lint + Test）
-
-在项目根目录下：
-```bash
-cd backend
-ruff check app tests
-pytest
-```
-
-## PR 验收步骤
-
-1. 查看 GitHub Actions：确认 CI 工作流 `CI / lint-and-test` 在本分支为绿色。
-2. 本地验证（可选）：在项目根目录执行 `cd backend && ruff check app tests && pytest`，确保无错误。
-3. 运行数据库迁移：`docker compose exec api alembic upgrade head`（确保新字段/索引已到位）。
-4. 端到端快速验证（任选其三条 curl 验证即可）：
-   - `curl -i http://localhost:8000/health`
-   - `curl -i http://localhost:8000/db/ping`
-   - `curl -i -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
-   - `curl -i -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d '{"email":"pr-check@example.com","password":"StrongPass!23"}'`
-   - `curl -i -X POST http://localhost:8000/detect -H "Content-Type: application/json" -d '{"text":"hello world"}'`
-
-## 验收与自测
-
-以下命令在 Docker Compose 启动并完成迁移后执行：
-
-```bash
-# 1) 健康检查
-curl -i http://localhost:8000/health
-
-# 2) 数据库连通性检查
-curl -i http://localhost:8000/db/ping
-
-# 3) 查看根路由欢迎信息
-curl -i http://localhost:8000/
-
-# 4) 运行数据库迁移（确保字段/索引创建）
-docker compose exec api alembic upgrade head
-
-# 5) 查看迁移历史（可选）
-docker compose exec api alembic history --verbose
-
-# 6) 认证流程（注册 → 登录 → 获取当前用户）
-curl -i -X POST http://localhost:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "tester@example.com", "password": "StrongPass!23"}'
-
-curl -i -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "tester@example.com", "password": "StrongPass!23"}'
-
-TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "tester@example.com", "password": "StrongPass!23"}' | jq -r '.access_token')
-
-curl -i http://localhost:8000/auth/me -H "Authorization: Bearer ${TOKEN}"
-
-# 7) 创建 API Key（仅返回一次明文 key）
-API_KEY=$(curl -s -X POST http://localhost:8000/keys \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "CI self-test"}' | jq -r '.key')
-
-# 8) 使用 JWT 列出当前 Keys（示例）
-curl -i http://localhost:8000/keys -H "Authorization: Bearer ${TOKEN}"
-
-# 9) 使用新创建的 API Key 自检（验收必需）
-curl -i http://localhost:8000/keys/self-test -H "X-API-Key: ${API_KEY}"
-
-# 10) 使用 JWT 进行检测（会落库 detections 表；/detect 支持 Bearer 或 X-API-Key）
-curl -i -X POST http://localhost:8000/detect \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "This is a human written text."}'
-
-# 11) 使用 API Key 进行检测（等价于 JWT）
-curl -i -X POST http://localhost:8000/detect \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "aaaa aaaa aaaa", "options": {"language": "en"}}'
-
-# 12) 查询检测记录，分页 + 时间过滤
-curl -i "http://localhost:8000/detections?page=1&page_size=5&from=2024-01-01T00:00:00Z" \
-  -H "Authorization: Bearer ${TOKEN}"
-
-# 13)（RBAC 验收）准备一个管理员用户并提升为 SYS_ADMIN
-curl -i -X POST http://localhost:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@example.com", "password": "StrongPass!23"}'
-ADMIN_TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@example.com", "password": "StrongPass!23"}' | jq -r '.access_token')
-# 提升角色（需要数据库容器名为 db，数据库名来自 .env.example）
-docker compose exec db psql -U postgres -d AIDetector -c "UPDATE users SET role='SYS_ADMIN' WHERE email='admin@example.com';"
-
-# 14) 用普通用户的 Token 访问 /admin/status（预期 403，返回 {code,message,detail}）
-curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${TOKEN}"
-
-# 15) 用 SYS_ADMIN Token 访问 /admin/status（预期 200）
-curl -i http://localhost:8000/admin/status -H "Authorization: Bearer ${ADMIN_TOKEN}"
-
-# 16) 团队：创建团队（创建者自动成为 OWNER）
-TEAM_ID=$(curl -s -X POST http://localhost:8000/teams \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "demo-team"}' | jq -r '.id')
-
-# 17) 团队：添加成员（仅 OWNER/ADMIN 可操作）
-curl -i -X POST http://localhost:8000/teams/${TEAM_ID}/members \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": 2, "role": "MEMBER"}'  # 将 user_id 替换为实际用户 ID
-
-# 18) 团队：查看按天聚合的检测统计（仅团队成员可访问）
-curl -i "http://localhost:8000/teams/${TEAM_ID}/stats?start=2024-01-01T00:00:00Z&end=2024-12-31T00:00:00Z" \
-  -H "Authorization: Bearer ${TOKEN}"
-```
-
-预期：
-- `/health` 返回 `{ "status": "ok" }` 且状态码 200。
-- `/db/ping` 返回 `{ "status": "ok" }` 且状态码 200，重复启动不会丢数据。
-- `/docs` 页面可正常打开。
-- `/admin/status` 普通用户 403，SYS_ADMIN 200。
-- 异常返回统一格式 `{code, message, detail}`，其中 `detail` 会根据场景给出具体信息（表单校验、权限不足等）。
+**Q: 如何重置数据库？**
+A: `docker compose down -v` (这会删除所有数据)，然后重新 `up` 并执行 `alembic upgrade head`。
