@@ -1,11 +1,3 @@
-"""Stub detection logic used by the API.
-
-TODO: 替换为真实的模型推理调用：
-1. 在此处加载/注入大模型或外部检测服务的客户端。
-2. 使用模型输出的 label / score 替换下方的启发式计算。
-3. 根据需要扩展 meta_json（例如模型版本、耗时、调用 ID 等），并注意避免记录敏感字段。
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
