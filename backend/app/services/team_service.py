@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.detection import Detection
+from app.models.scan_history import ScanHistory
 from app.models.team import Team, TeamMember, TeamMemberRole
 from app.models.user import User
 
@@ -76,17 +76,17 @@ class TeamService:
 
         detections_query = (
             select(
-                func.date_trunc("day", Detection.created_at).label("day"),
-                func.count(Detection.id).label("count"),
+                func.date_trunc("day", ScanHistory.created_at).label("day"),
+                func.count(ScanHistory.id).label("count"),
             )
-            .join(TeamMember, TeamMember.user_id == Detection.user_id)
+            .join(TeamMember, TeamMember.user_id == ScanHistory.user_id)
             .where(TeamMember.team_id == team_id)
         )
 
         if start:
-            detections_query = detections_query.where(Detection.created_at >= start)
+            detections_query = detections_query.where(ScanHistory.created_at >= start)
         if end:
-            detections_query = detections_query.where(Detection.created_at <= end)
+            detections_query = detections_query.where(ScanHistory.created_at <= end)
 
         detections_query = detections_query.group_by("day").order_by("day")
         rows = self.db.execute(detections_query).all()

@@ -59,9 +59,9 @@ class DetectionItem(BaseModel):
     id: int = Field(..., example=1)
     label: str = Field(..., example="ai")
     score: float = Field(..., ge=0, le=1, example=0.42)
-    input_text: str = Field(..., example="Short text")
+    input_content: str = Field(..., example="Short text")
     created_at: datetime = Field(..., example="2024-01-01T00:00:00Z")
-    meta_json: dict | None = Field(
+    analysis_result: dict | None = Field(
         default=None,
         example={
             "length": 120,
@@ -81,9 +81,9 @@ class DetectionItem(BaseModel):
             id=d.id,
             label=d.result_label,
             score=d.score,
-            input_text=d.input_text,
+            input_content=d.input_content,
             created_at=d.created_at,
-            meta_json=d.meta_json,
+            analysis_result=d.analysis_result,
         )
 
     class Config:

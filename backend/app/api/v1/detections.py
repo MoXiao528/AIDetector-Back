@@ -70,10 +70,10 @@ async def detect(
     # 2) 归一化为 0-1 置信度
     normalized_score = _normalize_score(raw_score, threshold)
 
-    # 3) 通过 DetectionService 落一条记录，同时把 RepreGuard 结果塞进 meta_json 里
+    # 3) 通过 DetectionService 落一条记录，同时把 RepreGuard 结果塞进 analysis_result 里
     service = DetectionService(db)
 
-    # 如果你的 Detection 模型/Service 已经有 meta_json 字段，通常会把 options 存进去；
+    # 如果你的 ScanHistory 模型/Service 已经有 analysis_result 字段，通常会把 options 存进去；
     # 这里我们在 options 里加一层 "repre_guard" 的信息。
     options = payload.options.copy() if payload.options else {}
     options.setdefault("repre_guard", {})
@@ -151,9 +151,9 @@ async def list_detections(
             id=r.id,
             label=r.result_label,
             score=r.score,
-            input_text=r.input_text,
+            input_content=r.input_content,
             created_at=r.created_at,
-            meta_json=r.meta_json,
+            analysis_result=r.analysis_result,
         )
         for r in records
     ]

@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.detection import Detection
+from app.models.scan_history import ScanHistory
 
 
 @dataclass
@@ -59,8 +59,17 @@ class DetectionService:
             sanitized[normalized_key] = "***" if normalized_key in redacted_keys else value
         return sanitized
 
-    def create_detection(self, user_id: int, text: str, options: Mapping[str, Any] | None = None, score: float | None = None,
-        label: str | None = None) -> Detection:
+    def create_detection(
+        self,
+        user_id: int,
+        text: str,
+        options: Mapping[str, Any] | None = None,
+        score: float | None = None,
+        label: str | None = None,
+        function_type: str = "scan",
+        title: str | None = None,
+        input_html: str | None = None,
+    ) -> ScanHistory:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
             detection_result = self._heuristic_score(text)
@@ -78,12 +87,15 @@ class DetectionService:
             **meta_extra
         }
 
-        detection = Detection(
+        detection = ScanHistory(
             user_id=user_id,
-            input_text=text,
+            title=title,
+            input_content=text,
+            input_html=input_html,
+            function_type=function_type,
             result_label=final_label,
             score=final_score,
-            meta_json=merged_meta,
+            analysis_result=merged_meta,
         )
 
         self.db.add(detection)
@@ -98,16 +110,16 @@ class DetectionService:
         page_size: int,
         from_time: Any | None,
         to_time: Any | None,
-    ) -> tuple[list[Detection], int]:
-        query = select(Detection).where(Detection.user_id == user_id)
+    ) -> tuple[list[ScanHistory], int]:
+        query = select(ScanHistory).where(ScanHistory.user_id == user_id)
 
         if from_time:
-            query = query.where(Detection.created_at >= from_time)
+            query = query.where(ScanHistory.created_at >= from_time)
         if to_time:
-            query = query.where(Detection.created_at <= to_time)
+            query = query.where(ScanHistory.created_at <= to_time)
 
         total = self.db.scalar(select(func.count()).select_from(query.subquery())) or 0
 
-        paginated_query = query.order_by(Detection.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        paginated_query = query.order_by(ScanHistory.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         records = self.db.scalars(paginated_query).all()
         return records, total
