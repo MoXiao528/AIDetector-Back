@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.security import create_access_token, get_password_hash, verify_password
@@ -21,17 +21,20 @@ settings = get_settings()
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def register_user(payload: RegisterRequest, db: SessionDep) -> UserResponse:
-    filters = [User.email == payload.email]
-    if payload.username:
-        filters.append(User.username == payload.username)
-    existing_user = db.scalar(select(User).where(or_(*filters)))
+    existing_user = db.scalar(select(User).where(User.email == payload.email))
     if existing_user:
-        raise HTTPException(status_code=409, detail="Email or username already registered")
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if payload.username:
+        existing_username = db.scalar(select(User).where(User.username == payload.username))
+        if existing_username:
+            raise HTTPException(status_code=409, detail="Username already registered")
+
+    display_name = payload.name or payload.email.split("@", maxsplit=1)[0]
 
     user = User(
         email=payload.email,
         username=payload.username,
-        name=payload.name,
+        name=display_name,
         password_hash=get_password_hash(payload.password),
     )
     db.add(user)
@@ -47,7 +50,13 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
     responses={401: {"model": ErrorResponse}},
 )
 async def login(payload: LoginRequest, db: SessionDep) -> Token:
-    user = db.scalar(select(User).where(or_(User.email == payload.identifier, User.username == payload.identifier)))
+    identifier = payload.identifier or payload.email
+    if identifier is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect identifier or password")
+    if "@" in identifier:
+        user = db.scalar(select(User).where(User.email == identifier))
+    else:
+        user = db.scalar(select(User).where(User.username == identifier))
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect identifier or password")
 
