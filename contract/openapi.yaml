@@ -1,0 +1,534 @@
+openapi: 3.0.3
+info:
+  title: AI Detector API
+  version: 0.1.0
+  description: Contract-first baseline for frontend/backend alignment.
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: http://localhost:8000
+    description: Local
+paths:
+  /api/auth/login:
+    post:
+      summary: Login
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+  /api/auth/register:
+    post:
+      summary: Register
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Register success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+  /api/auth/me:
+    get:
+      summary: Current user
+      operationId: getMe
+      responses:
+        '200':
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /api/scan/detect:
+    post:
+      summary: Detect AI content
+      operationId: detect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectRequest'
+      responses:
+        '200':
+          description: Detection result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisResponse'
+  /api/scan/examples:
+    get:
+      summary: Example texts
+      operationId: getExamples
+      responses:
+        '200':
+          description: Examples list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExampleListResponse'
+  /api/scan/history:
+    get:
+      summary: Scan history list
+      operationId: getHistory
+      responses:
+        '200':
+          description: History list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryListResponse'
+  /api/scan/history/{id}:
+    get:
+      summary: Scan history detail
+      operationId: getHistoryDetail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: History detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryItem'
+  /api/scan/parse-files:
+    post:
+      summary: Parse uploaded files
+      operationId: parseFiles
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ParseFilesRequest'
+      responses:
+        '200':
+          description: Parsed file contents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParseFilesResponse'
+  /api/orders:
+    post:
+      summary: Create order
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+  /api/orders/{id}/pay:
+    post:
+      summary: Pay for order
+      operationId: payOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderPayRequest'
+      responses:
+        '200':
+          description: Payment success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+  /api/subscriptions/preview:
+    get:
+      summary: Subscription preview
+      operationId: getSubscriptionPreview
+      responses:
+        '200':
+          description: Preview info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionPreview'
+  /api/config/faq:
+    get:
+      summary: FAQ list
+      operationId: getFaq
+      responses:
+        '200':
+          description: FAQ list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaqListResponse'
+  /api/config/quotes:
+    get:
+      summary: Quotes list
+      operationId: getQuotes
+      responses:
+        '200':
+          description: Quotes list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuoteListResponse'
+  /api/contact:
+    post:
+      summary: Contact support
+      operationId: contactSupport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactRequest'
+      responses:
+        '201':
+          description: Contact submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactResponse'
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - name
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        name:
+          type: string
+    AuthResponse:
+      type: object
+      required:
+        - token
+        - user
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - name
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+    DetectRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+        functions:
+          type: array
+          items:
+            type: string
+    AnalysisResponse:
+      type: object
+      required:
+        - summary
+        - sentences
+        - polish
+        - translation
+        - citations
+      properties:
+        summary:
+          type: string
+        sentences:
+          type: array
+          items:
+            $ref: '#/components/schemas/SentenceAnalysis'
+        polish:
+          type: string
+        translation:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+    SentenceAnalysis:
+      type: object
+      required:
+        - text
+        - isAi
+        - confidence
+      properties:
+        text:
+          type: string
+        isAi:
+          type: boolean
+        confidence:
+          type: number
+          format: float
+    Citation:
+      type: object
+      required:
+        - source
+        - snippet
+      properties:
+        source:
+          type: string
+        snippet:
+          type: string
+        url:
+          type: string
+          format: uri
+    ExampleListResponse:
+      type: object
+      required:
+        - examples
+      properties:
+        examples:
+          type: array
+          items:
+            type: string
+    HistoryListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryItem'
+    HistoryItem:
+      type: object
+      required:
+        - id
+        - text
+        - createdAt
+        - result
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        result:
+          $ref: '#/components/schemas/AnalysisResponse'
+    ParseFilesRequest:
+      type: object
+      required:
+        - files
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+            format: binary
+    ParseFilesResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParsedFile'
+    ParsedFile:
+      type: object
+      required:
+        - filename
+        - text
+      properties:
+        filename:
+          type: string
+        text:
+          type: string
+    OrderCreateRequest:
+      type: object
+      required:
+        - planId
+      properties:
+        planId:
+          type: string
+        promoCode:
+          type: string
+    OrderPayRequest:
+      type: object
+      required:
+        - paymentMethodId
+      properties:
+        paymentMethodId:
+          type: string
+    OrderResponse:
+      type: object
+      required:
+        - id
+        - status
+        - amount
+        - currency
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - paid
+            - failed
+        amount:
+          type: number
+          format: float
+        currency:
+          type: string
+    SubscriptionPreview:
+      type: object
+      required:
+        - plans
+      properties:
+        plans:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionPlan'
+    SubscriptionPlan:
+      type: object
+      required:
+        - id
+        - name
+        - price
+        - currency
+        - credits
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        price:
+          type: number
+          format: float
+        currency:
+          type: string
+        credits:
+          type: integer
+    FaqListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FaqItem'
+    FaqItem:
+      type: object
+      required:
+        - id
+        - question
+        - answer
+      properties:
+        id:
+          type: string
+        question:
+          type: string
+        answer:
+          type: string
+    QuoteListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuoteItem'
+    QuoteItem:
+      type: object
+      required:
+        - id
+        - text
+        - author
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        author:
+          type: string
+    ContactRequest:
+      type: object
+      required:
+        - name
+        - email
+        - message
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        message:
+          type: string
+    ContactResponse:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum:
+            - received
+            - queued
