@@ -7,10 +7,14 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import (
+    AnalysisResponse,
+    Citation,
+    DetectRequest,
     DetectionListResponse,
     DetectionRequest,
     DetectionResponse,
     ErrorResponse,
+    SentenceAnalysis,
 )
 from app.schemas.detection import DetectionItem
 from app.services.detection_service import DetectionService
@@ -96,6 +100,41 @@ async def _detect_impl(
     )
 
 
+def _build_analysis_response(text: str, functions: set[str]) -> AnalysisResponse:
+    sentences_raw = [segment.strip() for segment in text.split(".") if segment.strip()]
+    if not sentences_raw:
+        sentences_raw = [text.strip()]
+    sentences = [
+        SentenceAnalysis(text=segment, is_ai=False, confidence=0.1) for segment in sentences_raw
+    ]
+
+    polish = None
+    if "polish" in functions:
+        polish = f"{text.strip()} (polished)"
+
+    translation = None
+    if "translation" in functions:
+        translation = f"{text.strip()} (translated)"
+
+    citations = None
+    if "citations" in functions:
+        citations = [
+            Citation(
+                source="stub",
+                snippet="Generated placeholder citation.",
+                url=None,
+            )
+        ]
+
+    return AnalysisResponse(
+        summary=f"Analyzed {len(sentences)} sentence(s).",
+        sentences=sentences,
+        polish=polish,
+        translation=translation,
+        citations=citations,
+    )
+
+
 @router.post(
     "/detect",
     response_model=DetectionResponse,
@@ -111,6 +150,39 @@ async def detect(
     调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
     """
     return await _detect_impl(payload=payload, db=db, current_user=current_user)
+
+
+@scan_router.post(
+    "/detect",
+    response_model=AnalysisResponse,
+    summary="对文本进行检测（返回富结构分析结果）",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def detect_scan(
+    payload: DetectRequest,
+    db: SessionDep,
+    current_user: ActiveMemberDep,
+) -> AnalysisResponse:
+    functions = set(payload.functions or [])
+    if not functions:
+        functions.add("scan")
+    else:
+        functions.add("scan")
+
+    if not payload.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Text cannot be empty",
+        )
+
+    if "scan" in functions:
+        await _detect_impl(
+            payload=DetectionRequest(text=payload.text, options=None),
+            db=db,
+            current_user=current_user,
+        )
+
+    return _build_analysis_response(text=payload.text, functions=functions)
 
 
 async def _list_detections_impl(

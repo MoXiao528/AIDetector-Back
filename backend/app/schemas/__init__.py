@@ -9,6 +9,7 @@ from app.schemas.api_key import (
     APIKeyStatus,
 )
 from app.schemas.admin import AdminStatusResponse
+from app.schemas.analysis import AnalysisResponse, Citation, DetectRequest, SentenceAnalysis
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
@@ -31,10 +32,13 @@ __all__ = [
     "APIKeySelfTestResponse",
     "APIKeyStatus",
     "AdminStatusResponse",
+    "AnalysisResponse",
+    "Citation",
     "DetectionItem",
     "DetectionListResponse",
     "DetectionRequest",
     "DetectionResponse",
+    "DetectRequest",
     "DatabasePingResponse",
     "ErrorResponse",
     "HealthResponse",
@@ -48,6 +52,7 @@ __all__ = [
     "TeamStatsResponse",
     "Token",
     "TokenPayload",
+    "SentenceAnalysis",
     "UserBase",
     "UserCreate",
     "UserResponse",

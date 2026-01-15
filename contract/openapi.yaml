@@ -281,6 +281,7 @@ components:
           type: array
           items:
             type: string
+          description: Optional feature switches. Defaults to include "scan".
     AnalysisResponse:
       type: object
       required:
@@ -298,12 +299,15 @@ components:
             $ref: '#/components/schemas/SentenceAnalysis'
         polish:
           type: string
+          nullable: true
         translation:
           type: string
+          nullable: true
         citations:
           type: array
           items:
             $ref: '#/components/schemas/Citation'
+          nullable: true
     SentenceAnalysis:
       type: object
       required:
