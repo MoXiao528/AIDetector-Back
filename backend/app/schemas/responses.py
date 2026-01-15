@@ -26,6 +26,6 @@ class DatabasePingResponse(SchemaBase):
 class ErrorResponse(SchemaBase):
     """统一错误响应模型。"""
 
-    code: int = Field(..., example=404)
+    code: str | int = Field(..., example="NOT_FOUND")
     message: str = Field(..., example="Not Found")
     detail: Any = Field(..., example="Not Found")

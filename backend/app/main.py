@@ -34,6 +34,8 @@ app.add_middleware(
 
 
 def _build_error_response(status_code: int, detail: object, message: str | None = None) -> ErrorResponse:
+    if isinstance(detail, dict) and {"code", "message", "detail"}.issubset(detail.keys()):
+        return ErrorResponse(code=detail["code"], message=detail["message"], detail=detail["detail"])
     phrase = HTTPStatus(status_code).phrase if status_code in HTTPStatus._value2member_map_ else "Error"
     return ErrorResponse(code=status_code, message=message or phrase, detail=detail)
 

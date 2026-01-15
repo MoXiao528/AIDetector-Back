@@ -52,13 +52,36 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
 async def login(payload: LoginRequest, db: SessionDep) -> Token:
     identifier = payload.identifier or payload.email
     if identifier is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect identifier or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "AUTH_USER_NOT_FOUND",
+                "message": "User not found",
+                "detail": "User not found",
+            },
+        )
     if "@" in identifier:
         user = db.scalar(select(User).where(User.email == identifier))
     else:
         user = db.scalar(select(User).where(User.username == identifier))
-    if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect identifier or password")
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "AUTH_USER_NOT_FOUND",
+                "message": "User not found",
+                "detail": "User not found",
+            },
+        )
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "AUTH_INVALID_PASSWORD",
+                "message": "Invalid password",
+                "detail": "Invalid password",
+            },
+        )
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(subject=str(user.id), expires_delta=access_token_expires)
