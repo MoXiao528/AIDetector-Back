@@ -70,7 +70,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AnalysisResponse'
+                $ref: '#/components/schemas/DetectionResponse'
   /api/scan/examples:
     get:
       summary: Example texts
@@ -86,13 +86,24 @@ paths:
     get:
       summary: Scan history list
       operationId: getHistory
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
       responses:
         '200':
           description: History list
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HistoryListResponse'
+                $ref: '#/components/schemas/DetectionListResponse'
   /api/scan/history/{id}:
     get:
       summary: Scan history detail
@@ -277,11 +288,9 @@ components:
       properties:
         text:
           type: string
-        functions:
-          type: array
-          items:
-            type: string
-          description: Optional feature switches. Defaults to include "scan".
+        options:
+          type: object
+          description: Optional detection options.
     AnalysisResponse:
       type: object
       required:
@@ -539,3 +548,70 @@ components:
           enum:
             - received
             - queued
+    DetectionResponse:
+      type: object
+      required:
+        - detectionId
+        - label
+        - score
+      properties:
+        detectionId:
+          type: integer
+        label:
+          type: string
+        score:
+          type: number
+          format: float
+        modelName:
+          type: string
+          nullable: true
+        rawScore:
+          type: number
+          format: float
+          nullable: true
+        threshold:
+          type: number
+          format: float
+          nullable: true
+    DetectionItem:
+      type: object
+      required:
+        - id
+        - label
+        - score
+        - inputText
+        - createdAt
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        score:
+          type: number
+          format: float
+        inputText:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        metaJson:
+          type: object
+          nullable: true
+    DetectionListResponse:
+      type: object
+      required:
+        - total
+        - page
+        - pageSize
+        - items
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionItem'

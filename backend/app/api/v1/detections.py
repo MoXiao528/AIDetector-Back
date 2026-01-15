@@ -11,16 +11,12 @@ from pypdf import PdfReader
 
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import (
-    AnalysisResponse,
-    Citation,
-    DetectRequest,
     DetectionListResponse,
     DetectionRequest,
     DetectionResponse,
     ErrorResponse,
     ParseFilesResponse,
     ParsedFileResult,
-    SentenceAnalysis,
 )
 from app.schemas.detection import DetectionItem
 from app.services.detection_service import DetectionService
@@ -110,41 +106,6 @@ async def _detect_impl(
     )
 
 
-def _build_analysis_response(text: str, functions: set[str]) -> AnalysisResponse:
-    sentences_raw = [segment.strip() for segment in text.split(".") if segment.strip()]
-    if not sentences_raw:
-        sentences_raw = [text.strip()]
-    sentences = [
-        SentenceAnalysis(text=segment, is_ai=False, confidence=0.1) for segment in sentences_raw
-    ]
-
-    polish = None
-    if "polish" in functions:
-        polish = f"{text.strip()} (polished)"
-
-    translation = None
-    if "translation" in functions:
-        translation = f"{text.strip()} (translated)"
-
-    citations = None
-    if "citations" in functions:
-        citations = [
-            Citation(
-                source="stub",
-                snippet="Generated placeholder citation.",
-                url=None,
-            )
-        ]
-
-    return AnalysisResponse(
-        summary=f"Analyzed {len(sentences)} sentence(s).",
-        sentences=sentences,
-        polish=polish,
-        translation=translation,
-        citations=citations,
-    )
-
-
 def _parse_txt(content: bytes) -> str:
     return content.decode("utf-8")
 
@@ -186,35 +147,16 @@ async def detect(
 
 @scan_router.post(
     "/detect",
-    response_model=AnalysisResponse,
-    summary="对文本进行检测（返回富结构分析结果）",
+    response_model=DetectionResponse,
+    summary="对文本进行检测（兼容 /api/scan/detect）",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def detect_scan(
-    payload: DetectRequest,
+    payload: DetectionRequest,
     db: SessionDep,
     current_user: ActiveMemberDep,
-) -> AnalysisResponse:
-    functions = set(payload.functions or [])
-    if not functions:
-        functions.add("scan")
-    else:
-        functions.add("scan")
-
-    if not payload.text.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Text cannot be empty",
-        )
-
-    if "scan" in functions:
-        await _detect_impl(
-            payload=DetectionRequest(text=payload.text, options=None),
-            db=db,
-            current_user=current_user,
-        )
-
-    return _build_analysis_response(text=payload.text, functions=functions)
+) -> DetectionResponse:
+    return await _detect_impl(payload=payload, db=db, current_user=current_user)
 
 
 @scan_router.post(
@@ -328,6 +270,10 @@ async def _list_detections_impl(
     )
 
 
+def _resolve_page_size(page_size: int | None, page_size_legacy: int | None) -> int:
+    return page_size if page_size is not None else (page_size_legacy or 10)
+
+
 @router.get(
     "/detections",
     response_model=DetectionListResponse,
@@ -338,7 +284,8 @@ async def list_detections(
     db: SessionDep,
     current_user: ActiveMemberDep,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
+    page_size: int | None = Query(None, ge=1, le=100, alias="pageSize", description="每页数量"),
+    page_size_legacy: int | None = Query(None, ge=1, le=100, alias="page_size", description="每页数量"),
     from_time: datetime | None = Query(
         None,
         alias="from",
@@ -353,11 +300,12 @@ async def list_detections(
     """
     按用户分页查询检测记录。
     """
+    resolved_page_size = _resolve_page_size(page_size, page_size_legacy)
     return await _list_detections_impl(
         db=db,
         current_user=current_user,
         page=page,
-        page_size=page_size,
+        page_size=resolved_page_size,
         from_time=from_time,
         to_time=to_time,
     )
@@ -373,7 +321,8 @@ async def list_detections_history(
     db: SessionDep,
     current_user: ActiveMemberDep,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
+    page_size: int | None = Query(None, ge=1, le=100, alias="pageSize", description="每页数量"),
+    page_size_legacy: int | None = Query(None, ge=1, le=100, alias="page_size", description="每页数量"),
     from_time: datetime | None = Query(
         None,
         alias="from",
@@ -385,11 +334,12 @@ async def list_detections_history(
         description="结束时间，ISO8601",
     ),
 ) -> DetectionListResponse:
+    resolved_page_size = _resolve_page_size(page_size, page_size_legacy)
     return await _list_detections_impl(
         db=db,
         current_user=current_user,
         page=page,
-        page_size=page_size,
+        page_size=resolved_page_size,
         from_time=from_time,
         to_time=to_time,
     )
