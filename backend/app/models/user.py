@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Enum as SqlEnum
 
@@ -21,12 +21,21 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(150), unique=True, index=True, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         SqlEnum(UserRole, name="user_role", values_callable=lambda enum: [e.value for e in enum]),
         server_default=UserRole.INDIVIDUAL.value,
         nullable=False,
     )
+    plan_tier: Mapped[str] = mapped_column(String(50), server_default="personal-free", nullable=False)
+    credits_total: Mapped[int] = mapped_column(Integer, server_default="10000", nullable=False)
+    credits_used: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
