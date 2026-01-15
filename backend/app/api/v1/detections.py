@@ -224,8 +224,8 @@ async def detect_scan(
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def parse_files(
-    files: list[UploadFile] = File(..., description="上传的文件列表"),
     current_user: ActiveMemberDep,
+    files: list[UploadFile] = File(..., description="上传的文件列表"),
 ) -> ParseFilesResponse:
     _ = current_user
     if len(files) > MAX_FILE_COUNT:
