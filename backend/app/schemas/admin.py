@@ -1,7 +1,9 @@
 """管理员相关的 Pydantic 模型。"""
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from app.schemas.base import SchemaBase
 
 
-class AdminStatusResponse(BaseModel):
+class AdminStatusResponse(SchemaBase):
     message: str = Field(..., example="admin ok")

@@ -11,18 +11,16 @@
 
 ```json
 {
-  "error": {
-    "code": "string",
-    "message": "string",
-    "details": []
-  }
+  "code": 404,
+  "message": "Not Found",
+  "detail": {}
 }
 ```
 
 字段说明：
-- `code`: 业务错误码（字符串）。
+- `code`: 业务错误码（数字或字符串）。
 - `message`: 面向用户的错误描述。
-- `details`: 可选数组，包含字段级错误或调试信息。
+- `detail`: 可选对象或数组，包含字段级错误或调试信息。
 
 ## 分页字段
 若接口返回列表并支持分页，统一响应字段：

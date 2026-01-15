@@ -9,7 +9,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.db import router as db_router
 from app.api.v1.health import router as health_router
 from app.api.v1.keys import router as api_keys_router
-from app.api.v1.detections import router as detection_router
+from app.api.v1.detections import router as detection_router, scan_router as scan_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.teams import router as teams_router
 # 如果你未来想用聚合 router，可以改成：
@@ -42,7 +42,7 @@ def _build_error_response(status_code: int, detail: object, message: str | None 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     logger.warning("HTTPException raised", extra={"path": request.url.path, "status_code": exc.status_code})
     error = _build_error_response(status_code=exc.status_code, detail=exc.detail)
-    return JSONResponse(status_code=exc.status_code, content=error.model_dump())
+    return JSONResponse(status_code=exc.status_code, content=error.model_dump(by_alias=True))
 
 
 @app.exception_handler(RequestValidationError)
@@ -56,14 +56,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         extra={"path": request.url.path, "error_count": len(sanitized_errors)},
     )
     error = _build_error_response(status_code=422, detail=sanitized_errors, message="Validation Error")
-    return JSONResponse(status_code=422, content=error.model_dump())
+    return JSONResponse(status_code=422, content=error.model_dump(by_alias=True))
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled server error", exc_info=exc, extra={"path": request.url.path})
     error = _build_error_response(status_code=500, detail="Internal Server Error")
-    return JSONResponse(status_code=500, content=error.model_dump())
+    return JSONResponse(status_code=500, content=error.model_dump(by_alias=True))
 
 
 @app.get(
@@ -80,8 +80,11 @@ async def root() -> WelcomeResponse:
 app.include_router(health_router, prefix="")
 app.include_router(db_router, prefix="")
 app.include_router(auth_router, prefix="")
+app.include_router(auth_router, prefix="/api")
 app.include_router(api_keys_router, prefix="")
 app.include_router(detection_router, prefix="")
+app.include_router(detection_router, prefix="/api/scan")
+app.include_router(scan_router, prefix="")
 app.include_router(admin_router, prefix="")
 app.include_router(teams_router, prefix="")
 

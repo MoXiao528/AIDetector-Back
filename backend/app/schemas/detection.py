@@ -3,10 +3,12 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field, ConfigDict
+
+from app.schemas.base import SchemaBase
 
 
-class DetectionRequest(BaseModel):
+class DetectionRequest(SchemaBase):
     text: str = Field(
         ...,
         min_length=1,
@@ -20,7 +22,7 @@ class DetectionRequest(BaseModel):
     )
 
 
-class DetectionResponse(BaseModel):
+class DetectionResponse(SchemaBase):
     """
     单次检测的返回结果：
     - detection_id：后端内部检测记录的主键 ID
@@ -55,7 +57,7 @@ class DetectionResponse(BaseModel):
     )
 
 
-class DetectionItem(BaseModel):
+class DetectionItem(SchemaBase):
     id: int = Field(..., example=1)
     label: str = Field(..., example="ai")
     score: float = Field(..., ge=0, le=1, example=0.42)
@@ -86,11 +88,10 @@ class DetectionItem(BaseModel):
             meta_json=d.meta_json,
         )
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-class DetectionListResponse(BaseModel):
+class DetectionListResponse(SchemaBase):
     total: int = Field(..., example=23)
     page: int = Field(..., example=1)
     page_size: int = Field(..., example=10)

@@ -17,6 +17,7 @@ from app.services.detection_service import DetectionService
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 
 router = APIRouter(tags=["detections"])
+scan_router = APIRouter(prefix="/api/scan", tags=["scan"])
 
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
@@ -31,21 +32,11 @@ def _normalize_score(raw_score: float, threshold: float) -> float:
     return 1.0 / (1.0 + exp(-k * x))
 
 
-@router.post(
-    "/detect",
-    response_model=DetectionResponse,
-    summary="对文本进行检测（调用 RepreGuard 微服务）",
-    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
-)
-async def detect(
+async def _detect_impl(
     payload: DetectionRequest,
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> DetectionResponse:
-    """
-    调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
-    """
-
     if not payload.text.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -105,32 +96,31 @@ async def detect(
     )
 
 
-@router.get(
-    "/detections",
-    response_model=DetectionListResponse,
-    summary="分页查询检测记录",
+@router.post(
+    "/detect",
+    response_model=DetectionResponse,
+    summary="对文本进行检测（调用 RepreGuard 微服务）",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
-async def list_detections(
+async def detect(
+    payload: DetectionRequest,
     db: SessionDep,
     current_user: ActiveMemberDep,
-    page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
-    from_time: datetime | None = Query(
-        None,
-        alias="from",
-        description="开始时间，ISO8601",
-    ),
-    to_time: datetime | None = Query(
-        None,
-        alias="to",
-        description="结束时间，ISO8601",
-    ),
-) -> DetectionListResponse:
+) -> DetectionResponse:
     """
-    按用户分页查询检测记录。
+    调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
     """
+    return await _detect_impl(payload=payload, db=db, current_user=current_user)
 
+
+async def _list_detections_impl(
+    db: SessionDep,
+    current_user: ActiveMemberDep,
+    page: int,
+    page_size: int,
+    from_time: datetime | None,
+    to_time: datetime | None,
+) -> DetectionListResponse:
     if from_time and to_time and from_time > to_time:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -163,4 +153,71 @@ async def list_detections(
         page=page,
         page_size=page_size,
         items=items,
+    )
+
+
+@router.get(
+    "/detections",
+    response_model=DetectionListResponse,
+    summary="分页查询检测记录",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def list_detections(
+    db: SessionDep,
+    current_user: ActiveMemberDep,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
+    from_time: datetime | None = Query(
+        None,
+        alias="from",
+        description="开始时间，ISO8601",
+    ),
+    to_time: datetime | None = Query(
+        None,
+        alias="to",
+        description="结束时间，ISO8601",
+    ),
+) -> DetectionListResponse:
+    """
+    按用户分页查询检测记录。
+    """
+    return await _list_detections_impl(
+        db=db,
+        current_user=current_user,
+        page=page,
+        page_size=page_size,
+        from_time=from_time,
+        to_time=to_time,
+    )
+
+
+@scan_router.get(
+    "/history",
+    response_model=DetectionListResponse,
+    summary="分页查询检测记录（兼容 /api/scan/history）",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def list_detections_history(
+    db: SessionDep,
+    current_user: ActiveMemberDep,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
+    from_time: datetime | None = Query(
+        None,
+        alias="from",
+        description="开始时间，ISO8601",
+    ),
+    to_time: datetime | None = Query(
+        None,
+        alias="to",
+        description="结束时间，ISO8601",
+    ),
+) -> DetectionListResponse:
+    return await _list_detections_impl(
+        db=db,
+        current_user=current_user,
+        page=page,
+        page_size=page_size,
+        from_time=from_time,
+        to_time=to_time,
     )
