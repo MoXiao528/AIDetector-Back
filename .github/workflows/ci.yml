@@ -21,6 +21,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install openapi-spec-validator
+
+      - name: Validate OpenAPI contract
+        run: python -m openapi_spec_validator contract/openapi.yaml
 
       - name: Lint
         working-directory: backend
