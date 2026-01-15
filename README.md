@@ -57,6 +57,12 @@ docker compose up -d --build
 docker compose exec api alembic upgrade head
 ```
 
+如需生成新的迁移文件（模型变更后）：
+
+```bash
+docker compose exec api alembic revision --autogenerate -m "describe changes"
+```
+
 ---
 
 ## 🧪 完整业务流程测试 (PowerShell)
