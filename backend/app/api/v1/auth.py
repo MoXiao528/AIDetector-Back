@@ -21,29 +21,31 @@ settings = get_settings()
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def register_user(payload: RegisterRequest, db: SessionDep) -> UserResponse:
-    if payload.username and "@" in payload.username:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "AUTH_USERNAME_INVALID",
-                "message": "Invalid username",
-                "detail": "Username must not contain '@'",
-            },
-        )
+    name_value = payload.name.strip() if payload.name and payload.name.strip() else payload.email
     existing_user = db.scalar(select(User).where(User.email == payload.email))
     if existing_user:
-        raise HTTPException(status_code=409, detail="Email already registered")
-    if payload.username:
-        existing_username = db.scalar(select(User).where(User.username == payload.username))
-        if existing_username:
-            raise HTTPException(status_code=409, detail="Username already registered")
-
-    display_name = payload.name or payload.email.split("@", maxsplit=1)[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "AUTH_EMAIL_EXISTS",
+                "message": "Email already registered",
+                "detail": "Email already registered",
+            },
+        )
+    existing_name = db.scalar(select(User).where(User.name == name_value))
+    if existing_name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "AUTH_NAME_EXISTS",
+                "message": "Name already registered",
+                "detail": "Name already registered",
+            },
+        )
 
     user = User(
         email=payload.email,
-        username=payload.username,
-        name=display_name,
+        name=name_value,
         password_hash=get_password_hash(payload.password),
     )
     db.add(user)
@@ -59,20 +61,10 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
     responses={401: {"model": ErrorResponse}},
 )
 async def login(payload: LoginRequest, db: SessionDep) -> Token:
-    identifier = payload.identifier or payload.email
-    if identifier is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "AUTH_USER_NOT_FOUND",
-                "message": "User not found",
-                "detail": "User not found",
-            },
-        )
-    if "@" in identifier:
-        user = db.scalar(select(User).where(User.email == identifier))
+    if "@" in payload.identifier:
+        user = db.scalar(select(User).where(User.email == payload.identifier))
     else:
-        user = db.scalar(select(User).where(User.username == identifier))
+        user = db.scalar(select(User).where(User.name == payload.identifier))
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

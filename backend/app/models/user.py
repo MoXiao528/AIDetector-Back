@@ -21,8 +21,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    username: Mapped[str | None] = mapped_column(String(150), unique=True, index=True, nullable=True)
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_role: Mapped[str | None] = mapped_column(String(255), nullable=True)

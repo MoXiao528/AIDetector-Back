@@ -8,8 +8,9 @@ from app.schemas.auth import LoginRequest, RegisterRequest
 async def test_register_login_and_me(db_session, unique_email):
     created_user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     assert created_user.email == unique_email
+    assert created_user.name == unique_email
 
-    token_resp = await login(LoginRequest(email=unique_email, password="StrongPass!23"), db_session)
+    token_resp = await login(LoginRequest(identifier=unique_email, password="StrongPass!23"), db_session)
     assert token_resp.token_type == "bearer"
     assert token_resp.access_token
 
