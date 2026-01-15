@@ -21,6 +21,15 @@ settings = get_settings()
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def register_user(payload: RegisterRequest, db: SessionDep) -> UserResponse:
+    if payload.username and "@" in payload.username:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "AUTH_USERNAME_INVALID",
+                "message": "Invalid username",
+                "detail": "Username must not contain '@'",
+            },
+        )
     existing_user = db.scalar(select(User).where(User.email == payload.email))
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
