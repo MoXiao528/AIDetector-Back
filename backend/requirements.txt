@@ -12,3 +12,5 @@ pydantic[email]
 pytest
 ruff
 httpx
+pypdf
+python-docx

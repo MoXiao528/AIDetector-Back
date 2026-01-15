@@ -383,22 +383,25 @@ components:
     ParseFilesResponse:
       type: object
       required:
-        - items
+        - results
       properties:
-        items:
+        results:
           type: array
           items:
             $ref: '#/components/schemas/ParsedFile'
     ParsedFile:
       type: object
       required:
-        - filename
-        - text
+        - fileName
       properties:
-        filename:
+        fileName:
           type: string
-        text:
+        content:
           type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
     OrderCreateRequest:
       type: object
       required:
