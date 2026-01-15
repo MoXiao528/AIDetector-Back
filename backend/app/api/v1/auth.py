@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.config import get_settings
 from app.core.security import create_access_token, get_password_hash, verify_password
@@ -21,11 +21,19 @@ settings = get_settings()
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def register_user(payload: RegisterRequest, db: SessionDep) -> UserResponse:
-    existing_user = db.scalar(select(User).where(User.email == payload.email))
+    filters = [User.email == payload.email]
+    if payload.username:
+        filters.append(User.username == payload.username)
+    existing_user = db.scalar(select(User).where(or_(*filters)))
     if existing_user:
-        raise HTTPException(status_code=409, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email or username already registered")
 
-    user = User(email=payload.email, password_hash=get_password_hash(payload.password))
+    user = User(
+        email=payload.email,
+        username=payload.username,
+        name=payload.name,
+        password_hash=get_password_hash(payload.password),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -39,9 +47,9 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
     responses={401: {"model": ErrorResponse}},
 )
 async def login(payload: LoginRequest, db: SessionDep) -> Token:
-    user = db.scalar(select(User).where(User.email == payload.email))
+    user = db.scalar(select(User).where(or_(User.email == payload.identifier, User.username == payload.identifier)))
     if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect identifier or password")
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(subject=str(user.id), expires_delta=access_token_expires)

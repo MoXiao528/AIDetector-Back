@@ -2,18 +2,20 @@
 
 from datetime import datetime
 
-from pydantic import EmailStr, Field
+from pydantic import Field
 
 from app.schemas.base import SchemaBase
 
 
 class RegisterRequest(SchemaBase):
-    email: EmailStr = Field(..., example="user@example.com")
+    email: str = Field(..., example="user@example.com")
+    username: str | None = Field(default=None, example="apollo")
+    name: str = Field(..., example="Alex Chen")
     password: str = Field(..., min_length=8, example="StrongPass!23")
 
 
 class LoginRequest(SchemaBase):
-    email: EmailStr = Field(..., example="user@example.com")
+    identifier: str = Field(..., example="user@example.com")
     password: str = Field(..., min_length=8, example="StrongPass!23")
 
 
