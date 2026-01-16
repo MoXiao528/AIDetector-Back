@@ -17,3 +17,12 @@ async def test_register_login_and_me(db_session, unique_email):
     me = await read_current_user(current_user=created_user)
     assert me.email == unique_email
     assert getattr(me.role, "value", me.role) == "INDIVIDUAL"
+
+
+@pytest.mark.anyio
+async def test_register_allows_name_with_at_symbol(db_session, unique_email):
+    created_user = await register_user(
+        RegisterRequest(email=unique_email, password="StrongPass!23", name="abc@def"),
+        db_session,
+    )
+    assert created_user.name == "abc@def"
