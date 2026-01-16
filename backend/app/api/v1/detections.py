@@ -6,8 +6,8 @@ from math import exp
 from io import BytesIO
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from docx import Document
-from pypdf import PdfReader
+from docx import Document  # Requires python-docx package.
+from pypdf import PdfReader  # Requires pypdf package.
 
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import (
@@ -95,6 +95,7 @@ async def _detect_impl(
         user_id=current_user.id,
         text=payload.text,
         options=options,
+        functions_used=payload.functions or None,
         label=label.lower(),
         score=normalized_score,
     )
@@ -168,7 +169,7 @@ def _extension_from_filename(filename: str) -> str:
 
 
 @router.post(
-    "/detect",
+    "/",
     response_model=DetectionResponse,
     summary="对文本进行检测（调用 RepreGuard 微服务）",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
@@ -209,7 +210,7 @@ async def detect_scan(
 
     if "scan" in functions:
         await _detect_impl(
-            payload=DetectionRequest(text=payload.text, options=None),
+            payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
         )
@@ -217,7 +218,7 @@ async def detect_scan(
     return _build_analysis_response(text=payload.text, functions=functions)
 
 
-@scan_router.post(
+@router.post(
     "/parse-files",
     response_model=ParseFilesResponse,
     summary="解析上传文件内容（pdf/docx/txt）",
@@ -329,7 +330,7 @@ async def _list_detections_impl(
 
 
 @router.get(
-    "/detections",
+    "/",
     response_model=DetectionListResponse,
     summary="分页查询检测记录",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
