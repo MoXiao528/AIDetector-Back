@@ -11,13 +11,7 @@ from app.schemas.api_key import (
 from app.schemas.admin import AdminStatusResponse
 from app.schemas.analysis import AnalysisResponse, Citation, DetectRequest, SentenceAnalysis
 from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
-from app.schemas.detection import (
-    DetectionCreate,
-    DetectionItem,
-    DetectionListResponse,
-    DetectionRequest,
-    DetectionResponse,
-)
+from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
 from app.schemas.user import UserBase, UserCreate, UserProfile, UserProfileUpdate, UserResponse
@@ -41,7 +35,6 @@ __all__ = [
     "AdminStatusResponse",
     "AnalysisResponse",
     "Citation",
-    "DetectionCreate",
     "DetectionItem",
     "DetectionListResponse",
     "DetectionRequest",

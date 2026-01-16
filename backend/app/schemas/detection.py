@@ -15,18 +15,15 @@ class DetectionRequest(SchemaBase):
         max_length=20000,
         example="Sample text to classify.",
     )
-    options: dict[str, Any] | None = Field(
-        default=None,
-        description="可选的检测参数（例如语言、模型选择等），后端可用来路由到不同检测模型。",
-        example={"language": "en"},
-    )
-
-
-class DetectionCreate(DetectionRequest):
     functions: list[str] = Field(
         default_factory=list,
         description="检测时启用的功能列表。",
         example=["scan", "polish"],
+    )
+    options: dict[str, Any] | None = Field(
+        default=None,
+        description="可选的检测参数（例如语言、模型选择等），后端可用来路由到不同检测模型。",
+        example={"language": "en"},
     )
 
 

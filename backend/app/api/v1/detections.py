@@ -14,8 +14,8 @@ from app.schemas import (
     AnalysisResponse,
     Citation,
     DetectRequest,
-    DetectionCreate,
     DetectionListResponse,
+    DetectionRequest,
     DetectionResponse,
     ErrorResponse,
     ParseFilesResponse,
@@ -47,7 +47,7 @@ def _normalize_score(raw_score: float, threshold: float) -> float:
 
 
 async def _detect_impl(
-    payload: DetectionCreate,
+    payload: DetectionRequest,
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> DetectionResponse:
@@ -175,7 +175,7 @@ def _extension_from_filename(filename: str) -> str:
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def detect(
-    payload: DetectionCreate,
+    payload: DetectionRequest,
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> DetectionResponse:
@@ -210,7 +210,7 @@ async def detect_scan(
 
     if "scan" in functions:
         await _detect_impl(
-            payload=DetectionCreate(text=payload.text, options=None, functions=list(functions)),
+            payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
         )

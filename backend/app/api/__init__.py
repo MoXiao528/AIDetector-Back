@@ -11,7 +11,7 @@ API 总路由聚合入口。
 
 from fastapi import APIRouter
 
-from app.api.v1 import router as v1_router
+from app.api.v1 import api_router as v1_router
 
 router = APIRouter()
 

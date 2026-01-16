@@ -5,15 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1.auth import router as auth_router
-from app.api.v1.db import router as db_router
-from app.api.v1.health import router as health_router
-from app.api.v1.keys import router as api_keys_router
-from app.api.v1.detections import router as detection_router, scan_router as scan_router
-from app.api.v1.admin import router as admin_router
-from app.api.v1.teams import router as teams_router
-# 如果你未来想用聚合 router，可以改成：
-# from app.api import router as api_router
+from app.api import router as api_router
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -78,17 +70,5 @@ async def root() -> WelcomeResponse:
     return WelcomeResponse(message="Welcome to AIDetector API")
 
 
-# 方式一：像现在这样，一个个挂载 v1 子路由（你已经在用的方式）
-app.include_router(health_router, prefix="")
-app.include_router(db_router, prefix="")
-app.include_router(auth_router, prefix="")
-app.include_router(auth_router, prefix="/api")
-app.include_router(api_keys_router, prefix="")
-app.include_router(detection_router, prefix="")
-app.include_router(scan_router, prefix="")
-app.include_router(admin_router, prefix="")
-app.include_router(teams_router, prefix="")
-
-# 方式二（可选）：改用聚合 router（使用上面 api/__init__.py 和 api/v1/__init__.py）：
-# from app.api import router as api_router
-# app.include_router(api_router, prefix="")
+# 使用聚合 router 统一挂载 v1 子路由，避免路径冲突。
+app.include_router(api_router, prefix="/api/v1")
