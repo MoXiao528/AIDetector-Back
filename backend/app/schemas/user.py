@@ -9,6 +9,7 @@ from app.core.roles import UserRole
 
 class UserBase(SchemaBase):
     email: EmailStr = Field(..., example="user@example.com")
+    name: str = Field(..., example="henry_zhan")
     role: UserRole = Field(default=UserRole.INDIVIDUAL, example=UserRole.INDIVIDUAL)
     is_active: bool = Field(default=True, example=True)
 
