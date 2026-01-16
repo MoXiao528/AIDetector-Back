@@ -57,3 +57,7 @@ class User(Base):
             "role": self.job_role,
             "industry": self.industry,
         }
+
+    @property
+    def credits(self) -> int:
+        return self.credits_total - self.credits_used

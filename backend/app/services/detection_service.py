@@ -67,6 +67,7 @@ class DetectionService:
         score: float | None = None,
         label: str | None = None,
         functions_used: list[str] | None = None,
+        commit: bool = True,
     ) -> Detection:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
@@ -95,8 +96,12 @@ class DetectionService:
         )
 
         self.db.add(detection)
-        self.db.commit()
-        self.db.refresh(detection)
+        if commit:
+            self.db.commit()
+            self.db.refresh(detection)
+        else:
+            self.db.flush()
+            self.db.refresh(detection)
         return detection
 
     def list_detections(
