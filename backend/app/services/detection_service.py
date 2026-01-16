@@ -59,8 +59,15 @@ class DetectionService:
             sanitized[normalized_key] = "***" if normalized_key in redacted_keys else value
         return sanitized
 
-    def create_detection(self, user_id: int, text: str, options: Mapping[str, Any] | None = None, score: float | None = None,
-        label: str | None = None) -> Detection:
+    def create_detection(
+        self,
+        user_id: int,
+        text: str,
+        options: Mapping[str, Any] | None = None,
+        score: float | None = None,
+        label: str | None = None,
+        functions_used: list[str] | None = None,
+    ) -> Detection:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
             detection_result = self._heuristic_score(text)
@@ -83,6 +90,7 @@ class DetectionService:
             input_text=text,
             result_label=final_label,
             score=final_score,
+            functions_used=functions_used,
             meta_json=merged_meta,
         )
 

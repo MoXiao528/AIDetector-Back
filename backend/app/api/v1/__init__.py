@@ -19,13 +19,13 @@ from app.api.v1.teams import router as teams_router
 
 router = APIRouter()
 
-# 目前各模块的路径本身已经是完整的（例如 /auth/login, /detect, /detections 等），
-# 因此这里 prefix 统一设为 "" 即可。
+# 目前大多数模块的路径本身已经是完整的（例如 /auth/login, /detect 等），
+# 因此这里 prefix 统一设为 "" 即可；detections 相关路由按需增加 /detections 前缀。
 router.include_router(health_router, prefix="")
 router.include_router(db_router, prefix="")
 router.include_router(auth_router, prefix="")
 router.include_router(api_keys_router, prefix="")
-router.include_router(detections_router, prefix="")
+router.include_router(detections_router, prefix="/detections", tags=["detections"])
 router.include_router(admin_router, prefix="")
 router.include_router(teams_router, prefix="")
 

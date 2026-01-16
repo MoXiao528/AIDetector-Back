@@ -22,6 +22,14 @@ class DetectionRequest(SchemaBase):
     )
 
 
+class DetectionCreate(DetectionRequest):
+    functions: list[str] = Field(
+        default_factory=list,
+        description="检测时启用的功能列表。",
+        example=["scan", "polish"],
+    )
+
+
 class DetectionResponse(SchemaBase):
     """
     单次检测的返回结果：

@@ -14,8 +14,8 @@ from app.schemas import (
     AnalysisResponse,
     Citation,
     DetectRequest,
+    DetectionCreate,
     DetectionListResponse,
-    DetectionRequest,
     DetectionResponse,
     ErrorResponse,
     ParseFilesResponse,
@@ -47,7 +47,7 @@ def _normalize_score(raw_score: float, threshold: float) -> float:
 
 
 async def _detect_impl(
-    payload: DetectionRequest,
+    payload: DetectionCreate,
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> DetectionResponse:
@@ -95,6 +95,7 @@ async def _detect_impl(
         user_id=current_user.id,
         text=payload.text,
         options=options,
+        functions_used=payload.functions or None,
         label=label.lower(),
         score=normalized_score,
     )
@@ -174,7 +175,7 @@ def _extension_from_filename(filename: str) -> str:
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def detect(
-    payload: DetectionRequest,
+    payload: DetectionCreate,
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> DetectionResponse:
@@ -209,7 +210,7 @@ async def detect_scan(
 
     if "scan" in functions:
         await _detect_impl(
-            payload=DetectionRequest(text=payload.text, options=None),
+            payload=DetectionCreate(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
         )
@@ -329,7 +330,7 @@ async def _list_detections_impl(
 
 
 @router.get(
-    "/detections",
+    "/",
     response_model=DetectionListResponse,
     summary="分页查询检测记录",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
