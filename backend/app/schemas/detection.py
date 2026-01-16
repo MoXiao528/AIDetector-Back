@@ -60,7 +60,7 @@ class DetectionResponse(SchemaBase):
         example=2.4924452377944597,
         description="当前模型使用的分类阈值（例如 RepreGuard 的判别阈值）。",
     )
-    currentCredits: int = Field(..., example=9990, description="当前剩余点数。")
+    currentCredits: int = Field(..., example=9990, description="Remaining credits after deduction")
 
 
 class DetectionItem(SchemaBase):
