@@ -6,8 +6,8 @@ from math import exp
 from io import BytesIO
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from docx import Document
-from pypdf import PdfReader
+from docx import Document  # Requires python-docx package.
+from pypdf import PdfReader  # Requires pypdf package.
 
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import (
@@ -218,7 +218,7 @@ async def detect_scan(
     return _build_analysis_response(text=payload.text, functions=functions)
 
 
-@scan_router.post(
+@router.post(
     "/parse-files",
     response_model=ParseFilesResponse,
     summary="解析上传文件内容（pdf/docx/txt）",
