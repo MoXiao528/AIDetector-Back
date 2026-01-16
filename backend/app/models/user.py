@@ -25,6 +25,8 @@ class User(Base):
     organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    surname: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         SqlEnum(UserRole, name="user_role", values_callable=lambda enum: [e.value for e in enum]),
@@ -45,3 +47,13 @@ class User(Base):
     team_memberships: Mapped[list["TeamMember"]] = relationship(
         "TeamMember", back_populates="user", cascade="all, delete-orphan"
     )
+
+    @property
+    def profile(self) -> dict[str, str | None]:
+        return {
+            "firstName": self.first_name,
+            "surname": self.surname,
+            "organization": self.organization,
+            "role": self.job_role,
+            "industry": self.industry,
+        }

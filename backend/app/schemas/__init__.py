@@ -14,7 +14,7 @@ from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
-from app.schemas.user import UserBase, UserCreate, UserResponse
+from app.schemas.user import UserBase, UserCreate, UserProfile, UserProfileUpdate, UserResponse
 from app.schemas.team import (
     TeamCreateRequest,
     TeamMemberCreateRequest,
@@ -58,6 +58,8 @@ __all__ = [
     "ParsedFileResult",
     "UserBase",
     "UserCreate",
+    "UserProfile",
+    "UserProfileUpdate",
     "UserResponse",
     "UserRole",
     "WelcomeResponse",

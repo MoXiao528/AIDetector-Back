@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.db.deps import CurrentUserDep, SessionDep
 from app.models.user import User
-from app.schemas import ErrorResponse, LoginRequest, RegisterRequest, Token, UserResponse
+from app.schemas import ErrorResponse, LoginRequest, RegisterRequest, Token, UserProfileUpdate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -96,4 +96,31 @@ async def login(payload: LoginRequest, db: SessionDep) -> Token:
     responses={401: {"model": ErrorResponse}},
 )
 async def read_current_user(current_user: CurrentUserDep) -> UserResponse:
+    return current_user
+
+
+@router.patch(
+    "/me/profile",
+    response_model=UserResponse,
+    summary="更新当前用户个人资料",
+    responses={401: {"model": ErrorResponse}},
+)
+async def update_current_user_profile(
+    payload: UserProfileUpdate,
+    current_user: CurrentUserDep,
+    db: SessionDep,
+) -> UserResponse:
+    if payload.firstName is not None:
+        current_user.first_name = payload.firstName
+    if payload.surname is not None:
+        current_user.surname = payload.surname
+    if payload.role is not None:
+        current_user.job_role = payload.role
+    if payload.organization is not None:
+        current_user.organization = payload.organization
+    if payload.industry is not None:
+        current_user.industry = payload.industry
+
+    db.commit()
+    db.refresh(current_user)
     return current_user
