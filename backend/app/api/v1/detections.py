@@ -169,7 +169,7 @@ def _extension_from_filename(filename: str) -> str:
 
 
 @router.post(
-    "/detect",
+    "/",
     response_model=DetectionResponse,
     summary="对文本进行检测（调用 RepreGuard 微服务）",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
