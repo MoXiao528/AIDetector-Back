@@ -32,3 +32,4 @@ class AnalysisResponse(SchemaBase):
     polish: str | None = Field(default=None, example="Polished text output.")
     translation: str | None = Field(default=None, example="Translated text output.")
     citations: list[Citation] | None = Field(default=None)
+    currentCredits: int = Field(..., example=9990, description="Remaining credits after deduction")

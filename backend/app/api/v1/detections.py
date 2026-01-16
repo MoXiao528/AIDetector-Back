@@ -6,10 +6,12 @@ from math import exp
 from io import BytesIO
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import select
 from docx import Document  # Requires python-docx package.
 from pypdf import PdfReader  # Requires pypdf package.
 
 from app.db.deps import ActiveMemberDep, SessionDep
+from app.models.user import User
 from app.schemas import (
     AnalysisResponse,
     Citation,
@@ -32,6 +34,7 @@ scan_router = APIRouter(prefix="/api/scan", tags=["scan"])
 MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+COST_PER_DETECTION = 1
 
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
@@ -91,6 +94,25 @@ async def _detect_impl(
         }
     )
 
+    locked_user = db.scalar(select(User).where(User.id == current_user.id).with_for_update())
+    if locked_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "USER_NOT_FOUND", "message": "User not found"},
+        )
+
+    remaining = locked_user.credits_total - locked_user.credits_used
+    if remaining < COST_PER_DETECTION:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "INSUFFICIENT_CREDITS",
+                "message": "Insufficient credits",
+            },
+        )
+
+    locked_user.credits_used += COST_PER_DETECTION
+
     detection = service.create_detection(
         user_id=current_user.id,
         text=payload.text,
@@ -98,7 +120,11 @@ async def _detect_impl(
         functions_used=payload.functions or None,
         label=label.lower(),
         score=normalized_score,
+        commit=False,
     )
+    db.commit()
+    db.refresh(detection)
+    current_credits = locked_user.credits_total - locked_user.credits_used
 
     # 4) 对客户端返回统一结构
     return DetectionResponse(
@@ -108,10 +134,11 @@ async def _detect_impl(
         model_name=model_name,
         raw_score=raw_score,
         threshold=threshold,
+        currentCredits=current_credits,
     )
 
 
-def _build_analysis_response(text: str, functions: set[str]) -> AnalysisResponse:
+def _build_analysis_response(text: str, functions: set[str], current_credits: int) -> AnalysisResponse:
     sentences_raw = [segment.strip() for segment in text.split(".") if segment.strip()]
     if not sentences_raw:
         sentences_raw = [text.strip()]
@@ -143,6 +170,7 @@ def _build_analysis_response(text: str, functions: set[str]) -> AnalysisResponse
         polish=polish,
         translation=translation,
         citations=citations,
+        currentCredits=current_credits,
     )
 
 
@@ -209,13 +237,17 @@ async def detect_scan(
         )
 
     if "scan" in functions:
-        await _detect_impl(
+        detection_response = await _detect_impl(
             payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
         )
 
-    return _build_analysis_response(text=payload.text, functions=functions)
+    return _build_analysis_response(
+        text=payload.text,
+        functions=functions,
+        current_credits=detection_response.currentCredits,
+    )
 
 
 @router.post(
