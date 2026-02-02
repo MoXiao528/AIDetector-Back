@@ -1,16 +1,17 @@
 # backend/app/api/v1/detections.py
 
-from datetime import datetime
+from datetime import datetime, timezone
 from math import exp
 
 from io import BytesIO
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from sqlalchemy import func, select
 from docx import Document  # Requires python-docx package.
 from pypdf import PdfReader  # Requires pypdf package.
 
-from app.db.deps import ActiveMemberDep, SessionDep
+from app.db.deps import ActiveMemberDep, OptionalUserDep, SessionDep
+from app.models.detection import Detection
 from app.models.user import User
 from app.schemas import (
     AnalysisResponse,
@@ -52,13 +53,44 @@ def _normalize_score(raw_score: float, threshold: float) -> float:
 async def _detect_impl(
     payload: DetectionRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_user: User | None,
+    request: Request,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Text cannot be empty",
         )
+
+    client_ip = request.client.host if request.client else "unknown"
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    usage_query = select(func.sum(func.length(Detection.input_text))).where(
+        Detection.created_at >= today_start
+    )
+    if current_user:
+        usage_query = usage_query.where(Detection.user_id == current_user.id)
+    else:
+        usage_query = usage_query.where(Detection.ip_address == client_ip)
+
+    current_usage = db.scalar(usage_query) or 0
+    request_length = len(payload.text)
+
+    if current_user is None:
+        daily_limit = 5000
+        if current_usage + request_length > daily_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Daily guest limit exceeded",
+            )
+    else:
+        daily_limit = 30000
+        if current_usage + request_length > daily_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Daily user limit exceeded",
+            )
+
+    daily_usage = current_usage + request_length
 
     # 1) 调用 RepreGuard 微服务拿原始结果
     try:
@@ -94,27 +126,29 @@ async def _detect_impl(
         }
     )
 
-    locked_user = db.scalar(select(User).where(User.id == current_user.id).with_for_update())
-    if locked_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "USER_NOT_FOUND", "message": "User not found"},
-        )
-
-    remaining = locked_user.credits_total - locked_user.credits_used
-    if remaining < COST_PER_DETECTION:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_CREDITS",
-                "message": "Insufficient credits",
-            },
-        )
-
-    locked_user.credits_used += COST_PER_DETECTION
+    # --- TEMPORARILY DISABLED FOR MVP ---
+    # locked_user = db.scalar(select(User).where(User.id == current_user.id).with_for_update())
+    # if locked_user is None:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_404_NOT_FOUND,
+    #         detail={"code": "USER_NOT_FOUND", "message": "User not found"},
+    #     )
+    #
+    # remaining = locked_user.credits_total - locked_user.credits_used
+    # if remaining < COST_PER_DETECTION:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_402_PAYMENT_REQUIRED,
+    #         detail={
+    #             "code": "INSUFFICIENT_CREDITS",
+    #             "message": "Insufficient credits",
+    #         },
+    #     )
+    #
+    # locked_user.credits_used += COST_PER_DETECTION
 
     detection = service.create_detection(
-        user_id=current_user.id,
+        user_id=current_user.id if current_user else None,
+        ip_address=client_ip,
         text=payload.text,
         options=options,
         functions_used=payload.functions or None,
@@ -124,7 +158,7 @@ async def _detect_impl(
     )
     db.commit()
     db.refresh(detection)
-    current_credits = locked_user.credits_total - locked_user.credits_used
+    current_credits = None
 
     # 4) 对客户端返回统一结构
     return DetectionResponse(
@@ -134,6 +168,8 @@ async def _detect_impl(
         model_name=model_name,
         raw_score=raw_score,
         threshold=threshold,
+        daily_usage=daily_usage,
+        daily_limit=daily_limit,
         currentCredits=current_credits,
     )
 
@@ -205,12 +241,13 @@ def _extension_from_filename(filename: str) -> str:
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    request: Request,
+    current_user: OptionalUserDep,
 ) -> DetectionResponse:
     """
     调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
     """
-    return await _detect_impl(payload=payload, db=db, current_user=current_user)
+    return await _detect_impl(payload=payload, db=db, current_user=current_user, request=request)
 
 
 @scan_router.post(
@@ -222,7 +259,8 @@ async def detect(
 async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    request: Request,
+    current_user: OptionalUserDep,
 ) -> AnalysisResponse:
     functions = set(payload.functions or [])
     if not functions:
@@ -241,12 +279,13 @@ async def detect_scan(
             payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
+            request=request,
         )
 
     return _build_analysis_response(
         text=payload.text,
         functions=functions,
-        current_credits=detection_response.currentCredits,
+        current_credits=detection_response.currentCredits or 0,
     )
 
 

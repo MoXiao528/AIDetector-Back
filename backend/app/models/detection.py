@@ -23,7 +23,11 @@ class Detection(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     editor_html: Mapped[str | None] = mapped_column(Text, nullable=True)

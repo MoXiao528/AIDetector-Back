@@ -98,6 +98,75 @@ def get_current_user(
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
 
 
+def get_optional_user(
+    db: SessionDep, token: TokenDep, api_key_header: APIKeyHeaderDep = None
+) -> User | None:
+    if api_key_header:
+        key_hash = hash_api_key(api_key_header)
+        api_key = db.scalar(
+            select(APIKey).where(APIKey.key_hash == key_hash, APIKey.status == APIKeyStatus.ACTIVE)
+        )
+        if api_key is None or api_key.user is None or not api_key.user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+                headers={"WWW-Authenticate": "API-Key"},
+            )
+
+        api_key.last_used_at = datetime.now(timezone.utc)
+        db.add(api_key)
+        db.commit()
+        return api_key.user
+
+    if token is None:
+        return None
+
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        token_data = TokenPayload(**payload)
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (jwt.InvalidTokenError, ValidationError) as exc:  # pragma: no cover - JWT 库内部异常
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    if token_data.sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_id = int(token_data.sub)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - 非数字 sub
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Inactive or invalid user",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+OptionalUserDep = Annotated[User | None, Depends(get_optional_user)]
+
+
 def require_roles(allowed_roles: list[UserRole]):
     """基于角色的依赖封装。"""
 

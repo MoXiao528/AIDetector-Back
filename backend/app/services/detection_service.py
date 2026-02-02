@@ -61,12 +61,13 @@ class DetectionService:
 
     def create_detection(
         self,
-        user_id: int,
+        user_id: int | None,
         text: str,
         options: Mapping[str, Any] | None = None,
         score: float | None = None,
         label: str | None = None,
         functions_used: list[str] | None = None,
+        ip_address: str | None = None,
         commit: bool = True,
     ) -> Detection:
         # 如果外部没传，用启发式兜底
@@ -88,6 +89,7 @@ class DetectionService:
 
         detection = Detection(
             user_id=user_id,
+            ip_address=ip_address,
             input_text=text,
             result_label=final_label,
             score=final_score,
