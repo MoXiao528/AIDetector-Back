@@ -1,8 +1,12 @@
 import pytest
 
 from app.api.v1.auth import register_user
+from fastapi import HTTPException
+
 from app.api.v1.detections import detect, list_detections
-from app.db.deps import ActorContext
+from app.api.v1.keys import create_api_key
+from app.db.deps import ActorContext, get_current_actor
+from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
 from app.services.repre_guard_client import repre_guard_client
@@ -61,3 +65,32 @@ async def test_detect_with_guest(db_session):
     assert detection.detection_id > 0
     assert detection.label in {"human", "ai"}
     assert 0 <= detection.score <= 1
+
+
+@pytest.mark.anyio
+async def test_detect_with_api_key_actor(db_session, unique_email):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    api_key_resp = await create_api_key(
+        payload=APIKeyCreateRequest(name="Detect Key"),
+        db=db_session,
+        current_user=user,
+    )
+
+    actor = get_current_actor(db=db_session, token=None, api_key_header=api_key_resp.key)
+    detection = await detect(payload=DetectionRequest(text="Short text"), db=db_session, current_actor=actor)
+    assert detection.detection_id > 0
+    assert detection.label in {"human", "ai"}
+
+
+@pytest.mark.anyio
+async def test_invalid_bearer_does_not_fallback_to_api_key(db_session, unique_email):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    api_key_resp = await create_api_key(
+        payload=APIKeyCreateRequest(name="Detect Key"),
+        db=db_session,
+        current_user=user,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_actor(db=db_session, token="invalid-token", api_key_header=api_key_resp.key)
+    assert exc_info.value.status_code == 401

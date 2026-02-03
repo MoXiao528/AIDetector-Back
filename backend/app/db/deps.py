@@ -124,8 +124,15 @@ def _decode_token(token: str) -> TokenPayload:
         ) from exc
 
 
-def get_current_actor(db: SessionDep, token: TokenDep) -> ActorContext:
+def get_current_actor(
+    db: SessionDep,
+    token: TokenDep,
+    api_key_header: APIKeyHeaderDep = None,
+) -> ActorContext:
     if token is None:
+        if api_key_header:
+            user = get_current_user(db=db, token=None, api_key_header=api_key_header)
+            return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
