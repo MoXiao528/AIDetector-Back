@@ -76,7 +76,7 @@ docker compose exec api alembic revision --autogenerate -m "describe changes"
 确保服务已启动且数据库连接正常。
 
 ```powershell
-$BaseUrl = "http://localhost:8000"
+$BaseUrl = "http://localhost:8000/api/v1"
 
 # 1. 服务健康检查
 Write-Host "--- 1. Health Check ---"
@@ -97,7 +97,7 @@ Invoke-RestMethod -Uri "$BaseUrl/db/ping" -Method Get
 # 3. 注册新用户
 Write-Host "--- 3. Register User ---"
 $UserEmail = "test_user_$(Get-Random)@example.com"
-$Body = @{ email = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
+$Body = @{ email = $UserEmail; name = "PS Test $(Get-Random)"; password = "StrongPass!23" } | ConvertTo-Json
 try {
     Invoke-RestMethod -Uri "$BaseUrl/auth/register" -Method Post -Body $Body -ContentType "application/json"
     Write-Host "用户 $UserEmail 注册成功" -ForegroundColor Green
@@ -108,7 +108,8 @@ try {
 # 4. 登录并保存 Token
 Write-Host "--- 4. Login ---"
 try {
-    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $Body -ContentType "application/json"
+    $LoginBody = @{ identifier = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
+    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $LoginBody -ContentType "application/json"
     $Token = $LoginResponse.access_token
     $Headers = @{ Authorization = "Bearer $Token" }
     Write-Host "Token 获取成功" -ForegroundColor Green
