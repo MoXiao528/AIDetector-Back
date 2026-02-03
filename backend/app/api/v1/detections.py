@@ -6,12 +6,10 @@ from math import exp
 from io import BytesIO
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import select
 from docx import Document  # Requires python-docx package.
 from pypdf import PdfReader  # Requires pypdf package.
 
-from app.db.deps import ActiveMemberDep, SessionDep
-from app.models.user import User
+from app.db.deps import ActiveMemberDep, CurrentActorDep, SessionDep
 from app.schemas import (
     AnalysisResponse,
     Citation,
@@ -26,16 +24,16 @@ from app.schemas import (
 )
 from app.schemas.detection import DetectionItem
 from app.services.detection_service import DetectionService
+from app.services.quota_service import get_quota_limit, get_today_bounds, get_used_today
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 
 router = APIRouter(tags=["detections"])
+detect_router = APIRouter(tags=["detections"])
 scan_router = APIRouter(prefix="/api/scan", tags=["scan"])
 
 MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
-COST_PER_DETECTION = 1
-
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
     """
@@ -52,12 +50,34 @@ def _normalize_score(raw_score: float, threshold: float) -> float:
 async def _detect_impl(
     payload: DetectionRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Text cannot be empty",
+        )
+
+    chars = len(payload.text)
+    actor_type = current_actor.actor_type
+    actor_id = current_actor.actor_id
+    day_start, day_end = get_today_bounds()
+    used_today = get_used_today(db, actor_type=actor_type, actor_id=actor_id, start_time=day_start, end_time=day_end)
+    limit = get_quota_limit(actor_type)
+
+    if used_today + chars > limit:
+        remaining = max(limit - used_today, 0)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "QUOTA_EXCEEDED",
+                "message": "Daily quota exceeded",
+                "detail": {
+                    "limit": limit,
+                    "used_today": used_today,
+                    "remaining": remaining,
+                },
+            },
         )
 
     # 1) 调用 RepreGuard 微服务拿原始结果
@@ -93,38 +113,26 @@ async def _detect_impl(
             "model_name": model_name,
         }
     )
-
-    locked_user = db.scalar(select(User).where(User.id == current_user.id).with_for_update())
-    if locked_user is None:
+    user_id = current_actor.user.id if current_actor.user else None
+    if actor_type == "user" and user_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "USER_NOT_FOUND", "message": "User not found"},
         )
 
-    remaining = locked_user.credits_total - locked_user.credits_used
-    if remaining < COST_PER_DETECTION:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_CREDITS",
-                "message": "Insufficient credits",
-            },
-        )
-
-    locked_user.credits_used += COST_PER_DETECTION
-
     detection = service.create_detection(
-        user_id=current_user.id,
+        user_id=user_id,
         text=payload.text,
         options=options,
         functions_used=payload.functions or None,
         label=label.lower(),
         score=normalized_score,
-        commit=False,
+        commit=True,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        chars_used=chars,
     )
-    db.commit()
-    db.refresh(detection)
-    current_credits = locked_user.credits_total - locked_user.credits_used
+    remaining_after = max(limit - (used_today + chars), 0)
 
     # 4) 对客户端返回统一结构
     return DetectionResponse(
@@ -134,7 +142,7 @@ async def _detect_impl(
         model_name=model_name,
         raw_score=raw_score,
         threshold=threshold,
-        currentCredits=current_credits,
+        currentCredits=remaining_after,
     )
 
 
@@ -202,15 +210,21 @@ def _extension_from_filename(filename: str) -> str:
     summary="对文本进行检测（调用 RepreGuard 微服务）",
     responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
+@detect_router.post(
+    "/detect",
+    response_model=DetectionResponse,
+    summary="对文本进行检测（调用 RepreGuard 微服务）",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
 ) -> DetectionResponse:
     """
     调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
     """
-    return await _detect_impl(payload=payload, db=db, current_user=current_user)
+    return await _detect_impl(payload=payload, db=db, current_actor=current_actor)
 
 
 @scan_router.post(
@@ -222,7 +236,7 @@ async def detect(
 async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
 ) -> AnalysisResponse:
     functions = set(payload.functions or [])
     if not functions:
@@ -240,7 +254,7 @@ async def detect_scan(
         detection_response = await _detect_impl(
             payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
-            current_user=current_user,
+            current_actor=current_actor,
         )
 
     return _build_analysis_response(

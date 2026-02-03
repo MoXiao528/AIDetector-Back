@@ -12,6 +12,7 @@ from app.schemas.admin import AdminStatusResponse
 from app.schemas.analysis import AnalysisResponse, Citation, DetectRequest, SentenceAnalysis
 from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
+from app.schemas.quota import QuotaResponse
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
 from app.schemas.user import UserBase, UserCreate, UserProfile, UserProfileUpdate, UserResponse
@@ -40,6 +41,7 @@ __all__ = [
     "DetectionRequest",
     "DetectionResponse",
     "DetectRequest",
+    "QuotaResponse",
     "DatabasePingResponse",
     "ErrorResponse",
     "HealthResponse",

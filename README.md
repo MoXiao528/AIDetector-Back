@@ -14,6 +14,7 @@
 * ✅ **用户体系**：注册、登录、个人信息查询。
 * ✅ **团队协作**：创建团队、添加成员、查看团队维度的检测统计。
 * ✅ **历史记录**：检测记录持久化存储，支持按时间筛选与分页。
+* ✅ **按日字符额度 (MVP)**：Guest 5000 字符/天，登录用户 30000 字符/天，超额返回 429。
 * 🚧 **系统管理**：基础的管理员状态检查（高级管理面板开发中）。
 
 ## 🛠 前置依赖
@@ -142,6 +143,8 @@ try {
 }
 ```
 
+> ℹ️ **额度提醒**：/detect 现在按日字符额度限制（Guest 5000、User 30000）。若超额会返回 429（code=QUOTA_EXCEEDED）。
+
 ### 4. API Key 管理与调用
 
 模拟第三方通过 API Key 调用接口的场景。
@@ -200,6 +203,68 @@ $History.items | Select-Object id, label, score, created_at | Format-Table
 ```
 
 ---
+
+## ✅ 额度与 Guest / User 自测脚本 (PowerShell)
+
+以下脚本仅新增部分，不影响上面的完整流程。
+
+### 7.1 Guest 测试
+
+```powershell
+# 1. 获取 guest token
+Write-Host "--- 12. Guest Token ---"
+$GuestResp = Invoke-RestMethod -Uri "$BaseUrl/auth/guest" -Method Post
+$GuestToken = $GuestResp.access_token
+$GuestHeaders = @{ Authorization = "Bearer $GuestToken" }
+
+# 2. 查询 quota（Guest limit=5000）
+Write-Host "--- 13. Guest Quota ---"
+$GuestQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $GuestHeaders
+$GuestQuota | Format-Table
+
+# 3. 使用 guest token 发起检测（短文本应成功）
+Write-Host "--- 14. Guest Detect ---"
+$GuestDetectBody = @{ text = "Guest short text." } | ConvertTo-Json
+Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestDetectBody -ContentType "application/json"
+
+# 4. 构造超长文本触发 429
+Write-Host "--- 15. Guest Detect Over Quota ---"
+$Remaining = [Math]::Max($GuestQuota.remaining, 0)
+$LongText = ("A" * ($Remaining + 10))
+$GuestOverBody = @{ text = $LongText } | ConvertTo-Json
+try {
+    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestOverBody -ContentType "application/json"
+} catch {
+    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+```
+
+### 7.2 User 测试
+
+```powershell
+# 1. 复用上面的注册/登录步骤获取 $Headers
+
+# 2. 查询 quota（User limit=30000）
+Write-Host "--- 16. User Quota ---"
+$UserQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $Headers
+$UserQuota | Format-Table
+
+# 3. 使用 user token 发起检测（短文本应成功）
+Write-Host "--- 17. User Detect ---"
+$UserDetectBody = @{ text = "User short text." } | ConvertTo-Json
+Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserDetectBody -ContentType "application/json"
+
+# 4. 构造超长文本触发 429
+Write-Host "--- 18. User Detect Over Quota ---"
+$UserRemaining = [Math]::Max($UserQuota.remaining, 0)
+$UserLongText = ("A" * ($UserRemaining + 10))
+$UserOverBody = @{ text = $UserLongText } | ConvertTo-Json
+try {
+    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserOverBody -ContentType "application/json"
+} catch {
+    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+```
 
 ## 📂 目录结构说明
 

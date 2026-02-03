@@ -36,6 +36,41 @@
 Authorization: Bearer <token>
 ```
 
+## MVP 按日字符额度接口
+
+### POST /auth/guest
+用于获取 Guest JWT，返回 `accessToken` 与 `tokenType`。Guest token 需要携带 `guest_id` 与 `sub_type=guest`。
+
+### GET /quota
+返回今日额度信息：
+
+```json
+{
+  "actorType": "user|guest",
+  "limit": 30000,
+  "usedToday": 1234,
+  "remaining": 28766
+}
+```
+
+缺少 Authorization 时返回 401，`code=GUEST_TOKEN_REQUIRED`。
+
+### POST /detect
+新增按日字符额度校验：`chars = len(text)`，超额返回 429。
+错误响应必须包含：
+
+```json
+{
+  "code": "QUOTA_EXCEEDED",
+  "message": "Daily quota exceeded",
+  "detail": {
+    "limit": 30000,
+    "usedToday": 30000,
+    "remaining": 0
+  }
+}
+```
+
 ## 时间格式
 时间字段使用 ISO 8601 标准，UTC 时区：
 

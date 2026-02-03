@@ -27,3 +27,5 @@ class TokenPayload(SchemaBase):
     sub: str | None = None
     exp: int | None = None
     iat: datetime | None = None
+    sub_type: str | None = None
+    guest_id: str | None = None

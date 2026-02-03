@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -96,6 +97,85 @@ def get_current_user(
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+@dataclass
+class ActorContext:
+    actor_type: str
+    actor_id: str
+    user: User | None = None
+
+
+def _decode_token(token: str) -> TokenPayload:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        return TokenPayload(**payload)
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (jwt.InvalidTokenError, ValidationError) as exc:  # pragma: no cover - JWT 库内部异常
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def get_current_actor(db: SessionDep, token: TokenDep) -> ActorContext:
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "GUEST_TOKEN_REQUIRED",
+                "message": "Authorization token required",
+                "detail": "Please call /auth/guest to obtain a token.",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_data = _decode_token(token)
+    if token_data.sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    actor_type = (token_data.sub_type or "user").lower()
+    if actor_type == "guest":
+        guest_id = token_data.guest_id or token_data.sub
+        if not guest_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return ActorContext(actor_type="guest", actor_id=str(guest_id))
+
+    try:
+        user_id = int(token_data.sub)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - 非数字 sub
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Inactive or invalid user",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+
+
+CurrentActorDep = Annotated[ActorContext, Depends(get_current_actor)]
 
 
 def require_roles(allowed_roles: list[UserRole]):

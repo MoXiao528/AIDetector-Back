@@ -13,8 +13,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 settings = get_settings()
 
 
-def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
+def create_access_token(
+    subject: str,
+    expires_delta: timedelta | None = None,
+    extra_claims: Dict[str, Any] | None = None,
+) -> str:
     to_encode: Dict[str, Any] = {"sub": subject}
+    if extra_claims:
+        to_encode.update(extra_claims)
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=30))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.secret_key, algorithm="HS256")
