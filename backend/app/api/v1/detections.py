@@ -54,7 +54,7 @@ async def _detect_impl(
     payload: DetectionRequest,
     db: SessionDep,
     current_user: User | None,
-    request: Request,
+    request: Request | None,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
@@ -62,7 +62,7 @@ async def _detect_impl(
             detail="Text cannot be empty",
         )
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = request.client.host if request and request.client else "unknown"
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     usage_query = select(func.sum(func.length(Detection.input_text))).where(
         Detection.created_at >= today_start
@@ -241,7 +241,7 @@ def _extension_from_filename(filename: str) -> str:
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    request: Request,
+    request: Request | None = None,
     current_user: OptionalUserDep,
 ) -> DetectionResponse:
     """
@@ -259,7 +259,7 @@ async def detect(
 async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
-    request: Request,
+    request: Request | None = None,
     current_user: OptionalUserDep,
 ) -> AnalysisResponse:
     functions = set(payload.functions or [])
