@@ -241,8 +241,8 @@ def _extension_from_filename(filename: str) -> str:
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    request: Request | None = None,
     current_user: OptionalUserDep,
+    request: Request | None = None,
 ) -> DetectionResponse:
     """
     调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
@@ -259,8 +259,8 @@ async def detect(
 async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
-    request: Request | None = None,
     current_user: OptionalUserDep,
+    request: Request | None = None,
 ) -> AnalysisResponse:
     functions = set(payload.functions or [])
     if not functions:
