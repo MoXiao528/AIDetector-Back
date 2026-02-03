@@ -112,13 +112,17 @@ class DetectionService:
 
     def list_detections(
         self,
-        user_id: int,
+        actor_type: str,
+        actor_id: str,
         page: int,
         page_size: int,
         from_time: Any | None,
         to_time: Any | None,
     ) -> tuple[list[Detection], int]:
-        query = select(Detection).where(Detection.user_id == user_id)
+        query = select(Detection).where(
+            Detection.actor_type == actor_type,
+            Detection.actor_id == actor_id,
+        )
 
         if from_time:
             query = query.where(Detection.created_at >= from_time)

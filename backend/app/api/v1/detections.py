@@ -334,7 +334,7 @@ async def parse_files(
 
 async def _list_detections_impl(
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
     page: int,
     page_size: int,
     from_time: datetime | None,
@@ -348,7 +348,8 @@ async def _list_detections_impl(
 
     service = DetectionService(db)
     records, total = service.list_detections(
-        user_id=current_user.id,
+        actor_type=current_actor.actor_type,
+        actor_id=current_actor.actor_id,
         page=page,
         page_size=page_size,
         from_time=from_time,
@@ -383,7 +384,7 @@ async def _list_detections_impl(
 )
 async def list_detections(
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(10, ge=1, le=100, description="每页数量"),
     from_time: datetime | None = Query(
@@ -402,7 +403,7 @@ async def list_detections(
     """
     return await _list_detections_impl(
         db=db,
-        current_user=current_user,
+        current_actor=current_actor,
         page=page,
         page_size=page_size,
         from_time=from_time,
@@ -418,7 +419,7 @@ async def list_detections(
 )
 async def list_detections_history(
     db: SessionDep,
-    current_user: ActiveMemberDep,
+    current_actor: CurrentActorDep,
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(10, ge=1, le=100, description="每页数量"),
     from_time: datetime | None = Query(
@@ -434,7 +435,7 @@ async def list_detections_history(
 ) -> DetectionListResponse:
     return await _list_detections_impl(
         db=db,
-        current_user=current_user,
+        current_actor=current_actor,
         page=page,
         page_size=page_size,
         from_time=from_time,

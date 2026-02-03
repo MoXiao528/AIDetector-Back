@@ -12,7 +12,6 @@ class DetectionRequest(SchemaBase):
     text: str = Field(
         ...,
         min_length=1,
-        max_length=20000,
         example="Sample text to classify.",
     )
     functions: list[str] = Field(

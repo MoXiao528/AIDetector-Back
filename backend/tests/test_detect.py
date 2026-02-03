@@ -48,7 +48,7 @@ async def test_detect_with_user(db_session, unique_email):
 
     listed = await list_detections(
         db=db_session,
-        current_user=user,
+        current_actor=actor,
         page=1,
         page_size=10,
         from_time=None,
