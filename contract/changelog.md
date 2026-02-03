@@ -6,3 +6,5 @@
 - 初始版本：建立 contract/openapi.yaml 作为单一事实来源。
 - 扩展 /api/scan/detect 响应允许 polish/translation/citations 为空以支持 functions 开关。
 - 更新 /api/scan/parse-files 返回结构为 results[{fileName, content, error?}] 以支持逐文件错误提示。
+- 新增 /api/auth/guest 与 /api/quota，用于 MVP 按日字符额度查询与游客鉴权。
+- /api/scan/detect 增加 429 配额超限响应说明。

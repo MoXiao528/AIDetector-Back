@@ -13,7 +13,8 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.db import router as db_router
 from app.api.v1.health import router as health_router
 from app.api.v1.keys import router as api_keys_router
-from app.api.v1.detections import router as detections_router
+from app.api.v1.detections import detect_router, router as detections_router, scan_router
+from app.api.v1.quota import router as quota_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.teams import router as teams_router
 
@@ -25,9 +26,12 @@ api_router.include_router(health_router, prefix="")
 api_router.include_router(db_router, prefix="")
 api_router.include_router(auth_router, prefix="")
 api_router.include_router(api_keys_router, prefix="")
+api_router.include_router(detect_router, prefix="")
 api_router.include_router(detections_router, prefix="/detections", tags=["detections"])
+api_router.include_router(scan_router, prefix="")
 api_router.include_router(admin_router, prefix="")
 api_router.include_router(teams_router, prefix="")
+api_router.include_router(quota_router, prefix="")
 
 router = api_router
 

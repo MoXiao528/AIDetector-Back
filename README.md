@@ -14,6 +14,7 @@
 * ✅ **用户体系**：注册、登录、个人信息查询。
 * ✅ **团队协作**：创建团队、添加成员、查看团队维度的检测统计。
 * ✅ **历史记录**：检测记录持久化存储，支持按时间筛选与分页。
+* ✅ **按日字符额度 (MVP)**：Guest 5000 字符/天，登录用户 30000 字符/天，超额返回 429。
 * 🚧 **系统管理**：基础的管理员状态检查（高级管理面板开发中）。
 
 ## 🛠 前置依赖
@@ -75,7 +76,7 @@ docker compose exec api alembic revision --autogenerate -m "describe changes"
 确保服务已启动且数据库连接正常。
 
 ```powershell
-$BaseUrl = "http://localhost:8000"
+$BaseUrl = "http://localhost:8000/api/v1"
 
 # 1. 服务健康检查
 Write-Host "--- 1. Health Check ---"
@@ -96,7 +97,7 @@ Invoke-RestMethod -Uri "$BaseUrl/db/ping" -Method Get
 # 3. 注册新用户
 Write-Host "--- 3. Register User ---"
 $UserEmail = "test_user_$(Get-Random)@example.com"
-$Body = @{ email = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
+$Body = @{ email = $UserEmail; name = "PS Test $(Get-Random)"; password = "StrongPass!23" } | ConvertTo-Json
 try {
     Invoke-RestMethod -Uri "$BaseUrl/auth/register" -Method Post -Body $Body -ContentType "application/json"
     Write-Host "用户 $UserEmail 注册成功" -ForegroundColor Green
@@ -107,8 +108,9 @@ try {
 # 4. 登录并保存 Token
 Write-Host "--- 4. Login ---"
 try {
-    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $Body -ContentType "application/json"
-    $Token = $LoginResponse.access_token
+    $LoginBody = @{ identifier = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
+    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $LoginBody -ContentType "application/json"
+    $Token = $LoginResponse.accessToken
     $Headers = @{ Authorization = "Bearer $Token" }
     Write-Host "Token 获取成功" -ForegroundColor Green
 } catch {
@@ -141,6 +143,8 @@ try {
     }
 }
 ```
+
+> ℹ️ **额度提醒**：/detect 现在按日字符额度限制（Guest 5000、User 30000）。若超额会返回 429（code=QUOTA_EXCEEDED）。
 
 ### 4. API Key 管理与调用
 
@@ -200,6 +204,68 @@ $History.items | Select-Object id, label, score, created_at | Format-Table
 ```
 
 ---
+
+## ✅ 额度与 Guest / User 自测脚本 (PowerShell)
+
+以下脚本仅新增部分，不影响上面的完整流程。
+
+### 7.1 Guest 测试
+
+```powershell
+# 1. 获取 guest token
+Write-Host "--- 12. Guest Token ---"
+$GuestResp = Invoke-RestMethod -Uri "$BaseUrl/auth/guest" -Method Post
+$GuestToken = $GuestResp.accessToken
+$GuestHeaders = @{ Authorization = "Bearer $GuestToken" }
+
+# 2. 查询 quota（Guest limit=5000）
+Write-Host "--- 13. Guest Quota ---"
+$GuestQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $GuestHeaders
+$GuestQuota | Format-Table
+
+# 3. 使用 guest token 发起检测（短文本应成功）
+Write-Host "--- 14. Guest Detect ---"
+$GuestDetectBody = @{ text = "Guest short text." } | ConvertTo-Json
+Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestDetectBody -ContentType "application/json"
+
+# 4. 构造超长文本触发 429
+Write-Host "--- 15. Guest Detect Over Quota ---"
+$Remaining = [Math]::Max($GuestQuota.remaining, 0)
+$LongText = ("A" * ($Remaining + 10))
+$GuestOverBody = @{ text = $LongText } | ConvertTo-Json
+try {
+    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestOverBody -ContentType "application/json"
+} catch {
+    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+```
+
+### 7.2 User 测试
+
+```powershell
+# 1. 复用上面的注册/登录步骤获取 $Headers
+
+# 2. 查询 quota（User limit=30000）
+Write-Host "--- 16. User Quota ---"
+$UserQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $Headers
+$UserQuota | Format-Table
+
+# 3. 使用 user token 发起检测（短文本应成功）
+Write-Host "--- 17. User Detect ---"
+$UserDetectBody = @{ text = "User short text." } | ConvertTo-Json
+Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserDetectBody -ContentType "application/json"
+
+# 4. 构造超长文本触发 429
+Write-Host "--- 18. User Detect Over Quota ---"
+$UserRemaining = [Math]::Max($UserQuota.remaining, 0)
+$UserLongText = ("A" * ($UserRemaining + 10))
+$UserOverBody = @{ text = $UserLongText } | ConvertTo-Json
+try {
+    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserOverBody -ContentType "application/json"
+} catch {
+    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+```
 
 ## 📂 目录结构说明
 

@@ -61,13 +61,16 @@ class DetectionService:
 
     def create_detection(
         self,
-        user_id: int,
+        user_id: int | None,
         text: str,
         options: Mapping[str, Any] | None = None,
         score: float | None = None,
         label: str | None = None,
         functions_used: list[str] | None = None,
         commit: bool = True,
+        actor_type: str = "user",
+        actor_id: str | None = None,
+        chars_used: int | None = None,
     ) -> Detection:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
@@ -88,6 +91,9 @@ class DetectionService:
 
         detection = Detection(
             user_id=user_id,
+            actor_type=actor_type,
+            actor_id=actor_id or (str(user_id) if user_id is not None else ""),
+            chars_used=chars_used or len(text),
             input_text=text,
             result_label=final_label,
             score=final_score,
@@ -106,13 +112,17 @@ class DetectionService:
 
     def list_detections(
         self,
-        user_id: int,
+        actor_type: str,
+        actor_id: str,
         page: int,
         page_size: int,
         from_time: Any | None,
         to_time: Any | None,
     ) -> tuple[list[Detection], int]:
-        query = select(Detection).where(Detection.user_id == user_id)
+        query = select(Detection).where(
+            Detection.actor_type == actor_type,
+            Detection.actor_id == actor_id,
+        )
 
         if from_time:
             query = query.where(Detection.created_at >= from_time)

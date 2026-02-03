@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
@@ -86,6 +87,22 @@ async def login(payload: LoginRequest, db: SessionDep) -> Token:
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(subject=str(user.id), expires_delta=access_token_expires)
+    return Token(access_token=access_token, token_type="bearer")
+
+
+@router.post(
+    "/guest",
+    response_model=Token,
+    summary="游客登录获取 JWT",
+)
+async def guest_login() -> Token:
+    guest_id = str(uuid4())
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        subject=guest_id,
+        expires_delta=access_token_expires,
+        extra_claims={"sub_type": "guest", "guest_id": guest_id},
+    )
     return Token(access_token=access_token, token_type="bearer")
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -20,10 +20,14 @@ class Detection(Base):
     __table_args__ = (
         Index("ix_detections_user_id", "user_id"),
         Index("ix_detections_created_at", "created_at"),
+        Index("ix_detections_actor_type_actor_id", "actor_type", "actor_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="user")
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    chars_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     editor_html: Mapped[str | None] = mapped_column(Text, nullable=True)

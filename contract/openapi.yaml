@@ -43,6 +43,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthResponse'
+  /api/auth/guest:
+    post:
+      summary: Guest login
+      operationId: guestLogin
+      responses:
+        '200':
+          description: Guest token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
   /api/auth/me:
     get:
       summary: Current user
@@ -71,6 +82,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AnalysisResponse'
+        '429':
+          description: Quota exceeded
   /api/scan/examples:
     get:
       summary: Example texts
@@ -200,6 +213,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QuoteListResponse'
+  /api/quota:
+    get:
+      summary: Daily quota
+      operationId: getQuota
+      responses:
+        '200':
+          description: Quota info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaResponse'
   /api/contact:
     post:
       summary: Contact support
@@ -246,6 +270,16 @@ components:
           format: password
         name:
           type: string
+    TokenResponse:
+      type: object
+      required:
+        - accessToken
+        - tokenType
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
     AuthResponse:
       type: object
       required:
@@ -256,6 +290,23 @@ components:
           type: string
         user:
           $ref: '#/components/schemas/User'
+    QuotaResponse:
+      type: object
+      required:
+        - actorType
+        - limit
+        - usedToday
+        - remaining
+      properties:
+        actorType:
+          type: string
+          enum: [user, guest]
+        limit:
+          type: integer
+        usedToday:
+          type: integer
+        remaining:
+          type: integer
     User:
       type: object
       required:
