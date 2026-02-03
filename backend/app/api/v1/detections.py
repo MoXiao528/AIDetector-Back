@@ -5,7 +5,7 @@ from math import exp
 
 from io import BytesIO
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
 from docx import Document  # Requires python-docx package.
 from pypdf import PdfReader  # Requires pypdf package.
@@ -242,12 +242,18 @@ async def detect(
     payload: DetectionRequest,
     db: SessionDep,
     current_user: OptionalUserDep,
-    request: Request | None = None,
+    request: Request = Depends(),
 ) -> DetectionResponse:
     """
     调用 RepreGuard 检测微服务，对文本进行 AI/HUMAN 分类，并保存检测记录。
     """
-    return await _detect_impl(payload=payload, db=db, current_user=current_user, request=request)
+    resolved_request = request if isinstance(request, Request) else None
+    return await _detect_impl(
+        payload=payload,
+        db=db,
+        current_user=current_user,
+        request=resolved_request,
+    )
 
 
 @scan_router.post(
@@ -260,7 +266,7 @@ async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
     current_user: OptionalUserDep,
-    request: Request | None = None,
+    request: Request = Depends(),
 ) -> AnalysisResponse:
     functions = set(payload.functions or [])
     if not functions:
@@ -275,11 +281,12 @@ async def detect_scan(
         )
 
     if "scan" in functions:
+        resolved_request = request if isinstance(request, Request) else None
         detection_response = await _detect_impl(
             payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
             db=db,
             current_user=current_user,
-            request=request,
+            request=resolved_request,
         )
 
     return _build_analysis_response(
