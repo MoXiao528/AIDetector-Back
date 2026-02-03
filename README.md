@@ -110,7 +110,7 @@ Write-Host "--- 4. Login ---"
 try {
     $LoginBody = @{ identifier = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
     $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $LoginBody -ContentType "application/json"
-    $Token = $LoginResponse.access_token
+    $Token = $LoginResponse.accessToken
     $Headers = @{ Authorization = "Bearer $Token" }
     Write-Host "Token 获取成功" -ForegroundColor Green
 } catch {
@@ -215,7 +215,7 @@ $History.items | Select-Object id, label, score, created_at | Format-Table
 # 1. 获取 guest token
 Write-Host "--- 12. Guest Token ---"
 $GuestResp = Invoke-RestMethod -Uri "$BaseUrl/auth/guest" -Method Post
-$GuestToken = $GuestResp.access_token
+$GuestToken = $GuestResp.accessToken
 $GuestHeaders = @{ Authorization = "Bearer $GuestToken" }
 
 # 2. 查询 quota（Guest limit=5000）
