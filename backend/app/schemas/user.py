@@ -38,6 +38,6 @@ class UserResponse(UserBase):
     id: int = Field(..., example=1)
     created_at: datetime = Field(...)
     profile: UserProfile | None = None
-    credits: int = Field(..., example=10000, description="当前剩余点数（total - used）。")
+    credits: int = Field(..., example=30000, description="当前剩余点数（total - used）。")
 
     model_config = ConfigDict(from_attributes=True)

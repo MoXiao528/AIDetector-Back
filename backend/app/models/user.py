@@ -34,7 +34,7 @@ class User(Base):
         nullable=False,
     )
     plan_tier: Mapped[str] = mapped_column(String(50), server_default="personal-free", nullable=False)
-    credits_total: Mapped[int] = mapped_column(Integer, server_default="10000", nullable=False)
+    credits_total: Mapped[int] = mapped_column(Integer, server_default="30000", nullable=False)
     credits_used: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
