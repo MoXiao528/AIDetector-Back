@@ -26,3 +26,10 @@ async def test_register_allows_name_with_at_symbol(db_session, unique_email):
         db_session,
     )
     assert created_user.name == "abc@def"
+
+
+@pytest.mark.anyio
+async def test_register_user_has_30000_default_credits(db_session, unique_email):
+    created_user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+
+    assert created_user.credits == 30000
