@@ -23,6 +23,7 @@ from app.schemas import (
     SentenceAnalysis,
 )
 from app.schemas.detection import DetectionItem
+from app.schemas.history import Analysis, Summary, Sentence as HistorySentence
 from app.services.detection_service import DetectionService
 from app.services.quota_service import get_quota_limit, get_today_bounds, get_used_today
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
@@ -174,8 +175,6 @@ async def _detect_impl(
         history_id=detection.id, # <--- 新增：返回 history_id
     )
 
-# We need to import the History schemas to ensure structure matches
-from app.schemas.history import Analysis, Summary, Sentence as HistorySentence, Citation
 
 def _build_analysis_response_for_history(text: str, score: float, label: str) -> dict:
     """
