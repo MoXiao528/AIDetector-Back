@@ -17,6 +17,7 @@ from app.api.v1.detections import detect_router, router as detections_router, sc
 from app.api.v1.quota import router as quota_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.teams import router as teams_router
+from app.api.v1.history import router as history_router
 
 api_router = APIRouter()
 
@@ -32,6 +33,7 @@ api_router.include_router(scan_router, prefix="")
 api_router.include_router(admin_router, prefix="")
 api_router.include_router(teams_router, prefix="")
 api_router.include_router(quota_router, prefix="")
+api_router.include_router(history_router, prefix="")
 
 router = api_router
 

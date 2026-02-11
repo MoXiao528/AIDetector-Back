@@ -1,0 +1,101 @@
+$ErrorActionPreference = "Stop"
+
+# --- 基础配置 ---
+$Base = "http://localhost:8000"
+
+# 普通用户
+$Email    = "tester+pr-demo@example.com"
+$Password = "StrongPass!23"
+
+# 管理员用户
+$AdminEmail    = "admin+pr-demo@example.com"
+$AdminPassword = "StrongPass!23"
+
+跑数据库迁移
+docker compose exec api alembic upgrade head
+
+查看迁移历史
+docker compose exec api alembic history --verbose
+
+Invoke-RestMethod -Method Get -Uri "$Base/health" | Format-List
+Invoke-RestMethod -Method Get -Uri "$Base/db/ping" | Format-List
+Invoke-RestMethod -Method Get -Uri "$Base/" | Format-List
+
+
+# 2.1 注册
+$RegisterBody = @{ email = $Email; password = $Password } | ConvertTo-Json
+$RegisterResp = Invoke-RestMethod -Method Post -Uri "$Base/auth/register" -ContentType "application/json" -Body $RegisterBody
+$RegisterResp | Format-List
+
+# 2.2 登录
+$LoginBody = @{ email = $Email; password = $Password } | ConvertTo-Json
+$LoginResp = Invoke-RestMethod -Method Post -Uri "$Base/auth/login" -ContentType "application/json" -Body $LoginBody
+$Token = $LoginResp.access_token
+$AuthHeader = @{ Authorization = "Bearer $Token" }
+
+# 2.3 当前用户
+Invoke-RestMethod -Method Get -Uri "$Base/auth/me" -Headers $AuthHeader | Format-List
+
+创建 API Key（仅返回一次明文 key）
+$KeyResp = Invoke-RestMethod -Method Post -Uri "$Base/keys" -Headers $AuthHeader -ContentType "application/json" -Body '{"name":"PR Demo Key"}'
+$KeyResp | Format-List
+$ApiKey = $KeyResp.key
+$ApiKeyHeader = @{ "X-API-Key" = $ApiKey }
+
+使用 JWT 列出 Keys =="
+Invoke-RestMethod -Method Get -Uri "$Base/keys" -Headers $AuthHeader | Format-List
+
+使用 API Key 自检（验收必需） =="
+Invoke-RestMethod -Method Get -Uri "$Base/keys/self-test" -Headers $ApiKeyHeader | Format-List
+
+/detect：JWT 方式
+$DetectBodyJwt = @{ text = "This is a human written text." } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$Base/detect" -Headers $AuthHeader -ContentType "application/json" -Body $DetectBodyJwt | Format-List
+
+/detect：API Key 方式（等价于 JWT） =="
+Invoke-RestMethod -Method Post -Uri "$Base/detect" -Headers $ApiKeyHeader -ContentType "application/json" -Body '{"text":"aaaa aaaa aaaa","options":{"language":"en"}}' | Format-List
+
+查询检测记录 /detections（分页 + from 过滤示例）
+# README 示例包含 from=2024-01-01T00:00:00Z，你也可以改成更近的时间
+Invoke-RestMethod -Method Get -Uri "$Base/detections?page=1&page_size=5&from=2024-01-01T00:00:00Z" -Headers $AuthHeader | Format-List
+
+RBAC 验收：普通用户访问 /admin/status 预期 403
+try {
+  Invoke-RestMethod -Method Get -Uri "$Base/admin/status" -Headers $AuthHeader | Out-Host
+} catch {
+  $_.Exception.Response.StatusCode.value__ | Out-Host
+}
+
+Write-Host "`n== 10) 创建管理员用户 -> 登录 -> DB 提升为 SYS_ADMIN -> /admin/status 预期 200 =="
+
+# 10.1 注册管理员
+$AdminRegisterBody = @{ email = $AdminEmail; password = $AdminPassword } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$Base/auth/register" -ContentType "application/json" -Body $AdminRegisterBody | Format-List
+
+# 10.2 登录管理员
+$AdminLoginBody = @{ email = $AdminEmail; password = $AdminPassword } | ConvertTo-Json
+$AdminLoginResp = Invoke-RestMethod -Method Post -Uri "$Base/auth/login" -ContentType "application/json" -Body $AdminLoginBody
+$AdminToken = $AdminLoginResp.access_token
+$AdminHeader = @{ Authorization = "Bearer $AdminToken" }
+
+# 10.3 提升角色（db 容器 / 数据库名 AIDetector）
+docker compose exec db psql -U postgres -d AIDetector -c "UPDATE users SET role='SYS_ADMIN' WHERE email='$AdminEmail';"
+
+# 10.4 管理员访问 /admin/status
+Invoke-RestMethod -Method Get -Uri "$Base/admin/status" -Headers $AdminHeader | Format-List
+
+创建团队
+$TeamResp = Invoke-RestMethod -Method Post -Uri "$Base/teams" -Headers $AuthHeader -ContentType "application/json" -Body '{"name":"demo-team"}'
+$TeamResp | Format-List
+$TeamId = $TeamResp.id
+
+团队：添加成员（示例：把管理员用户加进团队，role=MEMBER）
+$AdminMe = Invoke-RestMethod -Method Get -Uri "$Base/auth/me" -Headers $AdminHeader
+$AdminUserId = $AdminMe.id
+
+$AddMemberBody = @{ user_id = $AdminUserId; role = "MEMBER" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$Base/teams/$TeamId/members" -Headers $AuthHeader -ContentType "application/json" -Body $AddMemberBody | Format-List
+
+Write-Host "`n== 13) 团队：按天统计 /teams/{id}/stats（示例时间范围） =="
+Invoke-RestMethod -Method Get -Uri "$Base/teams/$TeamId/stats?start=2024-01-01T00:00:00Z&end=2024-12-31T00:00:00Z" -Headers $AuthHeader | Format-List
+
