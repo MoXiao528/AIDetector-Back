@@ -94,3 +94,51 @@ async def test_invalid_bearer_does_not_fallback_to_api_key(db_session, unique_em
     with pytest.raises(HTTPException) as exc_info:
         get_current_actor(db=db_session, token="invalid-token", api_key_header=api_key_resp.key)
     assert exc_info.value.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_detect_saves_history(db_session, unique_email):
+    """
+    Validation Rule:
+    1. /detect saves a complete record (check meta_json["analysis"]).
+    2. Response includes history_id.
+    """
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+
+    # Call /detect
+    response = await detect(
+        payload=DetectionRequest(text="This is a test sentence for history saving.", functions=["scan", "polish"]),
+        db=db_session,
+        current_actor=actor,
+    )
+
+    # Check response (Standard 1 & 2)
+    assert response.history_id is not None
+    assert response.history_id > 0
+    assert response.detection_id == response.history_id
+
+    # Check DB structure
+    from app.services.detection_service import DetectionService
+    service = DetectionService(db_session)
+    record = list(service.list_detections(
+        actor_type="user", 
+        actor_id=str(user.id), 
+        page=1, 
+        page_size=1, 
+        from_time=None, 
+        to_time=None
+    )[0])[0]
+
+    # Check flat analysis structure (Standard 2)
+    # Expected: record.meta_json = { "options": ..., "analysis": { "summary": ..., "sentences": ... }, ... }
+    assert "analysis" in record.meta_json
+    analysis = record.meta_json["analysis"]
+    assert "summary" in analysis
+    assert "sentences" in analysis
+    assert len(analysis["sentences"]) > 0
+    assert analysis["sentences"][0]["text"] == "This is a test sentence for history saving"
+    
+    # Check NO double nesting
+    assert "analysis" not in analysis
+

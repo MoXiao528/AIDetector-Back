@@ -71,6 +71,7 @@ class DetectionService:
         actor_type: str = "user",
         actor_id: str | None = None,
         chars_used: int | None = None,
+        analysis: dict[str, Any] | None = None,
     ) -> Detection:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
@@ -88,6 +89,9 @@ class DetectionService:
             "options": self._sanitize_options(options),
             **meta_extra
         }
+
+        if analysis:
+            merged_meta["analysis"] = analysis
 
         detection = Detection(
             user_id=user_id,
