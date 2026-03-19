@@ -1,17 +1,24 @@
 openapi: 3.0.3
 info:
-  title: AI Detector API
-  version: 0.1.0
-  description: Contract-first baseline for frontend/backend alignment.
+  title: AIDetector API
+  version: 0.2.0
+  description: Active contract baseline for auth, detection, history, quota, and phase-1 admin APIs.
 servers:
   - url: https://api.example.com
     description: Production
   - url: http://localhost:8000
     description: Local
+tags:
+  - name: auth
+  - name: quota
+  - name: detection
+  - name: history
+  - name: admin
 paths:
-  /api/auth/login:
+  /api/v1/auth/login:
     post:
-      summary: Login
+      tags: [auth]
+      summary: User login
       operationId: login
       requestBody:
         required: true
@@ -25,10 +32,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthResponse'
-  /api/auth/register:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/register:
     post:
-      summary: Register
+      tags: [auth]
+      summary: Register user
       operationId: register
       requestBody:
         required: true
@@ -42,33 +56,98 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthResponse'
-  /api/auth/guest:
+                $ref: '#/components/schemas/UserResponse'
+        '409':
+          description: Email or name conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/guest:
     post:
-      summary: Guest login
+      tags: [auth]
+      summary: Issue guest token
       operationId: guestLogin
       responses:
         '200':
-          description: Guest token
+          description: Guest token issued
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
-  /api/auth/me:
+  /api/v1/auth/me:
     get:
-      summary: Current user
+      tags: [auth]
+      summary: Get current user
       operationId: getMe
+      security:
+        - BearerAuth: []
       responses:
         '200':
-          description: Current user info
+          description: Current user
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
-  /api/scan/detect:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/me/profile:
+    patch:
+      tags: [auth]
+      summary: Update current user profile
+      operationId: updateMyProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfileUpdateRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/quota:
+    get:
+      tags: [quota]
+      summary: Get daily quota snapshot
+      operationId: getQuota
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Quota snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/detect:
     post:
-      summary: Detect AI content
-      operationId: detect
+      tags: [detection]
+      summary: Submit detection task
+      operationId: detectText
+      security:
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -77,28 +156,68 @@ paths:
               $ref: '#/components/schemas/DetectRequest'
       responses:
         '200':
-          description: Detection result
+          description: Detection accepted and persisted
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AnalysisResponse'
+                $ref: '#/components/schemas/DetectResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Quota exceeded
-  /api/scan/examples:
-    get:
-      summary: Example texts
-      operationId: getExamples
-      responses:
-        '200':
-          description: Examples list
+          description: Daily quota exceeded
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ExampleListResponse'
-  /api/scan/history:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Downstream detection service failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history:
     get:
-      summary: Scan history list
-      operationId: getHistory
+      tags: [history]
+      summary: List current user history
+      operationId: listHistory
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt]
+            default: createdAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: History list
@@ -106,170 +225,557 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HistoryListResponse'
-  /api/scan/history/{id}:
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [history]
+      summary: Create history record
+      operationId: createHistory
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HistoryRecordCreateRequest'
+      responses:
+        '201':
+          description: History record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [history]
+      summary: Clear all current user history
+      operationId: clearHistory
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: All history cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearAllResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history/batch-delete:
+    post:
+      tags: [history]
+      summary: Batch delete history records
+      operationId: batchDeleteHistory
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
+      responses:
+        '200':
+          description: Batch delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history/{historyId}:
     get:
-      summary: Scan history detail
-      operationId: getHistoryDetail
+      tags: [history]
+      summary: Get history detail
+      operationId: getHistory
+      security:
+        - BearerAuth: []
       parameters:
-        - name: id
+        - name: historyId
           in: path
           required: true
           schema:
-            type: string
+            type: integer
       responses:
         '200':
           description: History detail
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HistoryItem'
-  /api/scan/parse-files:
-    post:
-      summary: Parse uploaded files
-      operationId: parseFiles
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/ParseFilesRequest'
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/status:
+    get:
+      tags: [admin]
+      summary: Verify admin access
+      operationId: getAdminStatus
+      security:
+        - BearerAuth: []
       responses:
         '200':
-          description: Parsed file contents
+          description: Admin access confirmed
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ParseFilesResponse'
-  /api/orders:
-    post:
-      summary: Create order
-      operationId: createOrder
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OrderCreateRequest'
-      responses:
-        '201':
-          description: Order created
+                $ref: '#/components/schemas/AdminStatusResponse'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrderResponse'
-  /api/orders/{id}/pay:
-    post:
-      summary: Pay for order
-      operationId: payOrder
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/overview:
+    get:
+      tags: [admin]
+      summary: Get admin overview metrics
+      operationId: getAdminOverview
+      security:
+        - BearerAuth: []
       parameters:
-        - name: id
+        - name: preset
+          in: query
+          schema:
+            type: string
+            enum: [today, week, month, quarter, year]
+            default: week
+      responses:
+        '200':
+          description: Overview data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOverviewResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users:
+    get:
+      tags: [admin]
+      summary: List users for admin
+      operationId: listAdminUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: systemRole
+          in: query
+          schema:
+            $ref: '#/components/schemas/UserSystemRole'
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+        - name: planTier
+          in: query
+          schema:
+            type: string
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, email, creditsRemaining]
+            default: createdAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users/{userId}:
+    get:
+      tags: [admin]
+      summary: Get user detail for admin
+      operationId: getAdminUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
           in: path
           required: true
           schema:
-            type: string
+            type: integer
+      responses:
+        '200':
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetailResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [admin]
+      summary: Update admin-managed user fields
+      operationId: updateAdminUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/OrderPayRequest'
+              $ref: '#/components/schemas/AdminUserUpdateRequest'
       responses:
         '200':
-          description: Payment success
+          description: Updated user detail
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrderResponse'
-  /api/subscriptions/preview:
-    get:
-      summary: Subscription preview
-      operationId: getSubscriptionPreview
-      responses:
-        '200':
-          description: Preview info
+                $ref: '#/components/schemas/AdminUserDetailResponse'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SubscriptionPreview'
-  /api/config/faq:
-    get:
-      summary: FAQ list
-      operationId: getFaq
-      responses:
-        '200':
-          description: FAQ list
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FaqListResponse'
-  /api/config/quotes:
-    get:
-      summary: Quotes list
-      operationId: getQuotes
-      responses:
-        '200':
-          description: Quotes list
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QuoteListResponse'
-  /api/quota:
-    get:
-      summary: Daily quota
-      operationId: getQuota
-      responses:
-        '200':
-          description: Quota info
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QuotaResponse'
-  /api/contact:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users/{userId}/credits:
     post:
-      summary: Contact support
-      operationId: contactSupport
+      tags: [admin]
+      summary: Adjust user credits
+      operationId: adjustAdminUserCredits
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ContactRequest'
+              $ref: '#/components/schemas/AdminUserCreditsAdjustRequest'
       responses:
-        '201':
-          description: Contact submitted
+        '200':
+          description: Updated credit snapshot
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ContactResponse'
+                $ref: '#/components/schemas/AdminUserCreditsAdjustResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/detections:
+    get:
+      tags: [admin]
+      summary: List detections for admin
+      operationId: listAdminDetections
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+        - name: actorType
+          in: query
+          schema:
+            type: string
+            enum: [user, guest]
+        - name: label
+          in: query
+          schema:
+            type: string
+            enum: [ai, mixed, human]
+        - name: function
+          in: query
+          schema:
+            $ref: '#/components/schemas/DetectionFunction'
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, score, charsUsed]
+            default: createdAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Detection list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDetectionListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/detections/{detectionId}:
+    get:
+      tags: [admin]
+      summary: Get detection detail for admin
+      operationId: getAdminDetection
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: detectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detection detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDetectionDetailResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Detection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [admin]
+      summary: Delete detection record
+      operationId: deleteAdminDetection
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: detectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Detection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
-    LoginRequest:
+    ErrorResponse:
       type: object
       required:
-        - email
-        - password
+        - code
+        - message
+        - detail
       properties:
-        email:
+        code:
+          oneOf:
+            - type: integer
+            - type: string
+        message:
           type: string
-          format: email
-        password:
-          type: string
-          format: password
-    RegisterRequest:
-      type: object
-      required:
-        - email
-        - password
-        - name
-      properties:
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          format: password
-        name:
-          type: string
+        detail:
+          nullable: true
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+            - type: string
     TokenResponse:
       type: object
       required:
@@ -280,16 +786,109 @@ components:
           type: string
         tokenType:
           type: string
-    AuthResponse:
+          example: bearer
+    LoginRequest:
       type: object
       required:
-        - token
-        - user
+        - identifier
+        - password
       properties:
-        token:
+        identifier:
           type: string
-        user:
-          $ref: '#/components/schemas/User'
+          description: Email or account name
+        password:
+          type: string
+          format: password
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        password:
+          type: string
+          format: password
+          minLength: 8
+    UserSystemRole:
+      type: string
+      enum: [VISITOR, INDIVIDUAL, TEAM_ADMIN, SYS_ADMIN]
+    DetectionFunction:
+      type: string
+      enum: [scan, polish, translate, citation]
+    UserProfile:
+      type: object
+      properties:
+        firstName:
+          type: string
+          nullable: true
+        surname:
+          type: string
+          nullable: true
+        organization:
+          type: string
+          nullable: true
+        jobRole:
+          type: string
+          nullable: true
+        industry:
+          type: string
+          nullable: true
+    UserProfileUpdateRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+          nullable: true
+        surname:
+          type: string
+          nullable: true
+        organization:
+          type: string
+          nullable: true
+        jobRole:
+          type: string
+          nullable: true
+        industry:
+          type: string
+          nullable: true
+    UserResponse:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - isActive
+        - planTier
+        - creditsRemaining
+        - createdAt
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        isActive:
+          type: boolean
+        planTier:
+          type: string
+        creditsRemaining:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        profile:
+          $ref: '#/components/schemas/UserProfile'
     QuotaResponse:
       type: object
       required:
@@ -307,20 +906,6 @@ components:
           type: integer
         remaining:
           type: integer
-    User:
-      type: object
-      required:
-        - id
-        - email
-        - name
-      properties:
-        id:
-          type: string
-        email:
-          type: string
-          format: email
-        name:
-          type: string
     DetectRequest:
       type: object
       required:
@@ -328,265 +913,619 @@ components:
       properties:
         text:
           type: string
+          minLength: 1
         functions:
           type: array
           items:
-            type: string
-          description: Optional feature switches. Defaults to include "scan".
-    AnalysisResponse:
+            $ref: '#/components/schemas/DetectionFunction'
+          default: [scan]
+    DetectResponse:
+      type: object
+      required:
+        - detectionId
+        - historyId
+        - label
+        - score
+        - currentCredits
+      properties:
+        detectionId:
+          type: integer
+        historyId:
+          type: integer
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        modelName:
+          type: string
+          nullable: true
+        rawScore:
+          type: number
+          format: float
+          nullable: true
+        threshold:
+          type: number
+          format: float
+          nullable: true
+        currentCredits:
+          type: integer
+    HistorySummary:
+      type: object
+      required:
+        - ai
+        - mixed
+        - human
+      properties:
+        ai:
+          type: integer
+          minimum: 0
+          maximum: 100
+        mixed:
+          type: integer
+          minimum: 0
+          maximum: 100
+        human:
+          type: integer
+          minimum: 0
+          maximum: 100
+    HistorySentence:
+      type: object
+      required:
+        - id
+        - text
+        - raw
+        - type
+        - probability
+        - score
+        - reason
+        - suggestion
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        raw:
+          type: string
+        type:
+          type: string
+          enum: [ai, mixed, human]
+        probability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        reason:
+          type: string
+        suggestion:
+          type: string
+    HistoryCitation:
+      type: object
+      required:
+        - id
+        - text
+        - source
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        source:
+          type: string
+    HistoryAnalysis:
       type: object
       required:
         - summary
         - sentences
-        - polish
         - translation
+        - polish
         - citations
+        - aiLikelyCount
+        - highlightedHtml
       properties:
         summary:
-          type: string
+          $ref: '#/components/schemas/HistorySummary'
         sentences:
           type: array
           items:
-            $ref: '#/components/schemas/SentenceAnalysis'
-        polish:
-          type: string
-          nullable: true
+            $ref: '#/components/schemas/HistorySentence'
         translation:
           type: string
-          nullable: true
+        polish:
+          type: string
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/Citation'
-          nullable: true
-    SentenceAnalysis:
+            $ref: '#/components/schemas/HistoryCitation'
+        aiLikelyCount:
+          type: integer
+          minimum: 0
+        highlightedHtml:
+          type: string
+    HistoryRecordCreateRequest:
       type: object
       required:
-        - text
-        - isAi
-        - confidence
+        - title
+        - functions
+        - inputText
+        - editorHtml
       properties:
-        text:
+        title:
           type: string
-        isAi:
-          type: boolean
-        confidence:
-          type: number
-          format: float
-    Citation:
-      type: object
-      required:
-        - source
-        - snippet
-      properties:
-        source:
-          type: string
-        snippet:
-          type: string
-        url:
-          type: string
-          format: uri
-    ExampleListResponse:
-      type: object
-      required:
-        - examples
-      properties:
-        examples:
+          maxLength: 255
+        functions:
           type: array
           items:
-            type: string
+            $ref: '#/components/schemas/DetectionFunction'
+        inputText:
+          type: string
+          maxLength: 50000
+        editorHtml:
+          type: string
+        analysis:
+          $ref: '#/components/schemas/HistoryAnalysis'
+          nullable: true
+    HistoryRecordUpdateRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          maxLength: 255
+    HistoryRecordResponse:
+      type: object
+      required:
+        - id
+        - userId
+        - createdAt
+        - functions
+        - inputText
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        title:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        functions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+        inputText:
+          type: string
+        editorHtml:
+          type: string
+          nullable: true
+        analysis:
+          $ref: '#/components/schemas/HistoryAnalysis'
+          nullable: true
     HistoryListResponse:
       type: object
       required:
         - items
+        - page
+        - pageSize
+        - total
       properties:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/HistoryItem'
-    HistoryItem:
-      type: object
-      required:
-        - id
-        - text
-        - createdAt
-        - result
-      properties:
-        id:
-          type: string
-        text:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        result:
-          $ref: '#/components/schemas/AnalysisResponse'
-    ParseFilesRequest:
-      type: object
-      required:
-        - files
-      properties:
-        files:
-          type: array
-          items:
-            type: string
-            format: binary
-    ParseFilesResponse:
-      type: object
-      required:
-        - results
-      properties:
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/ParsedFile'
-    ParsedFile:
-      type: object
-      required:
-        - fileName
-      properties:
-        fileName:
-          type: string
-        content:
-          type: string
-          nullable: true
-        error:
-          type: string
-          nullable: true
-    OrderCreateRequest:
-      type: object
-      required:
-        - planId
-      properties:
-        planId:
-          type: string
-        promoCode:
-          type: string
-    OrderPayRequest:
-      type: object
-      required:
-        - paymentMethodId
-      properties:
-        paymentMethodId:
-          type: string
-    OrderResponse:
-      type: object
-      required:
-        - id
-        - status
-        - amount
-        - currency
-      properties:
-        id:
-          type: string
-        status:
-          type: string
-          enum:
-            - pending
-            - paid
-            - failed
-        amount:
-          type: number
-          format: float
-        currency:
-          type: string
-    SubscriptionPreview:
-      type: object
-      required:
-        - plans
-      properties:
-        plans:
-          type: array
-          items:
-            $ref: '#/components/schemas/SubscriptionPlan'
-    SubscriptionPlan:
-      type: object
-      required:
-        - id
-        - name
-        - price
-        - currency
-        - credits
-      properties:
-        id:
-          type: string
-        name:
-          type: string
-        price:
-          type: number
-          format: float
-        currency:
-          type: string
-        credits:
+            $ref: '#/components/schemas/HistoryRecordResponse'
+        page:
           type: integer
-    FaqListResponse:
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    BatchDeleteRequest:
       type: object
       required:
-        - items
+        - ids
       properties:
-        items:
+        ids:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+    BatchDeleteResponse:
+      type: object
+      required:
+        - deletedCount
+        - failedIds
+      properties:
+        deletedCount:
+          type: integer
+        failedIds:
           type: array
           items:
-            $ref: '#/components/schemas/FaqItem'
-    FaqItem:
+            type: integer
+    ClearAllResponse:
       type: object
       required:
-        - id
-        - question
-        - answer
+        - deletedCount
       properties:
-        id:
-          type: string
-        question:
-          type: string
-        answer:
-          type: string
-    QuoteListResponse:
+        deletedCount:
+          type: integer
+    AdminStatusResponse:
       type: object
       required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/QuoteItem'
-    QuoteItem:
-      type: object
-      required:
-        - id
-        - text
-        - author
-      properties:
-        id:
-          type: string
-        text:
-          type: string
-        author:
-          type: string
-    ContactRequest:
-      type: object
-      required:
-        - name
-        - email
         - message
       properties:
-        name:
+        message:
           type: string
+    AdminOverviewPreset:
+      type: string
+      enum: [today, week, month, quarter, year]
+    AdminOverviewGranularity:
+      type: string
+      enum: [hour, day, week, month]
+    AdminOverviewPeriod:
+      type: object
+      required:
+        - preset
+        - granularity
+        - startAt
+        - endAt
+      properties:
+        preset:
+          $ref: '#/components/schemas/AdminOverviewPreset'
+        granularity:
+          $ref: '#/components/schemas/AdminOverviewGranularity'
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+    AdminOverviewSummary:
+      type: object
+      required:
+        - totalUsers
+        - activeUsers
+        - newUsers
+        - detections
+        - charsUsed
+      properties:
+        totalUsers:
+          type: integer
+        activeUsers:
+          type: integer
+        newUsers:
+          type: integer
+        detections:
+          type: integer
+        charsUsed:
+          type: integer
+    AdminOverviewSeriesItem:
+      type: object
+      required:
+        - bucketStart
+        - bucketLabel
+        - newUsers
+        - detections
+        - charsUsed
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+        bucketLabel:
+          type: string
+        newUsers:
+          type: integer
+        detections:
+          type: integer
+        charsUsed:
+          type: integer
+    AdminRecentUserItem:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: integer
         email:
           type: string
           format: email
-        message:
+        name:
           type: string
-    ContactResponse:
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    AdminRecentDetectionItem:
       type: object
       required:
         - id
-        - status
+        - actorType
+        - actorId
+        - label
+        - score
+        - charsUsed
+        - createdAt
       properties:
         id:
+          type: integer
+        userId:
+          type: integer
+          nullable: true
+        userEmail:
           type: string
-        status:
+          format: email
+          nullable: true
+        userName:
           type: string
-          enum:
-            - received
-            - queued
+          nullable: true
+        actorType:
+          type: string
+          enum: [user, guest]
+        actorId:
+          type: string
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminOverviewResponse:
+      type: object
+      required:
+        - period
+        - summary
+        - series
+        - recentUsers
+        - recentDetections
+      properties:
+        period:
+          $ref: '#/components/schemas/AdminOverviewPeriod'
+        summary:
+          $ref: '#/components/schemas/AdminOverviewSummary'
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOverviewSeriesItem'
+        recentUsers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRecentUserItem'
+        recentDetections:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRecentDetectionItem'
+    AdminUserListItem:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - planTier
+        - isActive
+        - creditsTotal
+        - creditsUsed
+        - creditsRemaining
+        - createdAt
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        planTier:
+          type: string
+        isActive:
+          type: boolean
+        creditsTotal:
+          type: integer
+        creditsUsed:
+          type: integer
+        creditsRemaining:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminUserListResponse:
+      type: object
+      required:
+        - items
+        - page
+        - pageSize
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserListItem'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    AdminDetectionMini:
+      type: object
+      required:
+        - id
+        - label
+        - score
+        - charsUsed
+        - createdAt
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminUserDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/AdminUserListItem'
+        - type: object
+          properties:
+            profile:
+              $ref: '#/components/schemas/UserProfile'
+            recentDetections:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminDetectionMini'
+    AdminUserUpdateRequest:
+      type: object
+      properties:
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        planTier:
+          type: string
+        isActive:
+          type: boolean
+    AdminUserCreditsAdjustRequest:
+      type: object
+      required:
+        - delta
+        - reason
+      properties:
+        delta:
+          type: integer
+          description: Positive to grant credits, negative to deduct credits
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+    AdminUserCreditsAdjustResponse:
+      type: object
+      required:
+        - userId
+        - creditsTotal
+        - creditsUsed
+        - creditsRemaining
+      properties:
+        userId:
+          type: integer
+        creditsTotal:
+          type: integer
+        creditsUsed:
+          type: integer
+        creditsRemaining:
+          type: integer
+    AdminDetectionListItem:
+      type: object
+      required:
+        - id
+        - actorType
+        - actorId
+        - label
+        - score
+        - charsUsed
+        - functionsUsed
+        - createdAt
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+          nullable: true
+        userEmail:
+          type: string
+          format: email
+          nullable: true
+        userName:
+          type: string
+          nullable: true
+        actorType:
+          type: string
+          enum: [user, guest]
+        actorId:
+          type: string
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        functionsUsed:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+        createdAt:
+          type: string
+          format: date-time
+    AdminDetectionListResponse:
+      type: object
+      required:
+        - items
+        - page
+        - pageSize
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminDetectionListItem'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    AdminDetectionDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/AdminDetectionListItem'
+        - type: object
+          properties:
+            title:
+              type: string
+              nullable: true
+            inputText:
+              type: string
+            editorHtml:
+              type: string
+              nullable: true
+            metaJson:
+              type: object
+              nullable: true
+              additionalProperties: true
+            analysis:
+              $ref: '#/components/schemas/HistoryAnalysis'
+              nullable: true

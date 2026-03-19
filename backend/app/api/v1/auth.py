@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.core.roles import UserRole
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.db.deps import CurrentUserDep, SessionDep
 from app.models.user import User
@@ -48,6 +49,12 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
         email=payload.email,
         name=name_value,
         password_hash=get_password_hash(payload.password),
+        role=UserRole.INDIVIDUAL,
+        plan_tier="personal-free",
+        credits_total=30000,
+        credits_used=0,
+        onboarding_completed=False,
+        is_active=True,
     )
     db.add(user)
     db.commit()
