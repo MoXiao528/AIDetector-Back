@@ -3,9 +3,10 @@ import pytest
 from app.api.v1.auth import register_user
 from fastapi import HTTPException
 
-from app.api.v1.detections import detect, list_detections
+from app.api.v1.detections import detect, detect_scan, list_detections
 from app.api.v1.keys import create_api_key
 from app.db.deps import ActorContext, get_current_actor
+from app.schemas.analysis import DetectRequest
 from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
@@ -124,7 +125,9 @@ async def test_detect_saves_history(db_session, unique_email):
     assert response.detection_id == response.history_id
     assert response.input_text == "This is a test sentence for history saving."
     assert response.result is not None
-    assert response.result.polish == "This is a test sentence for history saving. (polished)"
+    assert response.result.polish == ""
+    assert response.result.translation == ""
+    assert response.result.citations == []
 
     # Check DB structure
     from app.services.detection_service import DetectionService
@@ -149,4 +152,25 @@ async def test_detect_saves_history(db_session, unique_email):
     
     # Check NO double nesting
     assert "analysis" not in analysis
+
+
+@pytest.mark.anyio
+async def test_detect_scan_compat_returns_real_scan_only_payload(db_session, unique_email):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+
+    response = await detect_scan(
+        payload=DetectRequest(text="Sentence one. Sentence two.", functions=["scan", "polish", "translation", "citations"]),
+        db=db_session,
+        current_actor=actor,
+    )
+
+    assert response.currentCredits >= 0
+    assert response.summary.startswith("AI ")
+    assert len(response.sentences) == 2
+    assert response.sentences[0].text == "Sentence one."
+    assert response.sentences[0].is_ai is True
+    assert response.polish is None
+    assert response.translation is None
+    assert response.citations is None
 

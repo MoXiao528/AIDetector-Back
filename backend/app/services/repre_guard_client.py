@@ -33,6 +33,24 @@ class RepreGuardClient:
         self.base_url = (base_url or settings.detect_service_url).rstrip("/")
         self.timeout = timeout or settings.detect_service_timeout
 
+    async def health(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            try:
+                resp = await client.get("/health")
+            except httpx.RequestError as exc:
+                raise RepreGuardError(f"failed to call RepreGuard health endpoint: {exc}") from exc
+
+        if resp.status_code != 200:
+            raise RepreGuardError(
+                f"RepreGuard health endpoint returned {resp.status_code}: {resp.text}"
+            )
+
+        data = resp.json()
+        if data.get("status") != "ok":
+            raise RepreGuardError(f"unexpected RepreGuard health payload: {data}")
+
+        return data
+
     async def detect(self, text: str) -> Dict[str, Any]:
         payload = {"text": text}
 

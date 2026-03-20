@@ -15,3 +15,4 @@ ruff
 httpx
 pypdf
 python-docx
+reportlab

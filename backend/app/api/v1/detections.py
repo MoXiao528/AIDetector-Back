@@ -36,6 +36,7 @@ scan_router = APIRouter(prefix="/api/scan", tags=["scan"])
 MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\u3002\uFF01\uFF1F.!?])\s+|\n+")
 
 
@@ -64,6 +65,17 @@ def _resolve_sentence_type(score: float, label: str) -> str:
     if score >= 0.4:
         return "mixed"
     return "human"
+
+
+def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
+    normalized = {
+        item.strip().lower()
+        for item in (functions or [])
+        if isinstance(item, str) and item.strip()
+    }
+    supported = normalized & SUPPORTED_DETECTION_FUNCTIONS
+    supported.add("scan")
+    return supported
 
 
 def _build_history_analysis(text: str, score: float, label: str, functions: set[str]) -> Analysis:
@@ -118,23 +130,10 @@ def _build_history_analysis(text: str, score: float, label: str, functions: set[
             f'<span class="highlight-chip {class_map[sentence_type]}" data-sentence-id="sent-{index}">{escape(sentence_text)}</span>'
         )
 
+    _ = functions
     translation = ""
-    if {"translate", "translation"} & functions:
-        translation = f"{text.strip()} (translated)"
-
     polish = ""
-    if "polish" in functions:
-        polish = f"{text.strip()} (polished)"
-
     citations: list[HistoryCitation] = []
-    if {"citation", "citations"} & functions:
-        citations.append(
-            HistoryCitation(
-                id="cite-0",
-                text=sentences_raw[0] if sentences_raw else text.strip(),
-                source="Generated placeholder citation",
-            )
-        )
 
     ai_likely_count = sum(1 for item in history_sentences if item.type in {"ai", "mixed"})
     highlighted_html = " ".join(html_parts) if html_parts else f"<p>{escape(text)}</p>"
@@ -150,25 +149,38 @@ def _build_history_analysis(text: str, score: float, label: str, functions: set[
     )
 
 
-def _build_scan_analysis_response(text: str, functions: set[str], current_credits: int) -> AnalysisResponse:
-    sentences = [
-        SentenceAnalysis(text=segment, is_ai=False, confidence=0.1)
-        for segment in (_split_sentences(text) or [text.strip()])
-    ]
+def _build_scan_analysis_response(detection_response: DetectionResponse) -> AnalysisResponse:
+    analysis = detection_response.result
+    if analysis is None:
+        return AnalysisResponse(
+            summary="No detailed analysis available.",
+            sentences=[],
+            polish=None,
+            translation=None,
+            citations=None,
+            currentCredits=detection_response.currentCredits,
+        )
 
-    polish = f"{text.strip()} (polished)" if "polish" in functions else None
-    translation = f"{text.strip()} (translated)" if {"translate", "translation"} & functions else None
-    citations = None
-    if {"citation", "citations"} & functions:
-        citations = [Citation(source="stub", snippet="Generated placeholder citation.", url=None)]
+    sentences = [
+        SentenceAnalysis(
+            text=segment.text,
+            is_ai=segment.type != "human",
+            confidence=segment.probability,
+        )
+        for segment in analysis.sentences
+    ]
+    citations = [
+        Citation(source=entry.source, snippet=entry.text, url=None)
+        for entry in analysis.citations
+    ] or None
 
     return AnalysisResponse(
-        summary=f"Analyzed {len(sentences)} sentence(s).",
+        summary=f"AI {analysis.summary.ai}% | Mixed {analysis.summary.mixed}% | Human {analysis.summary.human}%",
         sentences=sentences,
-        polish=polish,
-        translation=translation,
+        polish=analysis.polish or None,
+        translation=analysis.translation or None,
         citations=citations,
-        currentCredits=current_credits,
+        currentCredits=detection_response.currentCredits,
     )
 
 
@@ -220,9 +232,7 @@ async def _detect_impl(
     normalized_score = _normalize_score(raw_score, threshold)
     remaining_after = max(limit - (used_today + chars), 0)
 
-    functions = set(payload.functions or [])
-    if not functions:
-        functions.add("scan")
+    functions = _normalize_detection_functions(payload.functions)
 
     analysis = _build_history_analysis(
         text=payload.text,
@@ -324,8 +334,7 @@ async def detect_scan(
     db: SessionDep,
     current_actor: CurrentActorDep,
 ) -> AnalysisResponse:
-    functions = set(payload.functions or [])
-    functions.add("scan")
+    functions = _normalize_detection_functions(payload.functions)
 
     detection_response = await _detect_impl(
         payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
@@ -333,11 +342,7 @@ async def detect_scan(
         current_actor=current_actor,
     )
 
-    return _build_scan_analysis_response(
-        text=payload.text,
-        functions=functions,
-        current_credits=detection_response.currentCredits,
-    )
+    return _build_scan_analysis_response(detection_response)
 
 
 @detect_router.get(
