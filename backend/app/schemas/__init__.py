@@ -32,7 +32,7 @@ from app.schemas.admin import (
 )
 from app.schemas.analysis import AnalysisResponse, Citation, DetectRequest, SentenceAnalysis
 from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
-from app.schemas.report import ReportPdfRequest
+from app.schemas.report import ReportPdfContent, ReportPdfRequest
 from app.schemas.scan_example import ScanExamplesResponse, ScanHeroExampleItem, ScanUsageExampleItem
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.quota import QuotaResponse
@@ -85,6 +85,7 @@ __all__ = [
     "DetectionResponse",
     "DetectRequest",
     "QuotaResponse",
+    "ReportPdfContent",
     "ReportPdfRequest",
     "DatabasePingResponse",
     "ErrorResponse",

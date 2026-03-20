@@ -163,7 +163,7 @@ class AdminService:
         next_total = user.credits_total + delta
         if next_total < user.credits_used:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "code": "INVALID_CREDITS_ADJUSTMENT",
                     "message": "Credits total cannot be lower than credits used",

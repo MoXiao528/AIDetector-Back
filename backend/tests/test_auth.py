@@ -1,6 +1,7 @@
 import pytest
+from fastapi import Response
 
-from app.api.v1.auth import guest_login, login, read_current_user, register_user
+from app.api.v1.auth import guest_login, login, logout, read_current_user, register_user
 from app.api.v1.detections import detect
 from app.api.v1.quota import get_quota
 from app.db.deps import get_current_actor
@@ -29,9 +30,11 @@ async def test_register_login_and_me(db_session, unique_email):
     assert created_user.email == unique_email
     assert created_user.name == unique_email
 
-    token_resp = await login(LoginRequest(identifier=unique_email, password="StrongPass!23"), db_session)
+    response = Response()
+    token_resp = await login(LoginRequest(identifier=unique_email, password="StrongPass!23"), response, db_session)
     assert token_resp.token_type == "bearer"
     assert token_resp.access_token
+    assert "aid_access_token=" in response.headers.get("set-cookie", "")
 
     me = await read_current_user(current_user=created_user)
     assert me.email == unique_email
@@ -73,3 +76,10 @@ async def test_guest_token_reuse_preserves_guest_quota(db_session):
     assert first_quota.used_today > 0
     assert renewed_quota.used_today == first_quota.used_today
     assert renewed_quota.remaining == first_quota.remaining
+
+
+@pytest.mark.anyio
+async def test_logout_clears_auth_cookie():
+    response = await logout()
+    assert response.status_code == 204
+    assert "aid_access_token=" in response.headers.get("set-cookie", "")

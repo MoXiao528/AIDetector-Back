@@ -1,300 +1,260 @@
 # AIDetector Backend
 
-这是一个基于 **FastAPI** + **PostgreSQL** 构建的 AI 内容检测后端服务。它作为业务网关，管理用户认证、API Key、团队协作，并将具体的检测请求转发给底层的 **RepreGuard** 微服务进行推理。
+这是后端仓库的快捷部署说明。  
+如果你要看整套 `AIDetector V1.0` 的完整上线文档，请看前端仓库根目录的 [README.md](/D:/Code/AIDetector-web/README.md)。
 
-> ⚠️ **开发状态说明 (Development Status)**
-> * **后端接口**：核心功能（认证、检测、API Key、团队管理）已实现，部分高级管理接口仍在开发中。
-> * **前端对接**：目前后端服务**暂未与前端页面打通**，请使用 API 工具（如 Postman）或下方的 PowerShell 脚本进行测试。
-> * **外部依赖**：检测功能强依赖于 `RepreGuard` 微服务，请确保该服务已启动，否则 `/detect` 接口会报错。
+这个 README 只解决一件事：
 
-## ✨ 已实现的核心功能
+- 让后端在服务器上**尽可能一键启用**
 
-* ✅ **多方式鉴权**：支持 JWT (Bearer Token) 和 API Key (`X-API-Key`)。
-* ✅ **AI 检测集成**：对接 RepreGuard 微服务，包含自动重试与分数归一化。
-* ✅ **用户体系**：注册、登录、个人信息查询。
-* ✅ **团队协作**：创建团队、添加成员、查看团队维度的检测统计。
-* ✅ **历史记录**：检测记录持久化存储，支持按时间筛选与分页。
-* ✅ **按日字符额度 (MVP)**：Guest 5000 字符/天，登录用户 30000 字符/天，超额返回 429。
-* 🚧 **系统管理**：基础的管理员状态检查（高级管理面板开发中）。
+---
 
-## 🛠 前置依赖
+## 1. 目录约定
 
-在启动本项目之前，请确保环境满足以下要求：
+后端目录假设是：
 
-1.  **Docker & Docker Compose**
-2.  **RepreGuard 检测微服务**（关键）：
-    * 本项目默认连接 `http://host.docker.internal:9000`。
-    * 若不启动此微服务，调用 `/detect` 接口将返回 `502 Bad Gateway`。
-    * *配置修改：在 `.env` 中调整 `DETECT_SERVICE_URL`。*
+```txt
+/srv/aidetector/AIDetector-Back
+```
 
-## 🚀 快速启动
+你可以不是这个路径，但后面的命令都默认你已经 `cd` 到后端仓库根目录。
 
-### 1. 配置环境变量
+---
 
-复制示例配置文件：
+## 2. 首次部署前要改什么
+
+先复制环境变量：
 
 ```bash
 cp .env.example .env
 ```
 
-建议修改 `.env` 中的以下配置：
+然后编辑：
 
-* `SECRET_KEY`: 生成 JWT 的密钥。
-* `POSTGRES_PASSWORD`: 数据库密码。
+```bash
+nano .env
+```
 
-### 2. 启动服务 (Docker Compose)
+至少改这些值：
 
-使用 Docker Compose 一键构建并启动 API 和 数据库服务：
+```env
+ENVIRONMENT=production
+SECRET_KEY=请替换成至少32位随机字符串
+POSTGRES_PASSWORD=请替换成强密码
+BACKEND_CORS_ORIGINS=https://你的域名
+DETECT_SERVICE_URL=http://你的RepreGuard地址:9000
+```
+
+注意：
+
+1. `ENVIRONMENT` 上线必须是 `production`
+2. `SECRET_KEY` 不能短，也不能继续用默认占位值
+3. `POSTGRES_PASSWORD` 必须改
+4. `DETECT_SERVICE_URL` 不要在 Linux 生产环境继续用 `host.docker.internal`
+
+如果这些值没改对，后端在 `production` 下会直接拒绝启动。
+
+---
+
+## 3. 一键脚本
+
+这个仓库现在提供 3 个脚本：
+
+```bash
+bash scripts/server-up.sh
+bash scripts/server-update.sh
+bash scripts/server-check.sh
+```
+
+### `server-up.sh`
+
+用途：
+
+- 首次启动
+- 日常重启
+- 重新构建并拉起服务
+- 自动跑迁移
+- 自动做健康检查
+
+### `server-update.sh`
+
+用途：
+
+- 服务器上更新代码
+- `git pull`
+- 重建后端服务
+- 自动跑迁移
+- 自动做健康检查
+
+### `server-check.sh`
+
+用途：
+
+- 检查容器状态
+- 检查 `/api/v1/health`
+- 检查 `/api/v1/ready`
+
+---
+
+## 4. 首次启动
+
+### 4.1 给脚本执行权限
+
+Linux 服务器第一次执行前：
+
+```bash
+chmod +x scripts/*.sh
+```
+
+### 4.2 一键启动
+
+```bash
+bash scripts/server-up.sh
+```
+
+这个脚本会自动做：
+
+1. 检查 `.env`
+2. `docker compose up -d --build`
+3. `alembic upgrade head`
+4. 健康检查
+
+---
+
+## 5. 日常更新
+
+服务器上要更新版本时：
+
+```bash
+bash scripts/server-update.sh
+```
+
+这个脚本会自动做：
+
+1. `git pull --ff-only`
+2. 重建并重启容器
+3. 执行迁移
+4. 做健康检查
+
+---
+
+## 6. 健康检查
+
+任何时候你想确认后端是不是活着：
+
+```bash
+bash scripts/server-check.sh
+```
+
+这个脚本会输出：
+
+- `docker compose ps`
+- `/api/v1/health`
+- `/api/v1/ready`
+
+只要 `/ready` 不是 `ok`，就不要继续接前端流量。
+
+---
+
+## 7. 不走脚本时的手动命令
+
+如果你想手动做，也可以直接跑：
+
+### 启动服务
 
 ```bash
 docker compose up -d --build
 ```
 
-### 3. 执行数据库迁移
-
-首次启动**必须**执行此命令以创建数据表：
+### 跑迁移
 
 ```bash
 docker compose exec api alembic upgrade head
 ```
 
-如需生成新的迁移文件（模型变更后）：
+### 查看容器状态
 
 ```bash
-docker compose exec api alembic revision --autogenerate -m "describe changes"
+docker compose ps
+```
+
+### 看日志
+
+```bash
+docker compose logs -f api
+docker compose logs -f db
+```
+
+### 存活检查
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health
+```
+
+### 就绪检查
+
+```bash
+curl http://127.0.0.1:8000/api/v1/ready
 ```
 
 ---
 
-## 🧪 完整业务流程测试 (PowerShell)
+## 8. 管理员账号
 
-为了方便测试人员验证后端逻辑是否跑通，这里提供了一套完整的 **PowerShell** 指令。
-您可以按顺序在 PowerShell 终端中执行以下代码块，脚本会自动保存 Token 和 API Key 供后续步骤使用。
+如果你需要管理员后台，先注册一个普通账号，然后进入数据库提升角色：
 
-### 1. 基础环境检查
-
-确保服务已启动且数据库连接正常。
-
-```powershell
-$BaseUrl = "http://localhost:8000/api/v1"
-
-# 1. 服务健康检查
-Write-Host "--- 1. Health Check ---"
-Invoke-RestMethod -Uri "$BaseUrl/health" -Method Get
-# 预期输出: status=ok
-
-# 2. 数据库连接检查
-Write-Host "--- 2. DB Ping ---"
-Invoke-RestMethod -Uri "$BaseUrl/db/ping" -Method Get
-# 预期输出: status=ok
+```bash
+docker compose exec db psql -U postgres -d AIDetector
 ```
 
-### 2. 用户认证流程
+执行：
 
-注册一个新用户并登录获取 Token。
-
-```powershell
-# 3. 注册新用户
-Write-Host "--- 3. Register User ---"
-$UserEmail = "test_user_$(Get-Random)@example.com"
-$Body = @{ email = $UserEmail; name = "PS Test $(Get-Random)"; password = "StrongPass!23" } | ConvertTo-Json
-try {
-    Invoke-RestMethod -Uri "$BaseUrl/auth/register" -Method Post -Body $Body -ContentType "application/json"
-    Write-Host "用户 $UserEmail 注册成功" -ForegroundColor Green
-} catch {
-    Write-Host "用户可能已存在，尝试直接登录..." -ForegroundColor Yellow
-}
-
-# 4. 登录并保存 Token
-Write-Host "--- 4. Login ---"
-try {
-    $LoginBody = @{ identifier = $UserEmail; password = "StrongPass!23" } | ConvertTo-Json
-    $LoginResponse = Invoke-RestMethod -Uri "$BaseUrl/auth/login" -Method Post -Body $LoginBody -ContentType "application/json"
-    $Token = $LoginResponse.accessToken
-    $Headers = @{ Authorization = "Bearer $Token" }
-    Write-Host "Token 获取成功" -ForegroundColor Green
-} catch {
-    Write-Host "登录失败: $($_.Exception.Message)" -ForegroundColor Red
-}
-
-# 5. 验证 Token (获取个人信息)
-Write-Host "--- 5. Get My Info ---"
-Invoke-RestMethod -Uri "$BaseUrl/auth/me" -Method Get -Headers $Headers
+```sql
+UPDATE users
+SET role = 'SYS_ADMIN'
+WHERE email = '你的管理员邮箱';
 ```
 
-### 3. AI 检测流程 (核心功能)
+退出：
 
-测试文本检测功能。**注意：需确保底层的 RepreGuard 服务已运行。**
-
-```powershell
-# 6. 发起检测请求 (使用 Bearer Token)
-Write-Host "--- 6. Detect Text (Bearer Token) ---"
-$DetectBody = @{ text = "This is a sample text generated by AI to test the detector." } | ConvertTo-Json
-
-try {
-    $DetectResult = Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $DetectBody -ContentType "application/json"
-    Write-Host "检测成功! Label: $($DetectResult.label) | Score: $($DetectResult.score)" -ForegroundColor Green
-    Write-Host "底层模型: $($DetectResult.model_name)"
-} catch {
-    $StatusCode = $_.Exception.Response.StatusCode.value__
-    Write-Host "检测失败 (HTTP $StatusCode)" -ForegroundColor Red
-    if ($StatusCode -eq 502) {
-        Write-Host "原因: 无法连接 RepreGuard 微服务，请检查 host.docker.internal:9000 是否可达" -ForegroundColor Yellow
-    }
-}
-```
-
-> ℹ️ **额度提醒**：/detect 现在按日字符额度限制（Guest 5000、User 30000）。若超额会返回 429（code=QUOTA_EXCEEDED）。
-
-### 4. API Key 管理与调用
-
-模拟第三方通过 API Key 调用接口的场景。
-
-```powershell
-# 7. 创建 API Key
-Write-Host "--- 7. Create API Key ---"
-$KeyBody = @{ name = "Test Key PowerShell" } | ConvertTo-Json
-$KeyResponse = Invoke-RestMethod -Uri "$BaseUrl/keys" -Method Post -Headers $Headers -Body $KeyBody -ContentType "application/json"
-$ApiKey = $KeyResponse.key
-Write-Host "API Key 创建成功: $ApiKey" -ForegroundColor Green
-
-# 8. 使用 API Key 进行检测 (无需 Bearer Token)
-Write-Host "--- 8. Detect Text (X-API-Key) ---"
-$KeyHeaders = @{ "X-API-Key" = $ApiKey }
-try {
-    $KeyDetectResult = Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $KeyHeaders -Body $DetectBody -ContentType "application/json"
-    Write-Host "API Key 检测成功! Label: $($KeyDetectResult.label)" -ForegroundColor Green
-} catch {
-    Write-Host "API Key 检测失败: $($_.Exception.Message)" -ForegroundColor Red
-}
-```
-
-### 5. 团队与数据统计
-
-测试团队协作功能。
-
-```powershell
-# 9. 创建团队
-Write-Host "--- 9. Create Team ---"
-$TeamBody = @{ name = "Dev Team $(Get-Random)" } | ConvertTo-Json
-try {
-    $Team = Invoke-RestMethod -Uri "$BaseUrl/teams" -Method Post -Headers $Headers -Body $TeamBody -ContentType "application/json"
-    Write-Host "团队创建成功 ID: $($Team.id)" -ForegroundColor Green
-    
-    # 10. 查看团队统计
-    Write-Host "--- 10. Team Stats ---"
-    $Stats = Invoke-RestMethod -Uri "$BaseUrl/teams/$($Team.id)/stats" -Method Get -Headers $Headers
-    Write-Host "统计数据 (Items):"
-    $Stats.items | Format-Table date, detections
-} catch {
-    Write-Host "团队操作失败: $($_.Exception.Message)" -ForegroundColor Red
-}
-```
-
-### 6. 查看历史记录
-
-确认之前的检测操作均已落库。
-
-```powershell
-# 11. 分页查询检测历史
-Write-Host "--- 11. History ---"
-$History = Invoke-RestMethod -Uri "$BaseUrl/detections?page=1&page_size=5" -Method Get -Headers $Headers
-Write-Host "共找到 $($History.total) 条记录"
-$History.items | Select-Object id, label, score, created_at | Format-Table
+```sql
+\q
 ```
 
 ---
 
-## ✅ 额度与 Guest / User 自测脚本 (PowerShell)
+## 9. 常见问题
 
-以下脚本仅新增部分，不影响上面的完整流程。
+### 9.1 脚本报 `.env not found`
 
-### 7.1 Guest 测试
+先执行：
 
-```powershell
-# 1. 获取 guest token
-Write-Host "--- 12. Guest Token ---"
-$GuestResp = Invoke-RestMethod -Uri "$BaseUrl/auth/guest" -Method Post
-$GuestToken = $GuestResp.accessToken
-$GuestHeaders = @{ Authorization = "Bearer $GuestToken" }
-
-# 2. 查询 quota（Guest limit=5000）
-Write-Host "--- 13. Guest Quota ---"
-$GuestQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $GuestHeaders
-$GuestQuota | Format-Table
-
-# 3. 使用 guest token 发起检测（短文本应成功）
-Write-Host "--- 14. Guest Detect ---"
-$GuestDetectBody = @{ text = "Guest short text." } | ConvertTo-Json
-Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestDetectBody -ContentType "application/json"
-
-# 4. 构造超长文本触发 429
-Write-Host "--- 15. Guest Detect Over Quota ---"
-$Remaining = [Math]::Max($GuestQuota.remaining, 0)
-$LongText = ("A" * ($Remaining + 10))
-$GuestOverBody = @{ text = $LongText } | ConvertTo-Json
-try {
-    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $GuestHeaders -Body $GuestOverBody -ContentType "application/json"
-} catch {
-    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
-}
+```bash
+cp .env.example .env
+nano .env
 ```
 
-### 7.2 User 测试
+### 9.2 `/ready` 不通过
 
-```powershell
-# 1. 复用上面的注册/登录步骤获取 $Headers
+优先检查：
 
-# 2. 查询 quota（User limit=30000）
-Write-Host "--- 16. User Quota ---"
-$UserQuota = Invoke-RestMethod -Uri "$BaseUrl/quota" -Method Get -Headers $Headers
-$UserQuota | Format-Table
+- 数据库容器是否正常
+- `DETECT_SERVICE_URL` 是否可达
 
-# 3. 使用 user token 发起检测（短文本应成功）
-Write-Host "--- 17. User Detect ---"
-$UserDetectBody = @{ text = "User short text." } | ConvertTo-Json
-Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserDetectBody -ContentType "application/json"
+然后看日志：
 
-# 4. 构造超长文本触发 429
-Write-Host "--- 18. User Detect Over Quota ---"
-$UserRemaining = [Math]::Max($UserQuota.remaining, 0)
-$UserLongText = ("A" * ($UserRemaining + 10))
-$UserOverBody = @{ text = $UserLongText } | ConvertTo-Json
-try {
-    Invoke-RestMethod -Uri "$BaseUrl/detect" -Method Post -Headers $Headers -Body $UserOverBody -ContentType "application/json"
-} catch {
-    Write-Host "预期 429 QUOTA_EXCEEDED: $($_.Exception.Message)" -ForegroundColor Yellow
-}
+```bash
+docker compose logs -f api
+docker compose logs -f db
 ```
 
-## 📂 目录结构说明
+### 9.3 服务起来了，但前端调用 401 / 登录异常
 
-```
-backend/
-├── alembic/             # 数据库迁移脚本
-├── app/
-│   ├── api/v1/          # API 路由实现
-│   │   ├── auth.py      # 认证 (登录/注册)
-│   │   ├── detections.py# 检测逻辑 (核心)
-│   │   ├── keys.py      # API Key 管理
-│   │   └── teams.py     # 团队管理
-│   ├── core/            # 核心配置 (config, security)
-│   ├── models/          # 数据库模型 (User, Detection, Team)
-│   └── services/        # 业务服务层
-│       └── repre_guard_client.py # 与 AI 微服务通信的客户端
-└── tests/               # 单元测试
-```
+大概率不是后端容器没起来，而是：
 
-## 🔌 常见问题 (FAQ)
+- 前端和后端没同域
+- Nginx `/api` 没反代好
+- HTTPS 没配置好
+- `BACKEND_CORS_ORIGINS` 没写对
 
-**Q: 执行 `/detect` 时报错 `502 Bad Gateway`？**
-A: 这是因为后端连接不上 AI 检测微服务。
-
-1. 请检查 `docker-compose.yml` 或 `.env` 中的 `DETECT_SERVICE_URL` 配置。
-2. 确保您已经在本地或服务器上启动了提供 `/detect` 接口的模型服务。
-
-**Q: 数据库连接失败？**
-A: 请确保 Docker 容器 `db` 正在运行，且 `POSTGRES_PASSWORD` 与 `.env` 文件一致。
-
-**Q: 如何重置数据库？**
-A: `docker compose down -v` (这会删除所有数据)，然后重新 `up` 并执行 `alembic upgrade head`。
+这部分看主 README。

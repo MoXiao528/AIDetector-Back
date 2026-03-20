@@ -1,7 +1,7 @@
 from datetime import timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -13,6 +13,34 @@ from app.schemas import ErrorResponse, GuestTokenRequest, LoginRequest, Register
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+AUTH_COOKIE_NAME = "aid_access_token"
+DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
+
+
+def _is_secure_cookie() -> bool:
+    return str(settings.environment or "").strip().lower() not in DEVELOPMENT_ENVIRONMENTS
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        path="/",
+    )
 
 
 @router.post(
@@ -68,7 +96,7 @@ async def register_user(payload: RegisterRequest, db: SessionDep) -> UserRespons
     summary="用户登录获取 JWT",
     responses={401: {"model": ErrorResponse}},
 )
-async def login(payload: LoginRequest, db: SessionDep) -> Token:
+async def login(payload: LoginRequest, response: Response, db: SessionDep) -> Token:
     if "@" in payload.identifier:
         user = db.scalar(select(User).where(User.email == payload.identifier))
     else:
@@ -94,6 +122,7 @@ async def login(payload: LoginRequest, db: SessionDep) -> Token:
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(subject=str(user.id), expires_delta=access_token_expires)
+    _set_auth_cookie(response, access_token)
     return Token(access_token=access_token, token_type="bearer")
 
 
@@ -111,6 +140,17 @@ async def guest_login(payload: GuestTokenRequest | None = None) -> Token:
         extra_claims={"sub_type": "guest", "guest_id": guest_id},
     )
     return Token(access_token=access_token, token_type="bearer", guest_id=guest_id)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="清除登录会话",
+)
+async def logout() -> Response:
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _clear_auth_cookie(response)
+    return response
 
 
 @router.get(

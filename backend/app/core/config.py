@@ -1,8 +1,14 @@
 from functools import lru_cache
 from typing import List
+from urllib.parse import urlparse
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AnyHttpUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+LOCAL_DETECT_HOSTS = {"localhost", "127.0.0.1", "host.docker.internal"}
+WEAK_DB_PASSWORDS = {"postgres", "123456", "password", "changeme"}
+DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 
 class Settings(BaseSettings):
@@ -43,6 +49,26 @@ class Settings(BaseSettings):
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}?client_encoding=utf8"
         )
+
+    @model_validator(mode="after")
+    def validate_production_safety(self) -> "Settings":
+        environment = str(self.environment or "").strip().lower()
+        if environment in DEVELOPMENT_ENVIRONMENTS:
+            return self
+
+        secret_key = str(self.secret_key or "").strip()
+        if len(secret_key) < 32 or secret_key.lower() == "change-me":
+            raise ValueError("Production-like environments require a strong SECRET_KEY with at least 32 characters.")
+
+        detect_host = (urlparse(self.detect_service_url).hostname or "").strip().lower()
+        if detect_host in LOCAL_DETECT_HOSTS:
+            raise ValueError("Production-like environments cannot use a local DETECT_SERVICE_URL.")
+
+        postgres_password = str(self.postgres_password or "").strip().lower()
+        if postgres_password in WEAK_DB_PASSWORDS:
+            raise ValueError("Production-like environments require a non-default POSTGRES_PASSWORD.")
+
+        return self
 
 
 @lru_cache

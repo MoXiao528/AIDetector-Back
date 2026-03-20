@@ -13,25 +13,20 @@ class ReportPdfRequest(SchemaBase):
         description="Report source type.",
         json_schema_extra={"example": "scan"},
     )
-    generated_at: datetime | None = Field(
-        default=None,
-        description="Report generation timestamp.",
-    )
     locale: str = Field(
         default="zh-CN",
         description="Report locale.",
         json_schema_extra={"example": "zh-CN"},
     )
-    history_id: int | None = Field(
-        default=None,
-        description="Associated history record ID.",
-        json_schema_extra={"example": 12},
-    )
-    detection_id: int | None = Field(
-        default=None,
-        description="Associated detection ID.",
-        json_schema_extra={"example": 12},
-    )
+    history_id: int = Field(..., ge=1, description="Associated history record ID.", json_schema_extra={"example": 12})
+
+
+class ReportPdfContent(SchemaBase):
+    report_type: Literal["scan", "history"] = Field(default="scan")
+    generated_at: datetime | None = Field(default=None)
+    locale: str = Field(default="zh-CN")
+    history_id: int | None = Field(default=None)
+    detection_id: int | None = Field(default=None)
     functions: list[str] = Field(
         default_factory=lambda: ["scan"],
         description="Functions used for this report.",

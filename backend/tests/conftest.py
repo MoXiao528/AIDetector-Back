@@ -15,6 +15,18 @@ if str(ROOT_DIR) not in sys.path:
 from app.db.base_class import Base  # noqa: E402
 
 
+@pytest.fixture(scope="session", autouse=True)
+def configure_test_settings():
+    from app.api.v1 import auth as auth_api
+    from app.core import security
+    from app.db import deps
+
+    strong_secret = "test-secret-key-with-at-least-32-characters"
+    security.settings.secret_key = strong_secret
+    deps.settings.secret_key = strong_secret
+    auth_api.settings.secret_key = strong_secret
+
+
 @pytest.fixture(scope="session")
 def engine():
     engine = create_engine(

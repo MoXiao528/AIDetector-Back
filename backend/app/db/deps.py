@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from pydantic import ValidationError
@@ -19,15 +19,20 @@ from app.schemas import TokenPayload
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+AUTH_COOKIE_NAME = "aid_access_token"
 
 SessionDep = Annotated[Session, Depends(get_db)]
 TokenDep = Annotated[str | None, Depends(oauth2_scheme)]
+AuthCookieDep = Annotated[str | None, Cookie(alias=AUTH_COOKIE_NAME)]
 # FastAPI requires the default to be defined outside of Annotated when using Header
 APIKeyHeaderDep = Annotated[str | None, Header(alias="X-API-Key")]
 
 
 def get_current_user(
-    db: SessionDep, token: TokenDep, api_key_header: APIKeyHeaderDep = None
+    db: SessionDep,
+    token: TokenDep,
+    auth_cookie: AuthCookieDep = None,
+    api_key_header: APIKeyHeaderDep = None,
 ) -> User:
     if api_key_header:
         key_hash = hash_api_key(api_key_header)
@@ -46,7 +51,8 @@ def get_current_user(
         db.commit()
         return api_key.user
 
-    if token is None:
+    resolved_token = token or auth_cookie
+    if resolved_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -54,7 +60,7 @@ def get_current_user(
         )
 
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        payload = jwt.decode(resolved_token, settings.secret_key, algorithms=["HS256"])
         token_data = TokenPayload(**payload)
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
@@ -127,9 +133,11 @@ def _decode_token(token: str) -> TokenPayload:
 def get_current_actor(
     db: SessionDep,
     token: TokenDep,
+    auth_cookie: AuthCookieDep = None,
     api_key_header: APIKeyHeaderDep = None,
 ) -> ActorContext:
-    if token is None:
+    resolved_token = token or auth_cookie
+    if resolved_token is None:
         if api_key_header:
             user = get_current_user(db=db, token=None, api_key_header=api_key_header)
             return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
@@ -143,7 +151,7 @@ def get_current_actor(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token_data = _decode_token(token)
+    token_data = _decode_token(resolved_token)
     if token_data.sub is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

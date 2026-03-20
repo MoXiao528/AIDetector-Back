@@ -81,7 +81,7 @@ async def get_team_stats(
     end: datetime | None = None,
 ) -> TeamStatsResponse:
     if start and end and start > end:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="start must be <= end")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="start must be <= end")
 
     service = TeamService(db)
     rows = service.get_team_stats(team_id=team_id, user_id=current_user.id, start=start, end=end)

@@ -16,7 +16,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.models.user import User
-from app.schemas.report import ReportPdfRequest
+from app.schemas.report import ReportPdfContent
 
 FONT_NAME = "NotoSansSC"
 FALLBACK_FONT_NAME = "STSong-Light"
@@ -278,7 +278,7 @@ def _build_styles(font_name: str) -> dict[str, ParagraphStyle]:
 
 
 def _build_metadata_table(
-    payload: ReportPdfRequest,
+    payload: ReportPdfContent,
     user: User,
     copy: ReportCopy,
     styles: dict[str, ParagraphStyle],
@@ -333,7 +333,7 @@ def _build_metadata_table(
     return table
 
 
-def _build_summary_table(payload: ReportPdfRequest, copy: ReportCopy, styles: dict[str, ParagraphStyle]) -> Table:
+def _build_summary_table(payload: ReportPdfContent, copy: ReportCopy, styles: dict[str, ParagraphStyle]) -> Table:
     summary = payload.analysis.summary
     rows = [[
         Paragraph(f"<font color='{AI_STROKE}'><b>{copy.ai_label}</b></font><br/><font size='18'>{summary.ai}%</font>", styles["body"]),
@@ -408,14 +408,16 @@ def _append_original_text(story: list, text: str, styles: dict[str, ParagraphSty
         story.append(Spacer(1, 3))
 
 
-def build_report_filename(payload: ReportPdfRequest) -> str:
+def build_report_filename(payload: ReportPdfContent) -> str:
     timestamp = (payload.generated_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d-%H-%M-%S")
-    if payload.history_id is not None:
+    if payload.report_type == "history" and payload.history_id is not None:
         return f"aidetector-report-history-{payload.history_id}-{timestamp}.pdf"
+    if payload.history_id is not None:
+        return f"aidetector-report-scan-{payload.history_id}-{timestamp}.pdf"
     return f"aidetector-report-{timestamp}.pdf"
 
 
-def build_report_pdf(payload: ReportPdfRequest, user: User) -> bytes:
+def build_report_pdf(payload: ReportPdfContent, user: User) -> bytes:
     copy = _get_copy(payload.locale)
     font_name = _ensure_report_font()
     styles = _build_styles(font_name)

@@ -191,7 +191,7 @@ async def _detect_impl(
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Text cannot be empty",
         )
 
@@ -370,7 +370,7 @@ async def parse_files(
     _ = current_user
     if len(files) > MAX_FILE_COUNT:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Too many files. Max {MAX_FILE_COUNT}.",
         )
 
@@ -429,7 +429,7 @@ async def _list_detections_impl(
 ) -> DetectionListResponse:
     if from_time and to_time and from_time > to_time:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="from must be <= to",
         )
 
