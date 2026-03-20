@@ -35,7 +35,7 @@ from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
 from app.schemas.scan_example import ScanExamplesResponse, ScanHeroExampleItem, ScanUsageExampleItem
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.quota import QuotaResponse
-from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
+from app.schemas.auth import GuestTokenRequest, LoginRequest, RegisterRequest, Token, TokenPayload
 from app.schemas.responses import DatabasePingResponse, ErrorResponse, HealthResponse, WelcomeResponse
 from app.schemas.user import UserBase, UserCreate, UserProfile, UserProfileUpdate, UserResponse
 from app.schemas.team import (
@@ -77,6 +77,7 @@ __all__ = [
     "AdminUserUpdateRequest",
     "AnalysisResponse",
     "Citation",
+    "GuestTokenRequest",
     "DetectionItem",
     "DetectionListResponse",
     "DetectionRequest",

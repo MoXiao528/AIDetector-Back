@@ -237,16 +237,23 @@ class ScanExampleService:
         return list(self.db.scalars(stmt).all())
 
     def _ensure_seeded(self) -> None:
-        existing_keys = {
-            (locale, placement, key)
-            for locale, placement, key in self.db.execute(
-                select(ScanExample.locale, ScanExample.placement, ScanExample.key)
-            ).all()
+        existing_records = {
+            (record.locale, record.placement, record.key): record
+            for record in self.db.scalars(select(ScanExample)).all()
         }
         pending = []
+        changed = False
         for item in DEFAULT_EXAMPLES:
             identity = (item["locale"], item["placement"], item["key"])
-            if identity in existing_keys:
+            existing = existing_records.get(identity)
+            if existing:
+                for field, value in item.items():
+                    if getattr(existing, field) != value:
+                        setattr(existing, field, value)
+                        changed = True
+                if existing.is_active is not True:
+                    existing.is_active = True
+                    changed = True
                 continue
             pending.append(
                 ScanExample(
@@ -255,10 +262,11 @@ class ScanExampleService:
                 )
             )
 
-        if not pending:
+        if not pending and not changed:
             return
 
-        self.db.add_all(pending)
+        if pending:
+            self.db.add_all(pending)
         self.db.commit()
 
     @staticmethod

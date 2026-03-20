@@ -9,7 +9,7 @@ from app.core.roles import UserRole
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.db.deps import CurrentUserDep, SessionDep
 from app.models.user import User
-from app.schemas import ErrorResponse, LoginRequest, RegisterRequest, Token, UserProfileUpdate, UserResponse
+from app.schemas import ErrorResponse, GuestTokenRequest, LoginRequest, RegisterRequest, Token, UserProfileUpdate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -102,15 +102,15 @@ async def login(payload: LoginRequest, db: SessionDep) -> Token:
     response_model=Token,
     summary="游客登录获取 JWT",
 )
-async def guest_login() -> Token:
-    guest_id = str(uuid4())
+async def guest_login(payload: GuestTokenRequest | None = None) -> Token:
+    guest_id = payload.guest_id.strip() if payload and payload.guest_id and payload.guest_id.strip() else str(uuid4())
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         subject=guest_id,
         expires_delta=access_token_expires,
         extra_claims={"sub_type": "guest", "guest_id": guest_id},
     )
-    return Token(access_token=access_token, token_type="bearer")
+    return Token(access_token=access_token, token_type="bearer", guest_id=guest_id)
 
 
 @router.get(

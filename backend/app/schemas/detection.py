@@ -1,104 +1,116 @@
 """Detection related Pydantic models."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
-from pydantic import Field, ConfigDict
+from pydantic import ConfigDict, Field
 
 from app.schemas.base import SchemaBase
+from app.schemas.history import Analysis
 
 
 class DetectionRequest(SchemaBase):
     text: str = Field(
         ...,
         min_length=1,
-        example="Sample text to classify.",
+        json_schema_extra={"example": "Sample text to classify."},
     )
     functions: list[str] = Field(
         default_factory=list,
-        description="检测时启用的功能列表。",
-        example=["scan", "polish"],
+        description="Detection feature flags.",
+        json_schema_extra={"example": ["scan", "polish"]},
     )
     options: dict[str, Any] | None = Field(
         default=None,
-        description="可选的检测参数（例如语言、模型选择等），后端可用来路由到不同检测模型。",
-        example={"language": "en"},
+        description="Optional detection parameters.",
+        json_schema_extra={"example": {"language": "en"}},
     )
 
 
 class DetectionResponse(SchemaBase):
-    """
-    单次检测的返回结果：
-    - detection_id：后端内部检测记录的主键 ID
-    - label：最终归一化后的标签（例如 'human' / 'ai'）
-    - score：0-1 范围的置信度（面向前端展示）
-    - model_name / raw_score / threshold：底层 RepreGuard 微服务返回的原始信息
-    """
-
-    detection_id: int = Field(..., example=1)
-    label: str = Field(..., example="human")
+    detection_id: int = Field(..., json_schema_extra={"example": 1})
+    label: str = Field(..., json_schema_extra={"example": "human"})
     score: float = Field(
         ...,
         ge=0,
         le=1,
-        example=0.68,
-        description="归一化后的分值（0-1），用于前端展示置信度。",
+        description="Normalized detection score in the range [0, 1].",
+        json_schema_extra={"example": 0.68},
     )
-    model_name: Optional[str] = Field(
+    model_name: str | None = Field(
         default=None,
-        example="Qwen/Qwen2.5-7B",
-        description="底层使用的检测模型名称（例如 RepreGuard 使用的基座模型）。",
+        description="Underlying model name returned by RepreGuard.",
+        json_schema_extra={"example": "Qwen/Qwen2.5-7B"},
     )
-    raw_score: Optional[float] = Field(
+    raw_score: float | None = Field(
         default=None,
-        example=2.93,
-        description="底层检测模型的原始分数（例如 RepreGuard 的 RepreScore），未归一化。",
+        description="Raw score returned by the downstream model.",
+        json_schema_extra={"example": 2.93},
     )
-    threshold: Optional[float] = Field(
+    threshold: float | None = Field(
         default=None,
-        example=2.4924452377944597,
-        description="当前模型使用的分类阈值（例如 RepreGuard 的判别阈值）。",
+        description="Threshold returned by the downstream model.",
+        json_schema_extra={"example": 2.4924452377944597},
     )
-    currentCredits: int = Field(..., example=9990, description="Remaining credits after deduction")
-    history_id: Optional[int] = Field(None, example=123, description="生成的历史记录 ID")
+    currentCredits: int = Field(
+        ...,
+        description="Remaining credits after deduction.",
+        json_schema_extra={"example": 9990},
+    )
+    history_id: int | None = Field(
+        default=None,
+        description="Associated history record ID.",
+        json_schema_extra={"example": 123},
+    )
+    input_text: str = Field(
+        ...,
+        description="Original input text.",
+        json_schema_extra={"example": "Sample text to classify."},
+    )
+    result: Analysis | None = Field(
+        default=None,
+        description="Detailed analysis payload aligned with history records.",
+    )
 
 
 class DetectionItem(SchemaBase):
-    id: int = Field(..., example=1)
-    label: str = Field(..., example="ai")
-    score: float = Field(..., ge=0, le=1, example=0.42)
-    input_text: str = Field(..., example="Short text")
-    created_at: datetime = Field(..., example="2024-01-01T00:00:00Z")
+    id: int = Field(..., json_schema_extra={"example": 1})
+    label: str = Field(..., json_schema_extra={"example": "ai"})
+    score: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.42})
+    input_text: str = Field(..., json_schema_extra={"example": "Short text"})
+    created_at: datetime = Field(..., json_schema_extra={"example": "2024-01-01T00:00:00Z"})
     meta_json: dict | None = Field(
         default=None,
-        example={
-            "length": 120,
-            "repre_guard": {
-                "raw_score": 2.93,
-                "threshold": 2.49,
-                "label": "AI",
-                "model_name": "Qwen/Qwen2.5-7B",
-            },
+        description="Additional metadata.",
+        json_schema_extra={
+            "example": {
+                "length": 120,
+                "repre_guard": {
+                    "raw_score": 2.93,
+                    "threshold": 2.49,
+                    "label": "AI",
+                    "model_name": "Qwen/Qwen2.5-7B",
+                },
+            }
         },
-        description="额外元信息，例如文本长度、RepreGuard 原始分数等。",
     )
 
     @classmethod
-    def from_orm_detection(cls, d):
+    def from_orm_detection(cls, detection):
         return cls(
-            id=d.id,
-            label=d.result_label,
-            score=d.score,
-            input_text=d.input_text,
-            created_at=d.created_at,
-            meta_json=d.meta_json,
+            id=detection.id,
+            label=detection.result_label,
+            score=detection.score,
+            input_text=detection.input_text,
+            created_at=detection.created_at,
+            meta_json=detection.meta_json,
         )
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class DetectionListResponse(SchemaBase):
-    total: int = Field(..., example=23)
-    page: int = Field(..., example=1)
-    page_size: int = Field(..., example=10)
+    total: int = Field(..., json_schema_extra={"example": 23})
+    page: int = Field(..., json_schema_extra={"example": 1})
+    page_size: int = Field(..., json_schema_extra={"example": 10})
     items: list[DetectionItem]

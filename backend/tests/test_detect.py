@@ -43,8 +43,11 @@ async def test_detect_with_user(db_session, unique_email):
         current_actor=actor,
     )
     assert response.detection_id > 0
+    assert response.input_text == "This is a sample human text."
     assert response.label in {"human", "ai"}
     assert 0 <= response.score <= 1
+    assert response.result is not None
+    assert len(response.result.sentences) > 0
 
     listed = await list_detections(
         db=db_session,
@@ -63,8 +66,10 @@ async def test_detect_with_guest(db_session):
     actor = ActorContext(actor_type="guest", actor_id="guest-test")
     detection = await detect(payload=DetectionRequest(text="Short text"), db=db_session, current_actor=actor)
     assert detection.detection_id > 0
+    assert detection.input_text == "Short text"
     assert detection.label in {"human", "ai"}
     assert 0 <= detection.score <= 1
+    assert detection.result is not None
 
 
 @pytest.mark.anyio
@@ -117,6 +122,9 @@ async def test_detect_saves_history(db_session, unique_email):
     assert response.history_id is not None
     assert response.history_id > 0
     assert response.detection_id == response.history_id
+    assert response.input_text == "This is a test sentence for history saving."
+    assert response.result is not None
+    assert response.result.polish == "This is a test sentence for history saving. (polished)"
 
     # Check DB structure
     from app.services.detection_service import DetectionService
@@ -137,7 +145,7 @@ async def test_detect_saves_history(db_session, unique_email):
     assert "summary" in analysis
     assert "sentences" in analysis
     assert len(analysis["sentences"]) > 0
-    assert analysis["sentences"][0]["text"] == "This is a test sentence for history saving"
+    assert analysis["sentences"][0]["text"] == "This is a test sentence for history saving."
     
     # Check NO double nesting
     assert "analysis" not in analysis

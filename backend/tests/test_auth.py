@@ -1,7 +1,26 @@
 import pytest
 
-from app.api.v1.auth import login, read_current_user, register_user
-from app.schemas.auth import LoginRequest, RegisterRequest
+from app.api.v1.auth import guest_login, login, read_current_user, register_user
+from app.api.v1.detections import detect
+from app.api.v1.quota import get_quota
+from app.db.deps import get_current_actor
+from app.schemas.auth import GuestTokenRequest, LoginRequest, RegisterRequest
+from app.schemas.detection import DetectionRequest
+from app.services.repre_guard_client import repre_guard_client
+
+
+@pytest.fixture(autouse=True)
+def mock_repre_guard(monkeypatch):
+    async def fake_detect(text: str) -> dict:
+        return {
+            "score": 2.8,
+            "threshold": 2.4924452377944597,
+            "label": "AI",
+            "model_name": "Qwen/Qwen2.5-7B",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+    yield
 
 
 @pytest.mark.anyio
@@ -33,3 +52,24 @@ async def test_register_user_has_30000_default_credits(db_session, unique_email)
     created_user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
 
     assert created_user.credits == 30000
+
+
+@pytest.mark.anyio
+async def test_guest_token_reuse_preserves_guest_quota(db_session):
+    first_guest = await guest_login()
+    first_actor = get_current_actor(db=db_session, token=first_guest.access_token)
+
+    await detect(payload=DetectionRequest(text="Guest quota continuity check"), db=db_session, current_actor=first_actor)
+    first_quota = await get_quota(db=db_session, current_actor=first_actor)
+
+    renewed_guest = await guest_login(GuestTokenRequest(guest_id=first_guest.guest_id))
+    renewed_actor = get_current_actor(db=db_session, token=renewed_guest.access_token)
+    renewed_quota = await get_quota(db=db_session, current_actor=renewed_actor)
+
+    assert first_guest.guest_id
+    assert renewed_guest.guest_id == first_guest.guest_id
+    assert renewed_actor.actor_type == "guest"
+    assert renewed_actor.actor_id == first_actor.actor_id == first_guest.guest_id
+    assert first_quota.used_today > 0
+    assert renewed_quota.used_today == first_quota.used_today
+    assert renewed_quota.remaining == first_quota.remaining
