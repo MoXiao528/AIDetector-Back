@@ -32,6 +32,7 @@ from app.schemas.admin import (
 )
 from app.schemas.analysis import AnalysisResponse, Citation, DetectRequest, SentenceAnalysis
 from app.schemas.parse_files import ParseFilesResponse, ParsedFileResult
+from app.schemas.scan_example import ScanExamplesResponse, ScanHeroExampleItem, ScanUsageExampleItem
 from app.schemas.detection import DetectionItem, DetectionListResponse, DetectionRequest, DetectionResponse
 from app.schemas.quota import QuotaResponse
 from app.schemas.auth import LoginRequest, RegisterRequest, Token, TokenPayload
@@ -98,6 +99,9 @@ __all__ = [
     "SentenceAnalysis",
     "ParseFilesResponse",
     "ParsedFileResult",
+    "ScanExamplesResponse",
+    "ScanHeroExampleItem",
+    "ScanUsageExampleItem",
     "UserBase",
     "UserCreate",
     "UserProfile",
