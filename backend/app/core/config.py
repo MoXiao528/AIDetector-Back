@@ -13,6 +13,8 @@ DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 class Settings(BaseSettings):
     detect_service_url: str = "http://host.docker.internal:9000"
+    detect_service_detect_url: str | None = None
+    detect_service_health_url: str | None = None
     detect_service_timeout: int = 10
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
@@ -43,6 +45,14 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("detect_service_url", "detect_service_detect_url", "detect_service_health_url", mode="before")
+    @classmethod
+    def normalize_detect_urls(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
     @property
     def database_url(self) -> str:
         return (
@@ -60,9 +70,17 @@ class Settings(BaseSettings):
         if len(secret_key) < 32 or secret_key.lower() == "change-me":
             raise ValueError("Production-like environments require a strong SECRET_KEY with at least 32 characters.")
 
-        detect_host = (urlparse(self.detect_service_url).hostname or "").strip().lower()
-        if detect_host in LOCAL_DETECT_HOSTS:
-            raise ValueError("Production-like environments cannot use a local DETECT_SERVICE_URL.")
+        detect_urls = [
+            ("DETECT_SERVICE_URL", self.detect_service_url),
+            ("DETECT_SERVICE_DETECT_URL", self.detect_service_detect_url),
+            ("DETECT_SERVICE_HEALTH_URL", self.detect_service_health_url),
+        ]
+        for field_name, url in detect_urls:
+            if not url:
+                continue
+            detect_host = (urlparse(url).hostname or "").strip().lower()
+            if detect_host in LOCAL_DETECT_HOSTS:
+                raise ValueError(f"Production-like environments cannot use a local {field_name}.")
 
         postgres_password = str(self.postgres_password or "").strip().lower()
         if postgres_password in WEAK_DB_PASSWORDS:

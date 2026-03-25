@@ -42,7 +42,10 @@ ENVIRONMENT=production
 SECRET_KEY=请替换成至少32位随机字符串
 POSTGRES_PASSWORD=请替换成强密码
 BACKEND_CORS_ORIGINS=https://你的域名
-DETECT_SERVICE_URL=http://你的RepreGuard地址:9000
+DETECT_SERVICE_URL=https://umcat.cis.um.edu.mo
+DETECT_SERVICE_DETECT_URL=https://umcat.cis.um.edu.mo/api/aidetect.php
+# 如果算法方提供独立健康检查地址，再额外配置：
+# DETECT_SERVICE_HEALTH_URL=https://umcat.cis.um.edu.mo/api/health.php
 ```
 
 注意：
@@ -50,7 +53,8 @@ DETECT_SERVICE_URL=http://你的RepreGuard地址:9000
 1. `ENVIRONMENT` 上线必须是 `production`
 2. `SECRET_KEY` 不能短，也不能继续用默认占位值
 3. `POSTGRES_PASSWORD` 必须改
-4. `DETECT_SERVICE_URL` 不要在 Linux 生产环境继续用 `host.docker.internal`
+4. `DETECT_SERVICE_URL` / `DETECT_SERVICE_DETECT_URL` 不要在 Linux 生产环境继续用 `host.docker.internal`
+5. 如果没配 `DETECT_SERVICE_HEALTH_URL`，`/ready` 会直接用 detect 接口做一次极短探测
 
 如果这些值没改对，后端在 `production` 下会直接拒绝启动。
 
@@ -239,7 +243,8 @@ nano .env
 优先检查：
 
 - 数据库容器是否正常
-- `DETECT_SERVICE_URL` 是否可达
+- `DETECT_SERVICE_DETECT_URL` 或 `DETECT_SERVICE_URL` 是否可达
+- 如果没配 `DETECT_SERVICE_HEALTH_URL`，确认算法服务允许被短文本探测
 
 然后看日志：
 
