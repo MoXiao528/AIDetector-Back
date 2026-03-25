@@ -1,3 +1,5 @@
+from math import exp
+
 import pytest
 
 from app.api.v1.auth import register_user
@@ -114,7 +116,7 @@ async def test_detect_saves_history(db_session, unique_email):
 
     # Call /detect
     response = await detect(
-        payload=DetectionRequest(text="This is a test sentence for history saving.", functions=["scan", "polish"]),
+        payload=DetectionRequest(text="First paragraph.\nSecond paragraph.", functions=["scan", "polish"]),
         db=db_session,
         current_actor=actor,
     )
@@ -123,7 +125,7 @@ async def test_detect_saves_history(db_session, unique_email):
     assert response.history_id is not None
     assert response.history_id > 0
     assert response.detection_id == response.history_id
-    assert response.input_text == "This is a test sentence for history saving."
+    assert response.input_text == "First paragraph.\nSecond paragraph."
     assert response.result is not None
     assert response.result.polish == ""
     assert response.result.translation == ""
@@ -147,8 +149,9 @@ async def test_detect_saves_history(db_session, unique_email):
     analysis = record.meta_json["analysis"]
     assert "summary" in analysis
     assert "sentences" in analysis
-    assert len(analysis["sentences"]) > 0
-    assert analysis["sentences"][0]["text"] == "This is a test sentence for history saving."
+    assert len(analysis["sentences"]) == 2
+    assert analysis["sentences"][0]["text"] == "First paragraph."
+    assert analysis["sentences"][1]["text"] == "Second paragraph."
     
     # Check NO double nesting
     assert "analysis" not in analysis
@@ -160,7 +163,7 @@ async def test_detect_scan_compat_returns_real_scan_only_payload(db_session, uni
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
     response = await detect_scan(
-        payload=DetectRequest(text="Sentence one. Sentence two.", functions=["scan", "polish", "translation", "citations"]),
+        payload=DetectRequest(text="Paragraph one.\nParagraph two.", functions=["scan", "polish", "translation", "citations"]),
         db=db_session,
         current_actor=actor,
     )
@@ -168,9 +171,48 @@ async def test_detect_scan_compat_returns_real_scan_only_payload(db_session, uni
     assert response.currentCredits >= 0
     assert response.summary.startswith("AI ")
     assert len(response.sentences) == 2
-    assert response.sentences[0].text == "Sentence one."
+    assert response.sentences[0].text == "Paragraph one."
     assert response.sentences[0].is_ai is True
     assert response.polish is None
     assert response.translation is None
     assert response.citations is None
+
+
+@pytest.mark.anyio
+async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+
+    async def fake_detect(text: str) -> dict:
+        if text == "Short":
+            return {
+                "score": 1.0,
+                "threshold": 2.4924452377944597,
+                "label": "HUMAN",
+                "model_name": "Qwen/Qwen2.5-0.5B",
+            }
+        return {
+            "score": 3.8,
+            "threshold": 2.4924452377944597,
+            "label": "AI",
+            "model_name": "Qwen/Qwen2.5-0.5B",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+
+    text = "Short\nA much longer paragraph for weighted averaging."
+    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+
+    short_probability = 1.0 / (1.0 + exp(-(1.0 - 2.4924452377944597)))
+    long_probability = 1.0 / (1.0 + exp(-(3.8 - 2.4924452377944597)))
+    expected_probability = (
+        short_probability * len("Short") + long_probability * len("A much longer paragraph for weighted averaging.")
+    ) / len(text.replace("\n", ""))
+
+    assert response.label == "ai"
+    assert response.score == pytest.approx(expected_probability)
+    assert len(response.result.sentences) == 2
+    assert response.result.sentences[0].text == "Short"
+    assert response.result.sentences[1].text == "A much longer paragraph for weighted averaging."
+    assert response.result.summary.ai == round(expected_probability * 100)
 

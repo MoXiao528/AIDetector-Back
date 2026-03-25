@@ -1,8 +1,8 @@
+import asyncio
 from datetime import datetime
 from html import escape
 from io import BytesIO
 from math import exp
-import re
 
 from docx import Document
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
@@ -37,34 +37,38 @@ MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[\u3002\uFF01\uFF1F.!?])\s+|\n+")
 
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
-    k = 2.0
     x = raw_score - threshold
-    return 1.0 / (1.0 + exp(-k * x))
+    return 1.0 / (1.0 + exp(-x))
 
 
-def _split_sentences(text: str) -> list[str]:
+def _split_paragraphs(text: str) -> list[str]:
     normalized = text.replace("\r\n", "\n").strip()
     if not normalized:
         return []
-    parts = [segment.strip() for segment in _SENTENCE_SPLIT_RE.split(normalized) if segment.strip()]
-    return parts or [normalized]
+    return [segment.strip() for segment in normalized.split("\n") if segment.strip()]
 
 
-def _resolve_sentence_type(score: float, label: str) -> str:
-    label_lower = label.lower()
-    if label_lower in {"ai", "human", "mixed"}:
-        if label_lower == "human" and 0.4 <= score <= 0.6:
-            return "mixed"
-        return label_lower
-    if score >= 0.7:
+def _resolve_segment_type(score: float) -> str:
+    if score >= 0.67:
         return "ai"
-    if score >= 0.4:
+    if score >= 0.34:
         return "mixed"
     return "human"
+
+
+def _resolve_highlight_class(score: float) -> str:
+    if score >= 0.8:
+        return "bg-rose-100 text-rose-900"
+    if score >= 0.6:
+        return "bg-orange-100 text-orange-900"
+    if score >= 0.4:
+        return "bg-amber-100 text-amber-900"
+    if score >= 0.2:
+        return "bg-lime-100 text-lime-900"
+    return "bg-emerald-100 text-emerald-900"
 
 
 def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
@@ -78,56 +82,48 @@ def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
     return supported
 
 
-def _build_history_analysis(text: str, score: float, label: str, functions: set[str]) -> Analysis:
-    sentences_raw = _split_sentences(text)
-    score_percent = max(0, min(int(round(score * 100)), 100))
-    sentence_type = _resolve_sentence_type(score, label)
-
-    if sentence_type == "mixed":
-        summary = Summary(ai=max(score_percent - 15, 0), mixed=min(30, 100), human=max(100 - score_percent - 15, 0))
-        total = summary.ai + summary.mixed + summary.human
-        if total != 100:
-            summary.human = max(0, summary.human + (100 - total))
-    else:
-        summary = Summary(
-            ai=score_percent,
-            mixed=0,
-            human=max(0, 100 - score_percent),
-        )
+def _build_history_analysis(
+    text: str,
+    paragraph_scores: list[dict[str, float | str | int]],
+    functions: set[str],
+) -> Analysis:
+    total_weight = sum(int(item["weight"]) for item in paragraph_scores) or 1
+    weighted_probability = sum(float(item["probability"]) * int(item["weight"]) for item in paragraph_scores) / total_weight
+    score_percent = max(0, min(int(round(weighted_probability * 100)), 100))
+    summary = Summary(ai=score_percent, mixed=0, human=max(0, 100 - score_percent))
 
     reason_map = {
-        "ai": "Sentence structure is highly uniform and resembles machine-generated text.",
-        "mixed": "This passage shows some templated patterns and should be reviewed manually.",
-        "human": "The phrasing varies naturally and is closer to human writing.",
+        "ai": "This paragraph is highly patterned and is more likely to be machine-generated.",
+        "mixed": "This paragraph is borderline and should be reviewed manually.",
+        "human": "This paragraph reads more like natural human writing.",
     }
     suggestion_map = {
-        "ai": "Add specific details and more personal phrasing to reduce template-like patterns.",
-        "mixed": "Add concrete examples or lived details to make the passage less formulaic.",
-        "human": "The current passage already reads naturally.",
-    }
-    class_map = {
-        "ai": "bg-amber-100 text-amber-900",
-        "mixed": "bg-violet-100 text-violet-900",
-        "human": "bg-emerald-100 text-emerald-900",
+        "ai": "Add concrete facts, distinctive examples, and less templated phrasing.",
+        "mixed": "Add more specific detail or domain context to make this paragraph less formulaic.",
+        "human": "This paragraph already looks relatively natural.",
     }
 
     history_sentences = []
-    html_parts = []
-    for index, sentence_text in enumerate(sentences_raw):
+    html_parts: list[str] = []
+    for index, paragraph_result in enumerate(paragraph_scores):
+        paragraph_text = str(paragraph_result["text"])
+        probability = float(paragraph_result["probability"])
+        paragraph_type = _resolve_segment_type(probability)
+        paragraph_score = max(0, min(int(round(probability * 100)), 100))
         history_sentences.append(
             HistorySentence(
-                id=f"sent-{index}",
-                text=sentence_text,
-                raw=sentence_text,
-                type=sentence_type,
-                probability=score,
-                score=score_percent,
-                reason=reason_map[sentence_type],
-                suggestion=suggestion_map[sentence_type],
+                id=f"para-{index}",
+                text=paragraph_text,
+                raw=paragraph_text,
+                type=paragraph_type,
+                probability=probability,
+                score=paragraph_score,
+                reason=reason_map[paragraph_type],
+                suggestion=suggestion_map[paragraph_type],
             )
         )
         html_parts.append(
-            f'<span class="highlight-chip {class_map[sentence_type]}" data-sentence-id="sent-{index}">{escape(sentence_text)}</span>'
+            f'<p><span class="highlight-chip {_resolve_highlight_class(probability)}" data-sentence-id="para-{index}">{escape(paragraph_text)}</span></p>'
         )
 
     _ = functions
@@ -136,7 +132,7 @@ def _build_history_analysis(text: str, score: float, label: str, functions: set[
     citations: list[HistoryCitation] = []
 
     ai_likely_count = sum(1 for item in history_sentences if item.type in {"ai", "mixed"})
-    highlighted_html = " ".join(html_parts) if html_parts else f"<p>{escape(text)}</p>"
+    highlighted_html = "".join(html_parts) if html_parts else f"<p>{escape(text)}</p>"
 
     return Analysis(
         summary=summary,
@@ -218,26 +214,53 @@ async def _detect_impl(
         )
 
     try:
-        rg = await repre_guard_client.detect(text=payload.text)
+        paragraphs = _split_paragraphs(payload.text)
+        rg_results = await asyncio.gather(*(repre_guard_client.detect(text=paragraph) for paragraph in paragraphs))
     except RepreGuardError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "DETECT_BACKEND_ERROR", "message": str(exc)},
         ) from exc
 
-    raw_score = float(rg["score"])
-    threshold = float(rg["threshold"])
-    label = str(rg["label"])
-    model_name = str(rg["model_name"])
-    normalized_score = _normalize_score(raw_score, threshold)
+    paragraph_scores: list[dict[str, float | str | int]] = []
+    total_weight = 0
+    weighted_probability = 0.0
+    weighted_raw_score = 0.0
+    weighted_threshold = 0.0
+    model_names: list[str] = []
+    for paragraph, rg in zip(paragraphs, rg_results, strict=True):
+        raw_score = float(rg["score"])
+        threshold = float(rg["threshold"])
+        probability = _normalize_score(raw_score, threshold)
+        weight = len(paragraph)
+        paragraph_scores.append(
+            {
+                "text": paragraph,
+                "raw_score": raw_score,
+                "threshold": threshold,
+                "probability": probability,
+                "weight": weight,
+            }
+        )
+        total_weight += weight
+        weighted_probability += probability * weight
+        weighted_raw_score += raw_score * weight
+        weighted_threshold += threshold * weight
+        model_names.append(str(rg["model_name"]))
+
+    total_weight = total_weight or 1
+    normalized_score = weighted_probability / total_weight
+    raw_score = weighted_raw_score / total_weight
+    threshold = weighted_threshold / total_weight
+    label = "AI" if normalized_score >= 0.5 else "HUMAN"
+    model_name = model_names[0] if model_names else None
     remaining_after = max(limit - (used_today + chars), 0)
 
     functions = _normalize_detection_functions(payload.functions)
 
     analysis = _build_history_analysis(
         text=payload.text,
-        score=normalized_score,
-        label=label,
+        paragraph_scores=paragraph_scores,
         functions=functions,
     )
 
@@ -249,6 +272,15 @@ async def _detect_impl(
             "threshold": threshold,
             "label": label,
             "model_name": model_name,
+            "segments": [
+                {
+                    "index": index,
+                    "raw_score": item["raw_score"],
+                    "threshold": item["threshold"],
+                    "probability": item["probability"],
+                }
+                for index, item in enumerate(paragraph_scores)
+            ],
         }
     )
 
