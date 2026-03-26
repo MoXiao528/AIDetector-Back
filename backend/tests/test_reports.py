@@ -85,6 +85,9 @@ async def test_export_pdf_report_prefers_profile_name(db_session, unique_email):
     assert "Ada Lovelace" in text
     assert "account-name" in text
     assert "This is the original text." in text
+    assert "Mixed" not in text
+    assert "55%" in text
+    assert "45%" in text
 
 
 @pytest.mark.anyio

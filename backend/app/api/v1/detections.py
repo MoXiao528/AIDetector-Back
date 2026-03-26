@@ -37,9 +37,17 @@ MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
+# 这是产品层的最小送检门槛，不是模型协议本身的硬要求。
+# 后面如果要改，前端输入限制、README、合并规则和测试要一起改。
+MIN_DETECT_VISIBLE_CHARS = 200
+# 这是对用户展示的模型版本标签。
+# 如果上游真实模型变了，不要只改这里，README、前端文案和测试一起对齐。
+DISPLAY_MODEL_NAME = "v1.0"
 
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
+    # 当前用阈值中心化的 sigmoid 做展示概率换算。
+    # 如果以后要校准公式，前后端展示文案和文档要一起更新。
     x = raw_score - threshold
     return 1.0 / (1.0 + exp(-x))
 
@@ -49,6 +57,53 @@ def _split_paragraphs(text: str) -> list[str]:
     if not normalized:
         return []
     return [segment.strip() for segment in normalized.split("\n") if segment.strip()]
+
+
+def _count_visible_chars(text: str) -> int:
+    return len("".join(str(text).split()))
+
+
+def _merge_short_paragraphs(paragraphs: list[str], min_chars: int = MIN_DETECT_VISIBLE_CHARS) -> list[dict[str, int | str]]:
+    # 检测块的真实边界在这里决定。
+    # 如果要改“短段自动合并”规则，前端预览映射和结果文案必须一起改。
+    merged: list[dict[str, int | str]] = []
+    buffer: list[str] = []
+    buffer_visible_chars = 0
+    start_index = 0
+
+    for index, paragraph in enumerate(paragraphs):
+        cleaned = paragraph.strip()
+        if not cleaned:
+            continue
+
+        if not buffer:
+            start_index = index
+
+        buffer.append(cleaned)
+        buffer_visible_chars += _count_visible_chars(cleaned)
+
+        if buffer_visible_chars >= min_chars:
+            merged.append(
+                {
+                    "start": start_index,
+                    "end": index,
+                    "text": "\n".join(buffer),
+                    "visible_chars": buffer_visible_chars,
+                }
+            )
+            buffer = []
+            buffer_visible_chars = 0
+
+    if buffer:
+        if merged:
+            suffix = "\n".join(buffer)
+            merged[-1]["text"] = f'{merged[-1]["text"]}\n{suffix}'
+            merged[-1]["end"] = len(paragraphs) - 1
+            merged[-1]["visible_chars"] = int(merged[-1]["visible_chars"]) + buffer_visible_chars
+        else:
+            raise ValueError("TEXT_TOO_SHORT")
+
+    return merged
 
 
 def _resolve_segment_type(score: float) -> str:
@@ -93,14 +148,14 @@ def _build_history_analysis(
     summary = Summary(ai=score_percent, mixed=0, human=max(0, 100 - score_percent))
 
     reason_map = {
-        "ai": "This paragraph is highly patterned and is more likely to be machine-generated.",
-        "mixed": "This paragraph is borderline and should be reviewed manually.",
-        "human": "This paragraph reads more like natural human writing.",
+        "ai": "This segment is highly patterned and is more likely to be machine-generated.",
+        "mixed": "This segment is borderline and should be reviewed manually.",
+        "human": "This segment reads more like natural human writing.",
     }
     suggestion_map = {
         "ai": "Add concrete facts, distinctive examples, and less templated phrasing.",
-        "mixed": "Add more specific detail or domain context to make this paragraph less formulaic.",
-        "human": "This paragraph already looks relatively natural.",
+        "mixed": "Add more specific detail or domain context to make this segment less formulaic.",
+        "human": "This segment already looks relatively natural.",
     }
 
     history_sentences = []
@@ -110,11 +165,15 @@ def _build_history_analysis(
         probability = float(paragraph_result["probability"])
         paragraph_type = _resolve_segment_type(probability)
         paragraph_score = max(0, min(int(round(probability * 100)), 100))
+        start_paragraph = int(paragraph_result["start"]) + 1
+        end_paragraph = int(paragraph_result["end"]) + 1
         history_sentences.append(
             HistorySentence(
                 id=f"para-{index}",
                 text=paragraph_text,
                 raw=paragraph_text,
+                start_paragraph=start_paragraph,
+                end_paragraph=end_paragraph,
                 type=paragraph_type,
                 probability=probability,
                 score=paragraph_score,
@@ -122,8 +181,12 @@ def _build_history_analysis(
                 suggestion=suggestion_map[paragraph_type],
             )
         )
-        html_parts.append(
-            f'<p><span class="highlight-chip {_resolve_highlight_class(probability)}" data-sentence-id="para-{index}">{escape(paragraph_text)}</span></p>'
+        html_parts.extend(
+            [
+                f'<p><span class="highlight-chip {_resolve_highlight_class(probability)}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
+                for line in paragraph_text.split("\n")
+                if line.strip()
+            ]
         )
 
     _ = functions
@@ -171,7 +234,7 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     ] or None
 
     return AnalysisResponse(
-        summary=f"AI {analysis.summary.ai}% | Mixed {analysis.summary.mixed}% | Human {analysis.summary.human}%",
+        summary=f"AI {analysis.summary.ai}% | Human {max(0, 100 - analysis.summary.ai)}%",
         sentences=sentences,
         polish=analysis.polish or None,
         translation=analysis.translation or None,
@@ -189,6 +252,21 @@ async def _detect_impl(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Text cannot be empty",
+        )
+
+    visible_chars = _count_visible_chars(payload.text)
+    if visible_chars < MIN_DETECT_VISIBLE_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "TEXT_TOO_SHORT",
+                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
+                "detail": {
+                    "minimum": MIN_DETECT_VISIBLE_CHARS,
+                    "current": visible_chars,
+                    "remaining": MIN_DETECT_VISIBLE_CHARS - visible_chars,
+                },
+            },
         )
 
     chars = len(payload.text)
@@ -215,7 +293,25 @@ async def _detect_impl(
 
     try:
         paragraphs = _split_paragraphs(payload.text)
-        rg_results = await asyncio.gather(*(repre_guard_client.detect(text=paragraph) for paragraph in paragraphs))
+        merged_paragraphs = _merge_short_paragraphs(paragraphs)
+        rg_results = await asyncio.gather(
+            *(repre_guard_client.detect(text=str(segment["text"])) for segment in merged_paragraphs)
+        )
+    except ValueError as exc:
+        if str(exc) != "TEXT_TOO_SHORT":
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "TEXT_TOO_SHORT",
+                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
+                "detail": {
+                    "minimum": MIN_DETECT_VISIBLE_CHARS,
+                    "current": visible_chars,
+                    "remaining": max(MIN_DETECT_VISIBLE_CHARS - visible_chars, 0),
+                },
+            },
+        ) from exc
     except RepreGuardError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -228,14 +324,17 @@ async def _detect_impl(
     weighted_raw_score = 0.0
     weighted_threshold = 0.0
     model_names: list[str] = []
-    for paragraph, rg in zip(paragraphs, rg_results, strict=True):
+    for merged_segment, rg in zip(merged_paragraphs, rg_results, strict=True):
+        segment_text = str(merged_segment["text"])
         raw_score = float(rg["score"])
         threshold = float(rg["threshold"])
         probability = _normalize_score(raw_score, threshold)
-        weight = len(paragraph)
+        weight = int(merged_segment["visible_chars"])
         paragraph_scores.append(
             {
-                "text": paragraph,
+                "text": segment_text,
+                "start": int(merged_segment["start"]),
+                "end": int(merged_segment["end"]),
                 "raw_score": raw_score,
                 "threshold": threshold,
                 "probability": probability,
@@ -253,7 +352,9 @@ async def _detect_impl(
     raw_score = weighted_raw_score / total_weight
     threshold = weighted_threshold / total_weight
     label = "AI" if normalized_score >= 0.5 else "HUMAN"
-    model_name = model_names[0] if model_names else None
+    # 保留上游真实模型名用于排障和后续切换，对用户仍统一展示 DISPLAY_MODEL_NAME。
+    provider_model_name = model_names[0] if model_names else None
+    model_name = DISPLAY_MODEL_NAME
     remaining_after = max(limit - (used_today + chars), 0)
 
     functions = _normalize_detection_functions(payload.functions)
@@ -272,12 +373,18 @@ async def _detect_impl(
             "threshold": threshold,
             "label": label,
             "model_name": model_name,
+            "provider_model_name": provider_model_name,
             "segments": [
                 {
                     "index": index,
+                    "start": item["start"],
+                    "end": item["end"],
+                    "start_paragraph": int(item["start"]) + 1,
+                    "end_paragraph": int(item["end"]) + 1,
                     "raw_score": item["raw_score"],
                     "threshold": item["threshold"],
                     "probability": item["probability"],
+                    "visible_chars": item["weight"],
                 }
                 for index, item in enumerate(paragraph_scores)
             ],

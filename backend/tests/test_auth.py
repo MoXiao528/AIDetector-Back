@@ -9,6 +9,12 @@ from app.schemas.auth import GuestTokenRequest, LoginRequest, RegisterRequest
 from app.schemas.detection import DetectionRequest
 from app.services.repre_guard_client import repre_guard_client
 
+LONG_TEXT = (
+    "Guest quota continuity check requires enough visible characters to pass the minimum detection threshold "
+    "while still remaining deterministic for quota accounting across repeated guest sessions. "
+) * 3
+LONG_TEXT = LONG_TEXT.strip()
+
 
 @pytest.fixture(autouse=True)
 def mock_repre_guard(monkeypatch):
@@ -62,7 +68,7 @@ async def test_guest_token_reuse_preserves_guest_quota(db_session):
     first_guest = await guest_login()
     first_actor = get_current_actor(db=db_session, token=first_guest.access_token)
 
-    await detect(payload=DetectionRequest(text="Guest quota continuity check"), db=db_session, current_actor=first_actor)
+    await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=first_actor)
     first_quota = await get_quota(db=db_session, current_actor=first_actor)
 
     renewed_guest = await guest_login(GuestTokenRequest(guest_id=first_guest.guest_id))

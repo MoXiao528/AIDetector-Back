@@ -24,8 +24,6 @@ FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSans
 
 AI_STROKE = "#B42318"
 AI_FILL = colors.HexColor("#FEF3F2")
-MIXED_STROKE = "#B54708"
-MIXED_FILL = colors.HexColor("#FFFAEB")
 HUMAN_STROKE = "#027A48"
 HUMAN_FILL = colors.HexColor("#ECFDF3")
 
@@ -47,7 +45,6 @@ class ReportCopy:
     details_title: str
     original_title: str
     ai_label: str
-    mixed_label: str
     human_label: str
     ai_likely_label: str
     reason_label: str
@@ -80,12 +77,11 @@ def _get_copy(locale: str) -> ReportCopy:
             details_title="\u53e5\u6bb5\u660e\u7ec6",
             original_title="\u539f\u6587\u9644\u5f55",
             ai_label="AI",
-            mixed_label="\u6df7\u5408",
             human_label="\u4eba\u5de5",
             ai_likely_label="\u6f5c\u5728\u9ad8\u98ce\u9669\u53e5\u6bb5",
             reason_label="\u5224\u5b9a\u539f\u56e0",
             no_data="\u6682\u65e0\u6570\u636e",
-            no_risk="\u672c\u6b21\u7ed3\u679c\u4e2d\u6ca1\u6709\u9700\u8981\u4f18\u5148\u590d\u6838\u7684 AI \u6216 Mixed \u53e5\u6bb5\u3002",
+            no_risk="\u672c\u6b21\u7ed3\u679c\u4e2d\u6ca1\u6709\u9700\u8981\u4f18\u5148\u590d\u6838\u7684 AI \u9ad8\u98ce\u9669\u53e5\u6bb5\u3002",
             page_label="\u7b2c {current} \u9875",
             report_type_scan="\u5373\u65f6\u68c0\u6d4b\u5bfc\u51fa",
             report_type_history="\u5386\u53f2\u8bb0\u5f55\u5bfc\u51fa",
@@ -111,12 +107,11 @@ def _get_copy(locale: str) -> ReportCopy:
         details_title="Sentence Details",
         original_title="Original Text Appendix",
         ai_label="AI",
-        mixed_label="Mixed",
         human_label="Human",
         ai_likely_label="Potential High-Risk Passages",
         reason_label="Reason",
         no_data="No data",
-        no_risk="No AI or mixed passages require priority review in this report.",
+        no_risk="No AI-risk passages require priority review in this report.",
         page_label="Page {current}",
         report_type_scan="Live Scan Export",
         report_type_history="History Export",
@@ -190,18 +185,22 @@ def _map_function_label(key: str, copy: ReportCopy) -> str:
 def _map_sentence_type(value: str, copy: ReportCopy) -> str:
     mapping = {
         "ai": copy.ai_label,
-        "mixed": copy.mixed_label,
+        "mixed": copy.ai_label,
         "human": copy.human_label,
     }
     return mapping.get(value, value)
 
 
 def _get_sentence_palette(value: str) -> tuple[str, colors.Color]:
-    if value == "ai":
+    if value in {"ai", "mixed"}:
         return AI_STROKE, AI_FILL
-    if value == "mixed":
-        return MIXED_STROKE, MIXED_FILL
     return HUMAN_STROKE, HUMAN_FILL
+
+
+def _collapse_summary_for_display(summary) -> tuple[int, int]:
+    ai = max(0, min(100, round(float(getattr(summary, "ai", 0) or 0))))
+    human = max(0, 100 - ai)
+    return ai, human
 
 
 def _build_styles(font_name: str) -> dict[str, ParagraphStyle]:
@@ -334,19 +333,17 @@ def _build_metadata_table(
 
 
 def _build_summary_table(payload: ReportPdfContent, copy: ReportCopy, styles: dict[str, ParagraphStyle]) -> Table:
-    summary = payload.analysis.summary
+    ai, human = _collapse_summary_for_display(payload.analysis.summary)
     rows = [[
-        Paragraph(f"<font color='{AI_STROKE}'><b>{copy.ai_label}</b></font><br/><font size='18'>{summary.ai}%</font>", styles["body"]),
-        Paragraph(f"<font color='{MIXED_STROKE}'><b>{copy.mixed_label}</b></font><br/><font size='18'>{summary.mixed}%</font>", styles["body"]),
-        Paragraph(f"<font color='{HUMAN_STROKE}'><b>{copy.human_label}</b></font><br/><font size='18'>{summary.human}%</font>", styles["body"]),
+        Paragraph(f"<font color='{AI_STROKE}'><b>{copy.ai_label}</b></font><br/><font size='18'>{ai}%</font>", styles["body"]),
+        Paragraph(f"<font color='{HUMAN_STROKE}'><b>{copy.human_label}</b></font><br/><font size='18'>{human}%</font>", styles["body"]),
     ]]
-    table = Table(rows, colWidths=[56 * mm, 56 * mm, 56 * mm], hAlign="LEFT")
+    table = Table(rows, colWidths=[85 * mm, 85 * mm], hAlign="LEFT")
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (0, 0), AI_FILL),
-                ("BACKGROUND", (1, 0), (1, 0), MIXED_FILL),
-                ("BACKGROUND", (2, 0), (2, 0), HUMAN_FILL),
+                ("BACKGROUND", (1, 0), (1, 0), HUMAN_FILL),
                 ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
                 ("INNERGRID", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
