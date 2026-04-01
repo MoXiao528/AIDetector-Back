@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+
+  db:
+    image: postgres:18-alpine
+    env_file:
+      - .env.ops
+    environment:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      APP_DB_USER: ${POSTGRES_USER:-aidetector_app}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:-}
+      APP_DB_NAME: ${POSTGRES_DB:-AIDetector}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/docker/init-runtime-user.sh:/docker-entrypoint-initdb.d/01-init-runtime-user.sh:ro
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -1,0 +1,2180 @@
+openapi: 3.0.3
+info:
+  title: AIDetector API
+  version: 1.0.0
+  description: V1.0 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: http://localhost:8000
+    description: Local
+tags:
+  - name: auth
+  - name: health
+  - name: quota
+  - name: detection
+  - name: scan
+  - name: history
+  - name: api_keys
+  - name: reports
+  - name: teams
+  - name: admin
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: User login
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Register success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '409':
+          description: Email or name conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/guest:
+    post:
+      tags: [auth]
+      summary: Issue guest token
+      operationId: guestLogin
+      responses:
+        '200':
+          description: Guest token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Liveness check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/v1/ready:
+    get:
+      tags: [health]
+      summary: Readiness check
+      operationId: getReadiness
+      responses:
+        '200':
+          description: All dependencies are ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Dependency check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Get current user
+      operationId: getMe
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/me/profile:
+    patch:
+      tags: [auth]
+      summary: Update current user profile
+      operationId: updateMyProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfileUpdateRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/quota:
+    get:
+      tags: [quota]
+      summary: Get daily quota snapshot
+      operationId: getQuota
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Quota snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/detect:
+    post:
+      tags: [detection]
+      summary: Submit detection task
+      operationId: detectText
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectRequest'
+      responses:
+        '200':
+          description: Detection accepted and persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Daily quota exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Downstream detection service failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/scan/examples:
+    get:
+      tags: [scan]
+      summary: Get scan examples
+      operationId: getScanExamples
+      parameters:
+        - name: locale
+          in: query
+          required: false
+          schema:
+            type: string
+            default: zh-CN
+      responses:
+        '200':
+          description: Scan examples
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanExamplesResponse'
+  /api/v1/detections/parse-files:
+    post:
+      tags: [detection]
+      summary: Parse uploaded files
+      description: >
+        Member-only legacy parser. This endpoint currently extracts plain text content only.
+        It does not return structure-preserving HTML or block metadata.
+      operationId: parseFiles
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                files:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Parsed upload result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParseFilesResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history:
+    get:
+      tags: [history]
+      summary: List current user history
+      operationId: listHistory
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at]
+            default: created_at
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: History list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [history]
+      summary: Create history record
+      operationId: createHistory
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HistoryRecordCreateRequest'
+      responses:
+        '201':
+          description: History record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [history]
+      summary: Clear all current user history
+      operationId: clearHistory
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: All history cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearAllResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history/batch-delete:
+    post:
+      tags: [history]
+      summary: Batch delete history records
+      operationId: batchDeleteHistory
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
+      responses:
+        '200':
+          description: Batch delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/history/{historyId}:
+    get:
+      tags: [history]
+      summary: Get history detail
+      operationId: getHistory
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: historyId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: History detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/keys:
+    get:
+      tags: [api_keys]
+      summary: List API keys
+      operationId: listApiKeys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/APIKeyResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [api_keys]
+      summary: Create API key
+      operationId: createApiKey
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIKeyCreateRequest'
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/keys/self-test:
+    get:
+      tags: [api_keys]
+      summary: Validate API key
+      operationId: apiKeySelfTest
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: API key is valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeySelfTestResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/keys/{keyId}:
+    delete:
+      tags: [api_keys]
+      summary: Deactivate API key
+      operationId: deactivateApiKey
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: API key deactivated
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/pdf:
+    post:
+      tags: [reports]
+      summary: Export PDF report
+      operationId: exportPdfReport
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPdfRequest'
+      responses:
+        '200':
+          description: PDF report
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/teams:
+    post:
+      tags: [teams]
+      summary: Create team
+      operationId: createTeam
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamCreateRequest'
+      responses:
+        '201':
+          description: Team created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/teams/{teamId}/members:
+    post:
+      tags: [teams]
+      summary: Add team member
+      operationId: addTeamMember
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamMemberCreateRequest'
+      responses:
+        '201':
+          description: Team member created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMemberResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/teams/{teamId}/stats:
+    get:
+      tags: [teams]
+      summary: Get team detection stats
+      operationId: getTeamStats
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: start
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Team stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamStatsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/status:
+    get:
+      tags: [admin]
+      summary: Verify admin access
+      operationId: getAdminStatus
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Admin access confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStatusResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/overview:
+    get:
+      tags: [admin]
+      summary: Get admin overview metrics
+      operationId: getAdminOverview
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: preset
+          in: query
+          schema:
+            type: string
+            enum: [today, week, month, quarter, year]
+            default: week
+      responses:
+        '200':
+          description: Overview data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOverviewResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users:
+    get:
+      tags: [admin]
+      summary: List users for admin
+      operationId: listAdminUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: systemRole
+          in: query
+          schema:
+            $ref: '#/components/schemas/UserSystemRole'
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+        - name: planTier
+          in: query
+          schema:
+            type: string
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, email, creditsRemaining]
+            default: createdAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users/{userId}:
+    get:
+      tags: [admin]
+      summary: Get user detail for admin
+      operationId: getAdminUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetailResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [admin]
+      summary: Update admin-managed user fields
+      operationId: updateAdminUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdateRequest'
+      responses:
+        '200':
+          description: Updated user detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetailResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users/{userId}/credits:
+    post:
+      tags: [admin]
+      summary: Adjust user credits
+      operationId: adjustAdminUserCredits
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserCreditsAdjustRequest'
+      responses:
+        '200':
+          description: Updated credit snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserCreditsAdjustResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/detections:
+    get:
+      tags: [admin]
+      summary: List detections for admin
+      operationId: listAdminDetections
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+        - name: actorType
+          in: query
+          schema:
+            type: string
+            enum: [user, guest]
+        - name: label
+          in: query
+          schema:
+            type: string
+            enum: [ai, mixed, human]
+        - name: function
+          in: query
+          schema:
+            $ref: '#/components/schemas/DetectionFunction'
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, score, charsUsed]
+            default: createdAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Detection list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDetectionListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/detections/{detectionId}:
+    get:
+      tags: [admin]
+      summary: Get detection detail for admin
+      operationId: getAdminDetection
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: detectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detection detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDetectionDetailResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Detection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [admin]
+      summary: Delete detection record
+      operationId: deleteAdminDetection
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: detectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Detection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+        - detail
+      properties:
+        code:
+          oneOf:
+            - type: integer
+            - type: string
+        message:
+          type: string
+        detail:
+          nullable: true
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+            - type: string
+    TokenResponse:
+      type: object
+      required:
+        - accessToken
+        - tokenType
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          example: bearer
+    LoginRequest:
+      type: object
+      required:
+        - identifier
+        - password
+      properties:
+        identifier:
+          type: string
+          description: Email or account name
+        password:
+          type: string
+          format: password
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        password:
+          type: string
+          format: password
+          minLength: 8
+    UserSystemRole:
+      type: string
+      enum: [VISITOR, INDIVIDUAL, TEAM_ADMIN, SYS_ADMIN]
+    DetectionFunction:
+      type: string
+      enum: [scan]
+    ScanHeroExampleItem:
+      type: object
+      required:
+        - key
+        - label
+        - content
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        content:
+          type: string
+        description:
+          type: string
+          nullable: true
+        ai:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        mixed:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        human:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        snapshot:
+          type: string
+          nullable: true
+        snippet:
+          type: string
+          nullable: true
+        structure:
+          type: string
+          nullable: true
+        rhythm:
+          type: string
+          nullable: true
+        action:
+          type: string
+          nullable: true
+    ScanUsageExampleItem:
+      type: object
+      required:
+        - key
+        - title
+        - docType
+        - length
+        - description
+        - ai
+        - mixed
+        - human
+        - snapshot
+        - snippet
+      properties:
+        key:
+          type: string
+        title:
+          type: string
+        docType:
+          type: string
+        length:
+          type: string
+        description:
+          type: string
+        ai:
+          type: integer
+          minimum: 0
+          maximum: 100
+        mixed:
+          type: integer
+          minimum: 0
+          maximum: 100
+        human:
+          type: integer
+          minimum: 0
+          maximum: 100
+        snapshot:
+          type: string
+        snippet:
+          type: string
+        content:
+          type: string
+          nullable: true
+    ScanExamplesResponse:
+      type: object
+      required:
+        - locale
+        - heroExamples
+        - usageExamples
+      properties:
+        locale:
+          type: string
+        heroExamples:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScanHeroExampleItem'
+        usageExamples:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScanUsageExampleItem'
+    ParsedFileResult:
+      type: object
+      required:
+        - fileName
+      properties:
+        fileName:
+          type: string
+        content:
+          type: string
+          nullable: true
+          description: Plain-text extracted content. No structure-preserving HTML is returned.
+        error:
+          type: string
+          nullable: true
+    ParseFilesResponse:
+      type: object
+      description: Legacy plain-text file parsing response.
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParsedFileResult'
+    UserProfile:
+      type: object
+      properties:
+        firstName:
+          type: string
+          nullable: true
+        surname:
+          type: string
+          nullable: true
+        organization:
+          type: string
+          nullable: true
+        jobRole:
+          type: string
+          nullable: true
+        industry:
+          type: string
+          nullable: true
+    UserProfileUpdateRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+          nullable: true
+        surname:
+          type: string
+          nullable: true
+        organization:
+          type: string
+          nullable: true
+        jobRole:
+          type: string
+          nullable: true
+        industry:
+          type: string
+          nullable: true
+    UserResponse:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - isActive
+        - planTier
+        - creditsRemaining
+        - createdAt
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        isActive:
+          type: boolean
+        planTier:
+          type: string
+        creditsRemaining:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        profile:
+          $ref: '#/components/schemas/UserProfile'
+    QuotaResponse:
+      type: object
+      required:
+        - actorType
+        - limit
+        - usedToday
+        - remaining
+      properties:
+        actorType:
+          type: string
+          enum: [user, guest]
+        limit:
+          type: integer
+        usedToday:
+          type: integer
+        remaining:
+          type: integer
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+    ReadinessResponse:
+      type: object
+      required:
+        - status
+        - database
+        - detectService
+      properties:
+        status:
+          type: string
+          example: ok
+        database:
+          type: string
+          example: ok
+        detectService:
+          type: string
+          example: ok
+    APIKeyStatus:
+      type: string
+      enum: [active, inactive]
+    APIKeyCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+    APIKeyResponse:
+      type: object
+      required:
+        - id
+        - name
+        - status
+        - createdAt
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/APIKeyStatus'
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+    APIKeyCreateResponse:
+      allOf:
+        - $ref: '#/components/schemas/APIKeyResponse'
+        - type: object
+          required:
+            - key
+          properties:
+            key:
+              type: string
+    APIKeySelfTestResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+    TeamRole:
+      type: string
+      enum: [OWNER, ADMIN, MEMBER]
+    TeamCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+    TeamResponse:
+      type: object
+      required:
+        - id
+        - name
+        - createdAt
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        createdById:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    TeamMemberCreateRequest:
+      type: object
+      required:
+        - userId
+        - role
+      properties:
+        userId:
+          type: integer
+        role:
+          $ref: '#/components/schemas/TeamRole'
+    TeamMemberResponse:
+      type: object
+      required:
+        - id
+        - teamId
+        - userId
+        - role
+        - joinedAt
+      properties:
+        id:
+          type: integer
+        teamId:
+          type: integer
+        userId:
+          type: integer
+        role:
+          $ref: '#/components/schemas/TeamRole'
+        joinedAt:
+          type: string
+          format: date-time
+    TeamStatsItem:
+      type: object
+      required:
+        - date
+        - detections
+      properties:
+        date:
+          type: string
+          format: date
+        detections:
+          type: integer
+    TeamStatsResponse:
+      type: object
+      required:
+        - teamId
+        - items
+      properties:
+        teamId:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamStatsItem'
+    ReportPdfRequest:
+      type: object
+      required:
+        - historyId
+      properties:
+        reportType:
+          type: string
+          enum: [scan, history]
+          default: scan
+        locale:
+          type: string
+          default: zh-CN
+        historyId:
+          type: integer
+          minimum: 1
+    DetectRequest:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+        functions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+          default: [scan]
+        options:
+          type: object
+          additionalProperties: true
+          nullable: true
+        editorHtml:
+          type: string
+          nullable: true
+    DetectResponse:
+      type: object
+      required:
+        - detectionId
+        - historyId
+        - label
+        - score
+        - currentCredits
+        - inputText
+      properties:
+        detectionId:
+          type: integer
+        historyId:
+          type: integer
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        modelName:
+          type: string
+          nullable: true
+        rawScore:
+          type: number
+          format: float
+          nullable: true
+        threshold:
+          type: number
+          format: float
+          nullable: true
+        currentCredits:
+          type: integer
+        inputText:
+          type: string
+        result:
+          $ref: '#/components/schemas/HistoryAnalysis'
+          nullable: true
+    HistorySummary:
+      type: object
+      required:
+        - ai
+        - mixed
+        - human
+      properties:
+        ai:
+          type: integer
+          minimum: 0
+          maximum: 100
+        mixed:
+          type: integer
+          minimum: 0
+          maximum: 100
+        human:
+          type: integer
+          minimum: 0
+          maximum: 100
+    HistorySentence:
+      type: object
+      required:
+        - id
+        - text
+        - raw
+        - type
+        - probability
+        - score
+        - reason
+        - suggestion
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        raw:
+          type: string
+        startParagraph:
+          type: integer
+          nullable: true
+          minimum: 1
+        endParagraph:
+          type: integer
+          nullable: true
+          minimum: 1
+        type:
+          type: string
+          enum: [ai, mixed, human]
+        probability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        reason:
+          type: string
+        suggestion:
+          type: string
+    HistoryCitation:
+      type: object
+      required:
+        - id
+        - text
+        - source
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        source:
+          type: string
+    HistoryAnalysis:
+      type: object
+      description: >
+        Analysis payload used by current scan/history flows. The translation, polish, and citations
+        fields are compatibility placeholders and are not populated by active product features.
+      required:
+        - summary
+        - sentences
+        - translation
+        - polish
+        - citations
+        - aiLikelyCount
+        - highlightedHtml
+      properties:
+        summary:
+          $ref: '#/components/schemas/HistorySummary'
+        sentences:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistorySentence'
+        translation:
+          type: string
+          description: Reserved compatibility field. Currently returned as an empty string.
+        polish:
+          type: string
+          description: Reserved compatibility field. Currently returned as an empty string.
+        citations:
+          type: array
+          description: Reserved compatibility field. Currently returned as an empty array.
+          items:
+            $ref: '#/components/schemas/HistoryCitation'
+        aiLikelyCount:
+          type: integer
+          minimum: 0
+        highlightedHtml:
+          type: string
+    HistoryRecordCreateRequest:
+      type: object
+      required:
+        - title
+        - functions
+        - inputText
+        - editorHtml
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        functions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+        inputText:
+          type: string
+          maxLength: 50000
+        editorHtml:
+          type: string
+        analysis:
+          $ref: '#/components/schemas/HistoryAnalysis'
+          nullable: true
+    HistoryRecordUpdateRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          maxLength: 255
+    HistoryRecordResponse:
+      type: object
+      required:
+        - id
+        - userId
+        - createdAt
+        - functions
+        - inputText
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        title:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        functions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+        inputText:
+          type: string
+        editorHtml:
+          type: string
+          nullable: true
+        analysis:
+          $ref: '#/components/schemas/HistoryAnalysis'
+          nullable: true
+    HistoryListResponse:
+      type: object
+      required:
+        - items
+        - page
+        - pageSize
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryRecordResponse'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    BatchDeleteRequest:
+      type: object
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+    BatchDeleteResponse:
+      type: object
+      required:
+        - deletedCount
+        - failedIds
+      properties:
+        deletedCount:
+          type: integer
+        failedIds:
+          type: array
+          items:
+            type: integer
+    ClearAllResponse:
+      type: object
+      required:
+        - deletedCount
+      properties:
+        deletedCount:
+          type: integer
+    AdminStatusResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+    AdminOverviewPreset:
+      type: string
+      enum: [today, week, month, quarter, year]
+    AdminOverviewGranularity:
+      type: string
+      enum: [hour, day, week, month]
+    AdminOverviewPeriod:
+      type: object
+      required:
+        - preset
+        - granularity
+        - startAt
+        - endAt
+      properties:
+        preset:
+          $ref: '#/components/schemas/AdminOverviewPreset'
+        granularity:
+          $ref: '#/components/schemas/AdminOverviewGranularity'
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+    AdminOverviewSummary:
+      type: object
+      required:
+        - totalUsers
+        - activeUsers
+        - newUsers
+        - detections
+        - charsUsed
+      properties:
+        totalUsers:
+          type: integer
+        activeUsers:
+          type: integer
+        newUsers:
+          type: integer
+        detections:
+          type: integer
+        charsUsed:
+          type: integer
+    AdminOverviewSeriesItem:
+      type: object
+      required:
+        - bucketStart
+        - bucketLabel
+        - newUsers
+        - detections
+        - charsUsed
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+        bucketLabel:
+          type: string
+        newUsers:
+          type: integer
+        detections:
+          type: integer
+        charsUsed:
+          type: integer
+    AdminRecentUserItem:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    AdminRecentDetectionItem:
+      type: object
+      required:
+        - id
+        - actorType
+        - actorId
+        - label
+        - score
+        - charsUsed
+        - createdAt
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+          nullable: true
+        userEmail:
+          type: string
+          format: email
+          nullable: true
+        userName:
+          type: string
+          nullable: true
+        actorType:
+          type: string
+          enum: [user, guest]
+        actorId:
+          type: string
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminOverviewResponse:
+      type: object
+      required:
+        - period
+        - summary
+        - series
+        - recentUsers
+        - recentDetections
+      properties:
+        period:
+          $ref: '#/components/schemas/AdminOverviewPeriod'
+        summary:
+          $ref: '#/components/schemas/AdminOverviewSummary'
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOverviewSeriesItem'
+        recentUsers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRecentUserItem'
+        recentDetections:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRecentDetectionItem'
+    AdminUserListItem:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - systemRole
+        - planTier
+        - isActive
+        - creditsTotal
+        - creditsUsed
+        - creditsRemaining
+        - createdAt
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        planTier:
+          type: string
+        isActive:
+          type: boolean
+        creditsTotal:
+          type: integer
+        creditsUsed:
+          type: integer
+        creditsRemaining:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminUserListResponse:
+      type: object
+      required:
+        - items
+        - page
+        - pageSize
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserListItem'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    AdminDetectionMini:
+      type: object
+      required:
+        - id
+        - label
+        - score
+        - charsUsed
+        - createdAt
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    AdminUserDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/AdminUserListItem'
+        - type: object
+          properties:
+            profile:
+              $ref: '#/components/schemas/UserProfile'
+            recentDetections:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminDetectionMini'
+    AdminUserUpdateRequest:
+      type: object
+      properties:
+        systemRole:
+          $ref: '#/components/schemas/UserSystemRole'
+        planTier:
+          type: string
+        isActive:
+          type: boolean
+    AdminUserCreditsAdjustRequest:
+      type: object
+      required:
+        - delta
+        - reason
+      properties:
+        delta:
+          type: integer
+          description: Positive to grant credits, negative to deduct credits
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+    AdminUserCreditsAdjustResponse:
+      type: object
+      required:
+        - userId
+        - creditsTotal
+        - creditsUsed
+        - creditsRemaining
+      properties:
+        userId:
+          type: integer
+        creditsTotal:
+          type: integer
+        creditsUsed:
+          type: integer
+        creditsRemaining:
+          type: integer
+    AdminDetectionListItem:
+      type: object
+      required:
+        - id
+        - actorType
+        - actorId
+        - label
+        - score
+        - charsUsed
+        - functionsUsed
+        - createdAt
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+          nullable: true
+        userEmail:
+          type: string
+          format: email
+          nullable: true
+        userName:
+          type: string
+          nullable: true
+        actorType:
+          type: string
+          enum: [user, guest]
+        actorId:
+          type: string
+        label:
+          type: string
+          enum: [ai, mixed, human]
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        charsUsed:
+          type: integer
+        functionsUsed:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectionFunction'
+        createdAt:
+          type: string
+          format: date-time
+    AdminDetectionListResponse:
+      type: object
+      required:
+        - items
+        - page
+        - pageSize
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminDetectionListItem'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    AdminDetectionDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/AdminDetectionListItem'
+        - type: object
+          properties:
+            title:
+              type: string
+              nullable: true
+            inputText:
+              type: string
+            editorHtml:
+              type: string
+              nullable: true
+            metaJson:
+              type: object
+              nullable: true
+              additionalProperties: true
+            analysis:
+              $ref: '#/components/schemas/HistoryAnalysis'
+              nullable: true
