@@ -1,0 +1,4 @@
+This sample file exists only for load testing the parse-files endpoint.
+It is intentionally plain text, deterministic, and safe to upload repeatedly.
+The content is not important. The goal is to exercise multipart parsing, file reads,
+and response serialization under concurrent traffic.

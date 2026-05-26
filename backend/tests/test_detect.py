@@ -5,14 +5,14 @@ import pytest
 from app.api.v1.auth import register_user
 from fastapi import HTTPException
 
-from app.api.v1.detections import detect, detect_scan, list_detections
+from app.api.v1.detections import _merge_short_paragraphs, _split_paragraphs, detect, detect_scan, list_detections
 from app.api.v1.keys import create_api_key
 from app.db.deps import ActorContext, get_current_actor
 from app.schemas.analysis import DetectRequest
 from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
-from app.services.repre_guard_client import repre_guard_client
+from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 
 LONG_TEXT = (
     "This is a sufficiently long detection sample that keeps repeating structured content "
@@ -34,6 +34,9 @@ LONG_PARAGRAPH_B = (
 ) * 3
 LONG_PARAGRAPH_B = LONG_PARAGRAPH_B.strip()
 
+ROBERTA_MODEL_NAME = "openai-community/roberta-base-openai-detector"
+ROBERTA_THRESHOLD = 0.0
+
 @pytest.fixture(autouse=True)
 def mock_repre_guard(monkeypatch):
     """
@@ -45,10 +48,11 @@ def mock_repre_guard(monkeypatch):
         # 这里返回一个“假的 RepreGuard 检测结果”
         # 字段结构要和你真实微服务保持一致
         return {
-            "score": 2.8,                       # raw_score
-            "threshold": 2.4924452377944597,
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
             "label": "AI",                      # 或 "HUMAN"
-            "model_name": "Qwen/Qwen2.5-7B",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
         }
 
     # 把单例实例上的 detect 方法替换掉
@@ -228,16 +232,18 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     async def fake_detect(text: str) -> dict:
         if text == LONG_PARAGRAPH_A:
             return {
-                "score": 1.0,
-                "threshold": 2.4924452377944597,
+                "score": -1.3862943611198906,
+                "threshold": ROBERTA_THRESHOLD,
                 "label": "HUMAN",
-                "model_name": "Qwen/Qwen2.5-0.5B",
+                "model_name": ROBERTA_MODEL_NAME,
+                "score_type": "raw_logit",
             }
         return {
-            "score": 3.8,
-            "threshold": 2.4924452377944597,
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
             "label": "AI",
-            "model_name": "Qwen/Qwen2.5-0.5B",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
         }
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
@@ -245,8 +251,8 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
     response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
-    short_probability = 1.0 / (1.0 + exp(-(1.0 - 2.4924452377944597)))
-    long_probability = 1.0 / (1.0 + exp(-(3.8 - 2.4924452377944597)))
+    short_probability = 1.0 / (1.0 + exp(-(-1.3862943611198906 - ROBERTA_THRESHOLD)))
+    long_probability = 1.0 / (1.0 + exp(-(0.4054651081081642 - ROBERTA_THRESHOLD)))
     expected_probability = (
         short_probability * len("".join(LONG_PARAGRAPH_A.split()))
         + long_probability * len("".join(LONG_PARAGRAPH_B.split()))
@@ -261,7 +267,14 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     assert response.result.sentences[0].end_paragraph == 1
     assert response.result.sentences[1].start_paragraph == 2
     assert response.result.sentences[1].end_paragraph == 2
-    assert response.result.summary.ai == round(expected_probability * 100)
+    expected_ai_summary = round(
+        (len("".join(LONG_PARAGRAPH_B.split())))
+        / (len("".join(LONG_PARAGRAPH_A.split())) + len("".join(LONG_PARAGRAPH_B.split())))
+        * 100
+    )
+    assert response.result.sentences[0].type == "human"
+    assert response.result.sentences[1].type == "ai"
+    assert response.result.summary.ai == expected_ai_summary
 
 
 @pytest.mark.anyio
@@ -286,10 +299,11 @@ async def test_detect_merges_short_paragraph_into_next_chunk(db_session, unique_
     async def fake_detect(text: str) -> dict:
         calls.append(text)
         return {
-            "score": 2.8,
-            "threshold": 2.4924452377944597,
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
             "label": "AI",
-            "model_name": "Qwen/Qwen2.5-0.5B",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
         }
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
@@ -302,4 +316,87 @@ async def test_detect_merges_short_paragraph_into_next_chunk(db_session, unique_
     assert response.result.sentences[0].text == text
     assert response.result.sentences[0].start_paragraph == 1
     assert response.result.sentences[0].end_paragraph == 2
+
+
+def test_segmenting_preserves_indentation_and_sentence_spacing():
+    text = 'def run():\n    value = {"path": "C:\\\\tmp\\\\file.txt"}\n    return value\nEnglish sentence one. English sentence two.'
+
+    paragraphs = _split_paragraphs(text)
+    merged = _merge_short_paragraphs(paragraphs, min_chars=200, max_chars=1500)
+
+    assert paragraphs[1].startswith("    value")
+    assert merged[0]["text"] == text
+    assert "one. English" in str(merged[0]["text"])
+
+
+@pytest.mark.anyio
+async def test_detect_retries_downstream_input_too_long(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+    calls: list[str] = []
+    successful_calls: list[str] = []
+
+    async def fake_detect(text: str) -> dict:
+        calls.append(text)
+        visible_chars = len("".join(text.split()))
+        if visible_chars > 120:
+            raise RepreGuardError(
+                "Input exceeds the model limit of 512 tokens.",
+                status_code=422,
+                code="INPUT_TOO_LONG",
+                detail={"current_tokens": 513, "max_tokens": 512},
+            )
+
+        successful_calls.append(text)
+        return {
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
+            "label": "AI",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+
+    text = (
+        "This compact paragraph intentionally repeats content so the downstream service rejects "
+        "the initial segment and the backend has to split it into smaller retry chunks. "
+    ) * 4
+    text = text.strip()
+
+    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+
+    assert response.detection_id > 0
+    assert response.result is not None
+    assert len(calls) > len(successful_calls)
+    assert len(successful_calls) > 1
+    assert all(len("".join(call.split())) <= 120 for call in successful_calls)
+
+
+@pytest.mark.anyio
+async def test_detect_supports_probability_score_type(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+
+    async def fake_detect(text: str) -> dict:
+        return {
+            "score": 0.003,
+            "threshold": 0.0028,
+            "label": "AI",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "probability",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+
+    response = await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
+
+    assert response.label == "ai"
+    assert response.score == pytest.approx(0.003)
+    assert response.raw_score == pytest.approx(0.003)
+    assert response.threshold == pytest.approx(0.0028)
+    assert response.result is not None
+    assert response.result.summary.ai == 100
+    assert response.result.sentences[0].type == "ai"
+    assert response.result.sentences[0].probability >= 0.67
 

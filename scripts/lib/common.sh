@@ -43,6 +43,8 @@ load_env_file() {
   set +a
 
   ENVIRONMENT="${ENVIRONMENT:-development}"
+  API_HOST_BIND="${API_HOST_BIND:-127.0.0.1}"
+  API_HOST_PORT="${API_HOST_PORT:-8020}"
   APP_DB_USER="${POSTGRES_USER:-aidetector_app}"
   APP_DB_PASSWORD="${POSTGRES_PASSWORD:-}"
   APP_DB_NAME="${POSTGRES_DB:-AIDetector}"
@@ -122,15 +124,25 @@ ensure_runtime_db_user() {
     -v "app_db=$APP_DB_NAME" \
     -U "$DB_ADMIN_USER" \
     -d postgres <<'SQL'
+-- psql variables are not interpolated inside a raw DO block, so generate the block first.
+SELECT format(
+  $fmt$
 DO $do$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') THEN
-    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password');
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %L) THEN
+    EXECUTE format('CREATE ROLE %%I LOGIN PASSWORD %%L', %L, %L);
   ELSE
-    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app_user', :'app_password');
+    EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', %L, %L);
   END IF;
 END
 $do$;
+  $fmt$,
+  :'app_user',
+  :'app_user',
+  :'app_password',
+  :'app_user',
+  :'app_password'
+) \gexec
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'app_db', :'app_user') \gexec
 \connect :app_db
 SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app_user') \gexec
@@ -198,8 +210,10 @@ run_http_checks() {
   if command -v curl >/dev/null 2>&1; then
     local max_attempts=20
     local attempt=1
+    local api_health_url="http://127.0.0.1:${API_HOST_PORT}/api/v1/health"
+    local api_ready_url="http://127.0.0.1:${API_HOST_PORT}/api/v1/ready"
 
-    until curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; do
+    until curl --fail --silent --show-error "$api_health_url" >/dev/null 2>&1; do
       if (( attempt >= max_attempts )); then
         echo "[AIDetector] api did not become ready in time"
         return 1
@@ -209,12 +223,20 @@ run_http_checks() {
     done
 
     echo "[AIDetector] health:"
-    curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/health
+    curl --fail --silent --show-error "$api_health_url"
     echo
 
     echo "[AIDetector] readiness:"
-    curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/ready
-    echo
+    if curl --fail --silent --show-error "$api_ready_url"; then
+      echo
+    elif [[ "$ENVIRONMENT" == "development" || "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "local" || "$ENVIRONMENT" == "test" ]]; then
+      echo
+      echo "[AIDetector] readiness check failed; continuing because ENVIRONMENT=$ENVIRONMENT"
+      curl --silent --show-error "$api_ready_url" || true
+      echo
+    else
+      return 1
+    fi
   else
     echo "[AIDetector] curl not found, skipped health checks"
   fi

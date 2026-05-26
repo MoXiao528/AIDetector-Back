@@ -2,15 +2,16 @@ import httpx
 import pytest
 
 import app.services.repre_guard_client as client_module
-from app.services.repre_guard_client import HEALTH_PROBE_TEXT, RepreGuardClient
+from app.services.repre_guard_client import HEALTH_PROBE_TEXT, RepreGuardClient, RepreGuardError
 
 
 def _detect_payload():
     return {
-        "score": -1.0313416951862366,
-        "threshold": 2.4924452377944597,
+        "score": -1.642964,
+        "threshold": 0.0,
         "label": "HUMAN",
-        "model_name": "Qwen/Qwen2.5-0.5B",
+        "model_name": "openai-community/roberta-base-openai-detector",
+        "score_type": "raw_logit",
     }
 
 
@@ -51,7 +52,7 @@ async def test_detect_uses_explicit_detect_url(monkeypatch):
     )
     data = await client.detect("test payload")
 
-    assert data["model_name"] == "Qwen/Qwen2.5-0.5B"
+    assert data["model_name"] == "openai-community/roberta-base-openai-detector"
     assert calls == [
         ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "test payload"}),
     ]
@@ -128,3 +129,61 @@ async def test_health_uses_explicit_health_url(monkeypatch):
     assert calls == [
         ("GET", "https://umcat.cis.um.edu.mo/api/health.php", None),
     ]
+
+
+@pytest.mark.anyio
+async def test_detect_rejects_missing_score_type(monkeypatch):
+    calls = []
+
+    def responder(method, url, payload):
+        data = _detect_payload()
+        data.pop("score_type")
+        return httpx.Response(200, json=data, request=httpx.Request(method, url, json=payload))
+
+    _build_async_client(monkeypatch, calls, responder)
+
+    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    with pytest.raises(RepreGuardError) as exc_info:
+        await client.detect("bad payload")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "INVALID_DETECT_RESPONSE"
+
+
+@pytest.mark.anyio
+async def test_detect_rejects_bad_numeric_payload(monkeypatch):
+    calls = []
+
+    def responder(method, url, payload):
+        data = _detect_payload()
+        data["score"] = "abc"
+        return httpx.Response(200, json=data, request=httpx.Request(method, url, json=payload))
+
+    _build_async_client(monkeypatch, calls, responder)
+
+    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    with pytest.raises(RepreGuardError) as exc_info:
+        await client.detect("bad payload")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "INVALID_DETECT_RESPONSE"
+
+
+@pytest.mark.anyio
+async def test_detect_rejects_probability_out_of_range(monkeypatch):
+    calls = []
+
+    def responder(method, url, payload):
+        data = _detect_payload()
+        data["score"] = 1.2
+        data["score_type"] = "probability"
+        return httpx.Response(200, json=data, request=httpx.Request(method, url, json=payload))
+
+    _build_async_client(monkeypatch, calls, responder)
+
+    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    with pytest.raises(RepreGuardError) as exc_info:
+        await client.detect("bad payload")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "INVALID_DETECT_RESPONSE"

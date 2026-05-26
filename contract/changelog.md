@@ -4,7 +4,7 @@ Tracks breaking OpenAPI changes and compatibility boundaries.
 
 ## 1.0.0 - 2026-04-01
 - Rebuilt the active contract baseline and unified active routes under `/api/v1/*`.
-- Removed legacy `/api/*` path definitions to match the real backend mount prefix.
+- Removed legacy `/api/*` path definitions to match the real backend mount prefix; `/api/scan` is not an active public contract path.
 - Replaced the obsolete `AuthResponse` with explicit `TokenResponse` and `UserResponse` models.
 - Renamed user fields to `systemRole` and `profile.jobRole` to separate system role from occupational role.
 - Froze `UserResponse` as `id/email/name/systemRole/isActive/planTier/creditsRemaining/createdAt/profile`.

@@ -7,3 +7,6 @@ venv/
 .env.ops
 *.pyc
 docker-compose.override.yml
+scripts/loadtest/results/
+scripts/loadtest/scenarios.local.json
+scripts/loadtest/provisioned-resources.json

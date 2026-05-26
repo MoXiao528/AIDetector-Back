@@ -32,9 +32,11 @@
 
 - `POST /api/v1/detect`
 
-兼容接口：
+不再作为对外契约的旧路径：
 
 - `POST /api/scan`
+
+说明：旧的 `/api/*` 路径不进入当前 OpenAPI active contract。线上前端和新集成都应该只走 `/api/v1/detect`。
 
 前端主路径应该继续用：
 

@@ -1,13 +1,15 @@
 import asyncio
+import re
 from datetime import datetime
 from html import escape
 from io import BytesIO
-from math import exp
+from math import exp, log
 
 from docx import Document
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pypdf import PdfReader
 
+from app.core.config import get_settings
 from app.db.deps import ActiveMemberDep, CurrentActorDep, SessionDep
 from app.schemas import (
     AnalysisResponse,
@@ -25,91 +27,348 @@ from app.schemas import (
 from app.schemas.detection import DetectionItem
 from app.schemas.history import Analysis, Citation as HistoryCitation, Sentence as HistorySentence, Summary
 from app.services.detection_service import DetectionService
-from app.services.quota_service import get_quota_limit, get_today_bounds, get_used_today
+from app.services.quota_service import QuotaExceededError, consume_quota, get_quota_limit, get_today_bounds, get_used_today
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 from app.services.scan_example_service import ScanExampleService
 
 router = APIRouter(tags=["detections"])
 detect_router = APIRouter(tags=["detections"])
-scan_router = APIRouter(prefix="/api/scan", tags=["scan"])
+scan_router = APIRouter(prefix="/scan", tags=["scan"])
+settings = get_settings()
 
 MAX_FILE_COUNT = 5
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
-# 这是产品层的最小送检门槛，不是模型协议本身的硬要求。
-# 后面如果要改，前端输入限制、README、合并规则和测试要一起改。
 MIN_DETECT_VISIBLE_CHARS = 200
-# 这是对用户展示的模型版本标签。
-# 如果上游真实模型变了，不要只改这里，README、前端文案和测试一起对齐。
-DISPLAY_MODEL_NAME = "v1.0"
+MAX_DETECT_CHARS = 20000
+MAX_SEGMENT_VISIBLE_CHARS = 1500
+SENTENCE_BOUNDARY_PATTERN = re.compile(r".+?(?:[。！？!?]+|[.]{1,3})(?:\s+|$)|.+?$", re.S)
+DISPLAY_MODEL_NAME = "v2.0-roberta"
 
+
+def _quota_exceeded_http_error(*, limit: int, used_today: int, remaining: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "code": "QUOTA_EXCEEDED",
+            "message": "Daily quota exceeded",
+            "detail": {
+                "limit": limit,
+                "used_today": used_today,
+                "remaining": remaining,
+            },
+        },
+    )
+
+
+def _public_repre_guard_message(exc: RepreGuardError) -> str:
+    if exc.status_code == 429:
+        return "Detect service rate limit exceeded"
+    if exc.status_code in {500, 502, 503, 504}:
+        return "Detect service is temporarily unavailable"
+    return exc.message[:160]
 
 def _normalize_score(raw_score: float, threshold: float) -> float:
-    # 当前用阈值中心化的 sigmoid 做展示概率换算。
-    # 如果以后要校准公式，前后端展示文案和文档要一起更新。
     x = raw_score - threshold
     return 1.0 / (1.0 + exp(-x))
 
 
+def _score_to_probability(score: float, threshold: float, score_type: str | None = None) -> float:
+    if score_type == "probability":
+        return min(max(float(score), 0.0), 1.0)
+    return _normalize_score(score, threshold)
+
+
+def _clamp_probability(value: float) -> float:
+    return min(max(float(value), 0.0), 1.0)
+
+
+def _score_to_display_probability(score: float, threshold: float, score_type: str) -> float:
+    if score_type != "probability":
+        return _score_to_probability(score, threshold, score_type)
+
+    score = _clamp_probability(score)
+    threshold = _clamp_probability(threshold)
+    if threshold <= 0:
+        return score
+
+    if score >= threshold:
+        return 0.67 + min(((score - threshold) / max(1.0 - threshold, 1e-9)) * 0.33, 0.33)
+
+    ratio_to_threshold = score / threshold
+    if ratio_to_threshold >= 0.5:
+        return 0.34 + ((ratio_to_threshold - 0.5) / 0.5) * 0.32
+    return (ratio_to_threshold / 0.5) * 0.33
+
+
+def _logit(probability: float) -> float:
+    clipped = min(max(probability, 1e-6), 1 - 1e-6)
+    return log(clipped / (1 - clipped))
+
 def _split_paragraphs(text: str) -> list[str]:
-    normalized = text.replace("\r\n", "\n").strip()
-    if not normalized:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
         return []
-    return [segment.strip() for segment in normalized.split("\n") if segment.strip()]
+    return [segment for segment in normalized.split("\n") if segment.strip()]
 
 
 def _count_visible_chars(text: str) -> int:
     return len("".join(str(text).split()))
 
 
-def _merge_short_paragraphs(paragraphs: list[str], min_chars: int = MIN_DETECT_VISIBLE_CHARS) -> list[dict[str, int | str]]:
-    # 检测块的真实边界在这里决定。
-    # 如果要改“短段自动合并”规则，前端预览映射和结果文案必须一起改。
-    merged: list[dict[str, int | str]] = []
+def _combine_segment_text(left: str, right: str, *, same_paragraph: bool) -> str:
+    separator = "" if same_paragraph else "\n"
+    return f"{left}{separator}{right}"
+
+
+def _hard_split_text(text: str, max_chars: int = MAX_SEGMENT_VISIBLE_CHARS) -> list[str]:
+    chunks: list[str] = []
     buffer: list[str] = []
-    buffer_visible_chars = 0
-    start_index = 0
+    visible_chars = 0
 
-    for index, paragraph in enumerate(paragraphs):
-        cleaned = paragraph.strip()
-        if not cleaned:
-            continue
+    for char in text:
+        buffer.append(char)
+        if not char.isspace():
+            visible_chars += 1
 
-        if not buffer:
-            start_index = index
-
-        buffer.append(cleaned)
-        buffer_visible_chars += _count_visible_chars(cleaned)
-
-        if buffer_visible_chars >= min_chars:
-            merged.append(
-                {
-                    "start": start_index,
-                    "end": index,
-                    "text": "\n".join(buffer),
-                    "visible_chars": buffer_visible_chars,
-                }
-            )
+        if visible_chars >= max_chars:
+            chunk = "".join(buffer)
+            if chunk.strip():
+                chunks.append(chunk)
             buffer = []
-            buffer_visible_chars = 0
+            visible_chars = 0
 
     if buffer:
-        if merged:
-            suffix = "\n".join(buffer)
-            merged[-1]["text"] = f'{merged[-1]["text"]}\n{suffix}'
-            merged[-1]["end"] = len(paragraphs) - 1
-            merged[-1]["visible_chars"] = int(merged[-1]["visible_chars"]) + buffer_visible_chars
+        chunk = "".join(buffer)
+        if chunk.strip():
+            chunks.append(chunk)
+
+    return chunks
+
+
+def _split_text_for_detect_retry(text: str) -> list[str]:
+    normalized = str(text)
+    if not normalized.strip():
+        return []
+
+    visible_total = _count_visible_chars(normalized)
+    if visible_total <= 1:
+        return [normalized]
+
+    target_visible = max(1, visible_total // 2)
+    visible_seen = 0
+    split_at = 0
+
+    for index, char in enumerate(normalized):
+        if not char.isspace():
+            visible_seen += 1
+        if visible_seen >= target_visible:
+            split_at = index + 1
+            break
+
+    left = normalized[:split_at]
+    right = normalized[split_at:]
+    return [part for part in (left, right) if part.strip()]
+
+
+def _combine_repre_guard_results(parts: list[str], results: list[dict]) -> dict:
+    total_weight = 0
+    weighted_probability = 0.0
+    weighted_threshold = 0.0
+    model_names: list[str] = []
+    score_type = str(results[0]["score_type"]) if results else "probability"
+
+    for part, result in zip(parts, results, strict=True):
+        result_score_type = str(result["score_type"])
+        if result_score_type != score_type:
+            raise RepreGuardError(
+                "detect service returned inconsistent score_type values while splitting input",
+                code="INVALID_DETECT_RESPONSE",
+                detail={"score_types": [str(item.get("score_type")) for item in results]},
+            )
+        weight = max(_count_visible_chars(part), 1)
+        threshold = float(result["threshold"])
+        probability = _score_to_probability(float(result["score"]), threshold, result_score_type)
+        total_weight += weight
+        weighted_probability += probability * weight
+        weighted_threshold += threshold * weight
+        model_names.append(str(result["model_name"]))
+
+    probability = weighted_probability / max(total_weight, 1)
+    threshold = weighted_threshold / max(total_weight, 1)
+    if score_type == "probability":
+        score = probability
+    else:
+        score = _logit(probability)
+        threshold = 0.0
+
+    return {
+        "score": score,
+        "threshold": threshold,
+        "label": "AI" if score >= threshold else "HUMAN",
+        "model_name": model_names[0] if model_names else DISPLAY_MODEL_NAME,
+        "score_type": score_type,
+    }
+
+
+async def _detect_text_with_retry(text: str) -> dict:
+    try:
+        return await repre_guard_client.detect(text=text)
+    except RepreGuardError as exc:
+        if exc.code not in {"INPUT_TOO_LONG", "TEXT_TOO_LONG"}:
+            raise
+
+        parts = _split_text_for_detect_retry(text)
+        if len(parts) <= 1:
+            raise
+
+        results = [await _detect_text_with_retry(part) for part in parts]
+        return _combine_repre_guard_results(parts, results)
+
+
+def _split_sentence_like_chunks(text: str) -> list[str]:
+    normalized = str(text)
+    if not normalized.strip():
+        return []
+
+    chunks = [
+        match.group(0)
+        for match in SENTENCE_BOUNDARY_PATTERN.finditer(normalized)
+        if match.group(0).strip()
+    ]
+    return chunks or [normalized]
+
+
+def _split_oversized_paragraph(
+    paragraph: str,
+    paragraph_index: int,
+    max_chars: int = MAX_SEGMENT_VISIBLE_CHARS,
+) -> list[dict[str, int | str]]:
+    cleaned = paragraph
+    if not cleaned.strip():
+        return []
+
+    visible_chars = _count_visible_chars(cleaned)
+    if visible_chars <= max_chars:
+        return [
+            {
+                "start": paragraph_index,
+                "end": paragraph_index,
+                "text": cleaned,
+                "visible_chars": visible_chars,
+            }
+        ]
+
+    split_chunks: list[dict[str, int | str]] = []
+    buffer: list[str] = []
+    buffer_visible_chars = 0
+
+    def flush_buffer() -> None:
+        nonlocal buffer, buffer_visible_chars
+        if not buffer:
+            return
+
+        text = "".join(buffer)
+        if text.strip():
+            split_chunks.append(
+                {
+                    "start": paragraph_index,
+                    "end": paragraph_index,
+                    "text": text,
+                    "visible_chars": _count_visible_chars(text),
+                }
+            )
+        buffer = []
+        buffer_visible_chars = 0
+
+    for sentence in _split_sentence_like_chunks(cleaned):
+        sentence_visible_chars = _count_visible_chars(sentence)
+        if sentence_visible_chars > max_chars:
+            flush_buffer()
+            for hard_chunk in _hard_split_text(sentence, max_chars):
+                hard_chunk_visible_chars = _count_visible_chars(hard_chunk)
+                if hard_chunk_visible_chars:
+                    split_chunks.append(
+                        {
+                            "start": paragraph_index,
+                            "end": paragraph_index,
+                            "text": hard_chunk,
+                            "visible_chars": hard_chunk_visible_chars,
+                        }
+                    )
+            continue
+
+        if buffer and buffer_visible_chars + sentence_visible_chars > max_chars:
+            flush_buffer()
+
+        buffer.append(sentence)
+        buffer_visible_chars += sentence_visible_chars
+
+    flush_buffer()
+    return split_chunks
+
+
+def _merge_short_paragraphs(
+    paragraphs: list[str],
+    min_chars: int = MIN_DETECT_VISIBLE_CHARS,
+    max_chars: int = MAX_SEGMENT_VISIBLE_CHARS,
+) -> list[dict[str, int | str]]:
+    seeds: list[dict[str, int | str]] = []
+    for index, paragraph in enumerate(paragraphs):
+        seeds.extend(_split_oversized_paragraph(paragraph, index, max_chars=max_chars))
+
+    if not seeds:
+        return []
+
+    merged: list[dict[str, int | str]] = []
+    buffer: dict[str, int | str] | None = None
+
+    for seed in seeds:
+        if buffer is None:
+            buffer = seed.copy()
+            continue
+
+        buffer_visible_chars = int(buffer["visible_chars"])
+        seed_visible_chars = int(seed["visible_chars"])
+        can_merge = buffer_visible_chars < min_chars and (buffer_visible_chars + seed_visible_chars) <= max_chars
+
+        if can_merge:
+            same_paragraph = int(buffer["end"]) == int(seed["start"]) == int(seed["end"])
+            buffer["text"] = _combine_segment_text(str(buffer["text"]), str(seed["text"]), same_paragraph=same_paragraph)
+            buffer["end"] = int(seed["end"])
+            buffer["visible_chars"] = buffer_visible_chars + seed_visible_chars
+            continue
+
+        merged.append(buffer)
+        buffer = seed.copy()
+
+    if buffer is not None:
+        buffer_visible_chars = int(buffer["visible_chars"])
+        if merged and buffer_visible_chars < min_chars:
+            previous_visible_chars = int(merged[-1]["visible_chars"])
+            if previous_visible_chars + buffer_visible_chars <= max_chars:
+                same_paragraph = int(merged[-1]["end"]) == int(buffer["start"]) == int(buffer["end"])
+                merged[-1]["text"] = _combine_segment_text(
+                    str(merged[-1]["text"]),
+                    str(buffer["text"]),
+                    same_paragraph=same_paragraph,
+                )
+                merged[-1]["end"] = int(buffer["end"])
+                merged[-1]["visible_chars"] = previous_visible_chars + buffer_visible_chars
+            else:
+                merged.append(buffer)
         else:
-            raise ValueError("TEXT_TOO_SHORT")
+            merged.append(buffer)
 
     return merged
 
 
-def _resolve_segment_type(score: float) -> str:
-    if score >= 0.67:
+def _resolve_segment_type(score: float, threshold: float, score_type: str) -> str:
+    if score >= threshold:
         return "ai"
-    if score >= 0.34:
+    display_probability = _score_to_display_probability(score, threshold, score_type)
+    if display_probability >= 0.34:
         return "mixed"
     return "human"
 
@@ -137,15 +396,28 @@ def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
     return supported
 
 
+async def _detect_segments_with_limit(segments: list[dict[str, int | str]]) -> list[dict]:
+    concurrency = max(1, int(settings.detect_segment_concurrency))
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def detect_segment(segment: dict[str, int | str]) -> dict:
+        async with semaphore:
+            return await _detect_text_with_retry(str(segment["text"]))
+
+    tasks = [detect_segment(segment) for segment in segments]
+    return await asyncio.wait_for(
+        asyncio.gather(*tasks),
+        timeout=max(float(settings.detect_request_timeout), float(settings.detect_service_timeout)),
+    )
+
+
 def _build_history_analysis(
     text: str,
     paragraph_scores: list[dict[str, float | str | int]],
     functions: set[str],
 ) -> Analysis:
     total_weight = sum(int(item["weight"]) for item in paragraph_scores) or 1
-    weighted_probability = sum(float(item["probability"]) * int(item["weight"]) for item in paragraph_scores) / total_weight
-    score_percent = max(0, min(int(round(weighted_probability * 100)), 100))
-    summary = Summary(ai=score_percent, mixed=0, human=max(0, 100 - score_percent))
+    bucket_weights = {"ai": 0, "mixed": 0, "human": 0}
 
     reason_map = {
         "ai": "This segment is highly patterned and is more likely to be machine-generated.",
@@ -162,9 +434,13 @@ def _build_history_analysis(
     html_parts: list[str] = []
     for index, paragraph_result in enumerate(paragraph_scores):
         paragraph_text = str(paragraph_result["text"])
-        probability = float(paragraph_result["probability"])
-        paragraph_type = _resolve_segment_type(probability)
-        paragraph_score = max(0, min(int(round(probability * 100)), 100))
+        raw_score = float(paragraph_result["raw_score"])
+        threshold = float(paragraph_result["threshold"])
+        score_type = str(paragraph_result["score_type"])
+        display_probability = _score_to_display_probability(raw_score, threshold, score_type)
+        paragraph_type = _resolve_segment_type(raw_score, threshold, score_type)
+        paragraph_score = max(0, min(int(round(display_probability * 100)), 100))
+        bucket_weights[paragraph_type] += int(paragraph_result["weight"])
         start_paragraph = int(paragraph_result["start"]) + 1
         end_paragraph = int(paragraph_result["end"]) + 1
         history_sentences.append(
@@ -175,7 +451,7 @@ def _build_history_analysis(
                 start_paragraph=start_paragraph,
                 end_paragraph=end_paragraph,
                 type=paragraph_type,
-                probability=probability,
+                probability=display_probability,
                 score=paragraph_score,
                 reason=reason_map[paragraph_type],
                 suggestion=suggestion_map[paragraph_type],
@@ -183,11 +459,21 @@ def _build_history_analysis(
         )
         html_parts.extend(
             [
-                f'<p><span class="highlight-chip {_resolve_highlight_class(probability)}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
+                f'<p><span class="highlight-chip {_resolve_highlight_class(display_probability)}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
                 for line in paragraph_text.split("\n")
                 if line.strip()
             ]
         )
+
+    summary_values = {
+        key: max(0, min(int(round((weight / total_weight) * 100)), 100))
+        for key, weight in bucket_weights.items()
+    }
+    diff = sum(summary_values.values()) - 100
+    if diff != 0:
+        largest_bucket = max(summary_values, key=lambda key: summary_values[key])
+        summary_values[largest_bucket] = max(0, min(summary_values[largest_bucket] - diff, 100))
+    summary = Summary(ai=summary_values["ai"], mixed=summary_values["mixed"], human=summary_values["human"])
 
     _ = functions
     translation = ""
@@ -270,6 +556,18 @@ async def _detect_impl(
         )
 
     chars = len(payload.text)
+    if chars > MAX_DETECT_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "TEXT_TOO_LONG",
+                "message": f"Text exceeds the {MAX_DETECT_CHARS} character limit",
+                "detail": {
+                    "maximum": MAX_DETECT_CHARS,
+                    "current": chars,
+                },
+            },
+        )
     actor_type = current_actor.actor_type
     actor_id = current_actor.actor_id
     day_start, day_end = get_today_bounds()
@@ -277,26 +575,21 @@ async def _detect_impl(
     limit = get_quota_limit(actor_type)
 
     if used_today + chars > limit:
-        remaining = max(limit - used_today, 0)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "code": "QUOTA_EXCEEDED",
-                "message": "Daily quota exceeded",
-                "detail": {
-                    "limit": limit,
-                    "used_today": used_today,
-                    "remaining": remaining,
-                },
-            },
-        )
+        raise _quota_exceeded_http_error(limit=limit, used_today=used_today, remaining=max(limit - used_today, 0))
 
     try:
         paragraphs = _split_paragraphs(payload.text)
-        merged_paragraphs = _merge_short_paragraphs(paragraphs)
-        rg_results = await asyncio.gather(
-            *(repre_guard_client.detect(text=str(segment["text"])) for segment in merged_paragraphs)
-        )
+        merged_paragraphs = _merge_short_paragraphs(paragraphs, max_chars=MAX_SEGMENT_VISIBLE_CHARS)
+        rg_results = await _detect_segments_with_limit(merged_paragraphs)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={
+                "code": "DETECT_BACKEND_TIMEOUT",
+                "message": "Detect service timed out",
+                "detail": {"timeout_seconds": settings.detect_request_timeout},
+            },
+        ) from exc
     except ValueError as exc:
         if str(exc) != "TEXT_TOO_SHORT":
             raise
@@ -313,9 +606,24 @@ async def _detect_impl(
             },
         ) from exc
     except RepreGuardError as exc:
+        if exc.code in {"INPUT_TOO_LONG", "TEXT_TOO_LONG"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "code": "TEXT_TOO_LONG",
+                    "message": exc.message,
+                    "detail": exc.detail,
+                },
+            ) from exc
+
+        upstream_status = exc.status_code if exc.status_code in {429, 500, 502, 503, 504} else status.HTTP_502_BAD_GATEWAY
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "DETECT_BACKEND_ERROR", "message": str(exc)},
+            status_code=upstream_status,
+            detail={
+                "code": exc.code or "DETECT_BACKEND_ERROR",
+                "message": _public_repre_guard_message(exc),
+                "detail": {"upstream_status": exc.status_code},
+            },
         ) from exc
 
     paragraph_scores: list[dict[str, float | str | int]] = []
@@ -324,11 +632,13 @@ async def _detect_impl(
     weighted_raw_score = 0.0
     weighted_threshold = 0.0
     model_names: list[str] = []
+    score_types: list[str] = []
     for merged_segment, rg in zip(merged_paragraphs, rg_results, strict=True):
         segment_text = str(merged_segment["text"])
         raw_score = float(rg["score"])
         threshold = float(rg["threshold"])
-        probability = _normalize_score(raw_score, threshold)
+        score_type = str(rg["score_type"])
+        probability = _score_to_probability(raw_score, threshold, score_type)
         weight = int(merged_segment["visible_chars"])
         paragraph_scores.append(
             {
@@ -339,6 +649,7 @@ async def _detect_impl(
                 "threshold": threshold,
                 "probability": probability,
                 "weight": weight,
+                "score_type": score_type,
             }
         )
         total_weight += weight
@@ -346,17 +657,25 @@ async def _detect_impl(
         weighted_raw_score += raw_score * weight
         weighted_threshold += threshold * weight
         model_names.append(str(rg["model_name"]))
+        score_types.append(score_type)
 
     total_weight = total_weight or 1
     normalized_score = weighted_probability / total_weight
     raw_score = weighted_raw_score / total_weight
     threshold = weighted_threshold / total_weight
-    label = "AI" if normalized_score >= 0.5 else "HUMAN"
-    # 保留上游真实模型名用于排障和后续切换，对用户仍统一展示 DISPLAY_MODEL_NAME。
+    score_type = score_types[0] if score_types else "probability"
+    if any(item != score_type for item in score_types):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "INVALID_DETECT_RESPONSE",
+                "message": "Detect service returned inconsistent score_type values",
+                "detail": {"score_types": score_types},
+            },
+        )
+    label = "AI" if raw_score >= threshold else "HUMAN"
     provider_model_name = model_names[0] if model_names else None
     model_name = DISPLAY_MODEL_NAME
-    remaining_after = max(limit - (used_today + chars), 0)
-
     functions = _normalize_detection_functions(payload.functions)
 
     analysis = _build_history_analysis(
@@ -374,6 +693,7 @@ async def _detect_impl(
             "label": label,
             "model_name": model_name,
             "provider_model_name": provider_model_name,
+            "score_type": score_type,
             "segments": [
                 {
                     "index": index,
@@ -385,6 +705,7 @@ async def _detect_impl(
                     "threshold": item["threshold"],
                     "probability": item["probability"],
                     "visible_chars": item["weight"],
+                    "score_type": item["score_type"],
                 }
                 for index, item in enumerate(paragraph_scores)
             ],
@@ -397,6 +718,23 @@ async def _detect_impl(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "USER_NOT_FOUND", "message": "User not found"},
         )
+
+    try:
+        quota_result = consume_quota(
+            db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            chars=chars,
+            start_time=day_start,
+            limit=limit,
+            baseline_used=used_today,
+        )
+    except QuotaExceededError as exc:
+        raise _quota_exceeded_http_error(
+            limit=exc.limit,
+            used_today=exc.used_today,
+            remaining=exc.remaining,
+        ) from exc
 
     detection = DetectionService(db).create_detection(
         user_id=user_id,
@@ -420,7 +758,7 @@ async def _detect_impl(
         model_name=model_name,
         raw_score=raw_score,
         threshold=threshold,
-        currentCredits=remaining_after,
+        currentCredits=quota_result.remaining,
         history_id=detection.id,
         input_text=payload.text,
         result=analysis,
@@ -483,6 +821,20 @@ async def detect_scan(
     )
 
     return _build_scan_analysis_response(detection_response)
+
+
+@scan_router.post(
+    "",
+    response_model=AnalysisResponse,
+    summary="Compatibility scan endpoint",
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def detect_scan_root(
+    payload: DetectRequest,
+    db: SessionDep,
+    current_actor: CurrentActorDep,
+) -> AnalysisResponse:
+    return await detect_scan(payload=payload, db=db, current_actor=current_actor)
 
 
 @detect_router.get(

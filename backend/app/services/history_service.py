@@ -41,7 +41,7 @@ class HistoryService:
             user_id=user_id,
             actor_type="user",
             actor_id=str(user_id),
-            chars_used=len(input_text),
+            chars_used=0,
             title=title,
             input_text=input_text,
             editor_html=editor_html,

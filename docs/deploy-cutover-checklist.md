@@ -134,7 +134,7 @@ docker compose ps
 你应该看到：
 
 ```text
-api ... 0.0.0.0:8000->8000/tcp
+api ... 127.0.0.1:8020->8000/tcp
 db  ... 5432/tcp
 ```
 
@@ -153,8 +153,8 @@ db ... 127.0.0.1:15432->5432/tcp
 ## 9. 健康检查
 
 ```bash
-curl http://127.0.0.1:8000/api/v1/health
-curl http://127.0.0.1:8000/api/v1/ready
+curl http://127.0.0.1:8020/api/v1/health
+curl http://127.0.0.1:8020/api/v1/ready
 ```
 
 `/ready` 必须确认数据库和 detect service 都是 `ok`。

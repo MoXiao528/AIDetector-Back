@@ -28,6 +28,7 @@ def mock_repre_guard(monkeypatch):
             "threshold": 2.4924452377944597,
             "label": "AI",
             "model_name": "Qwen/Qwen2.5-7B",
+            "score_type": "raw_logit",
         }
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
