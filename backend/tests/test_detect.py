@@ -5,7 +5,14 @@ import pytest
 from app.api.v1.auth import register_user
 from fastapi import HTTPException
 
-from app.api.v1.detections import _merge_short_paragraphs, _split_paragraphs, detect, detect_scan, list_detections
+from app.api.v1.detections import (
+    _combine_repre_guard_results,
+    _merge_short_paragraphs,
+    _split_paragraphs,
+    detect,
+    detect_scan,
+    list_detections,
+)
 from app.api.v1.keys import create_api_key
 from app.db.deps import ActorContext, get_current_actor
 from app.schemas.analysis import DetectRequest
@@ -327,6 +334,37 @@ def test_segmenting_preserves_indentation_and_sentence_spacing():
     assert paragraphs[1].startswith("    value")
     assert merged[0]["text"] == text
     assert "one. English" in str(merged[0]["text"])
+
+
+def test_combine_repre_guard_raw_logit_preserves_score_scale():
+    result = _combine_repre_guard_results(
+        ["short text", "longer text segment"],
+        [
+            {
+                "score": -1.0,
+                "threshold": 0.25,
+                "label": "HUMAN",
+                "model_name": ROBERTA_MODEL_NAME,
+                "score_type": "raw_logit",
+            },
+            {
+                "score": 1.0,
+                "threshold": 0.25,
+                "label": "AI",
+                "model_name": ROBERTA_MODEL_NAME,
+                "score_type": "raw_logit",
+            },
+        ],
+    )
+
+    short_weight = len("".join("short text".split()))
+    long_weight = len("".join("longer text segment".split()))
+    expected_score = ((-1.0 * short_weight) + (1.0 * long_weight)) / (short_weight + long_weight)
+
+    assert result["score_type"] == "raw_logit"
+    assert result["threshold"] == pytest.approx(0.25)
+    assert result["score"] == pytest.approx(expected_score)
+    assert result["label"] == "AI"
 
 
 @pytest.mark.anyio

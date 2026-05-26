@@ -109,3 +109,18 @@ def test_cors_preflight_allows_local_vite_origin():
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_app_shutdown_closes_shared_repre_guard_client(monkeypatch):
+    closed = False
+
+    async def fake_aclose() -> None:
+        nonlocal closed
+        closed = True
+
+    monkeypatch.setattr(repre_guard_client, "aclose", fake_aclose)
+
+    with TestClient(app):
+        pass
+
+    assert closed is True

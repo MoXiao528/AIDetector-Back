@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from html import escape
 from io import BytesIO
-from math import exp, log
+from math import exp
 
 from docx import Document
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
@@ -102,10 +102,6 @@ def _score_to_display_probability(score: float, threshold: float, score_type: st
     return (ratio_to_threshold / 0.5) * 0.33
 
 
-def _logit(probability: float) -> float:
-    clipped = min(max(probability, 1e-6), 1 - 1e-6)
-    return log(clipped / (1 - clipped))
-
 def _split_paragraphs(text: str) -> list[str]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.strip():
@@ -174,6 +170,7 @@ def _split_text_for_detect_retry(text: str) -> list[str]:
 
 def _combine_repre_guard_results(parts: list[str], results: list[dict]) -> dict:
     total_weight = 0
+    weighted_score = 0.0
     weighted_probability = 0.0
     weighted_threshold = 0.0
     model_names: list[str] = []
@@ -188,20 +185,19 @@ def _combine_repre_guard_results(parts: list[str], results: list[dict]) -> dict:
                 detail={"score_types": [str(item.get("score_type")) for item in results]},
             )
         weight = max(_count_visible_chars(part), 1)
+        score = float(result["score"])
         threshold = float(result["threshold"])
-        probability = _score_to_probability(float(result["score"]), threshold, result_score_type)
+        probability = _score_to_probability(score, threshold, result_score_type)
         total_weight += weight
+        weighted_score += score * weight
         weighted_probability += probability * weight
         weighted_threshold += threshold * weight
         model_names.append(str(result["model_name"]))
 
-    probability = weighted_probability / max(total_weight, 1)
+    score = weighted_score / max(total_weight, 1)
     threshold = weighted_threshold / max(total_weight, 1)
     if score_type == "probability":
-        score = probability
-    else:
-        score = _logit(probability)
-        threshold = 0.0
+        score = weighted_probability / max(total_weight, 1)
 
     return {
         "score": score,

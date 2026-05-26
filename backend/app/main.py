@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from http import HTTPStatus
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,11 +12,21 @@ from app.api.v1.detections import scan_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
+from app.services.repre_guard_client import repre_guard_client
 
 settings = get_settings()
 logger = configure_logging()
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await repre_guard_client.aclose()
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
