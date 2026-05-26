@@ -17,6 +17,32 @@ branch_labels = None
 depends_on = None
 
 
+QUOTA_USAGE_BACKFILL_SQL = """
+WITH billable_detections AS (
+    SELECT
+        actor_type,
+        actor_id,
+        (created_at AT TIME ZONE 'UTC')::date AS usage_date,
+        chars_used
+    FROM detections
+    WHERE chars_used > 0
+      AND (
+          title IS NULL
+          OR COALESCE(meta_json, '{}'::jsonb) ? 'method'
+      )
+)
+INSERT INTO quota_usage (actor_type, actor_id, usage_date, "limit", used)
+SELECT
+    actor_type,
+    actor_id,
+    usage_date,
+    CASE WHEN actor_type = 'guest' THEN 5000 ELSE 30000 END AS "limit",
+    COALESCE(SUM(chars_used), 0) AS used
+FROM billable_detections
+GROUP BY actor_type, actor_id, usage_date
+"""
+
+
 def upgrade() -> None:
     op.create_table(
         "quota_usage",
@@ -37,19 +63,7 @@ def upgrade() -> None:
         ["actor_type", "actor_id", "usage_date"],
         unique=False,
     )
-    op.execute(
-        """
-        INSERT INTO quota_usage (actor_type, actor_id, usage_date, "limit", used)
-        SELECT
-            actor_type,
-            actor_id,
-            CAST(created_at AS DATE) AS usage_date,
-            CASE WHEN actor_type = 'guest' THEN 5000 ELSE 30000 END AS "limit",
-            COALESCE(SUM(chars_used), 0) AS used
-        FROM detections
-        GROUP BY actor_type, actor_id, CAST(created_at AS DATE)
-        """
-    )
+    op.execute(QUOTA_USAGE_BACKFILL_SQL)
 
 
 def downgrade() -> None:
