@@ -46,9 +46,9 @@ def test_detect_route_returns_detection_payload(db_session, monkeypatch):
 def test_scan_root_compat_route_is_available(db_session, monkeypatch):
     async def fake_detect(text: str) -> dict:
         return {
-            "score": 0.003,
+            "score": 0.002,
             "threshold": 0.0028,
-            "label": "AI",
+            "label": "HUMAN",
             "model_name": "route-model",
             "score_type": "probability",
         }
@@ -61,7 +61,7 @@ def test_scan_root_compat_route_is_available(db_session, monkeypatch):
             response = client.post("/api/scan", json={"text": LONG_TEXT, "functions": ["scan"]})
             assert response.status_code == 200
             payload = response.json()
-            assert payload["summary"].startswith("AI ")
+            assert payload["summary"] == "AI 0% | Mixed 100% | Human 0%"
             assert payload["sentences"]
     finally:
         app.dependency_overrides.clear()

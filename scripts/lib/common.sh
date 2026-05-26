@@ -210,8 +210,12 @@ run_http_checks() {
   if command -v curl >/dev/null 2>&1; then
     local max_attempts=20
     local attempt=1
-    local api_health_url="http://127.0.0.1:${API_HOST_PORT}/api/v1/health"
-    local api_ready_url="http://127.0.0.1:${API_HOST_PORT}/api/v1/ready"
+    local api_probe_host="${API_HOST_BIND:-127.0.0.1}"
+    if [[ "$api_probe_host" == "0.0.0.0" || "$api_probe_host" == "::" ]]; then
+      api_probe_host="127.0.0.1"
+    fi
+    local api_health_url="http://${api_probe_host}:${API_HOST_PORT}/api/v1/health"
+    local api_ready_url="http://${api_probe_host}:${API_HOST_PORT}/api/v1/ready"
 
     until curl --fail --silent --show-error "$api_health_url" >/dev/null 2>&1; do
       if (( attempt >= max_attempts )); then

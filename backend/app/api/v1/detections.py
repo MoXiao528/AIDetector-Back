@@ -520,7 +520,11 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     ] or None
 
     return AnalysisResponse(
-        summary=f"AI {analysis.summary.ai}% | Human {max(0, 100 - analysis.summary.ai)}%",
+        summary=(
+            f"AI {analysis.summary.ai}% | "
+            f"Mixed {analysis.summary.mixed}% | "
+            f"Human {analysis.summary.human}%"
+        ),
         sentences=sentences,
         polish=analysis.polish or None,
         translation=analysis.translation or None,
