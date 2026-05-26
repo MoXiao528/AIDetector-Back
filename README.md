@@ -1,6 +1,6 @@
-# AIDetector Backend V1.0
+﻿# AIDetector Backend V2.0
 
-`AIDetector-Back` 是 AIDetector V1.0 的后端服务，当前正式对外提供：
+`AIDetector-Back` 是 AIDetector V2.0 的后端服务，当前正式对外提供：
 
 - 用户注册 / 登录 / 游客 token
 - 文本检测
@@ -11,23 +11,29 @@
 - 管理后台接口
 - 团队接口
 - 健康检查与就绪检查
+- RepreGuard RoBERTa v2.0 检测接入
 
 当前仓库根目录只保留这套文档结构：
 
-- [`README.md`](./README.md)：V1.0 总说明
+- [`README.md`](./README.md)：V2.0 总说明
 - [`contract/openapi.yaml`](./contract/openapi.yaml)：正式契约
 - [`contract/changelog.md`](./contract/changelog.md)：契约版本变更
 - [`docs/detection-contract.md`](./docs/detection-contract.md)：检测语义说明
 - [`docs/deploy-cutover-checklist.md`](./docs/deploy-cutover-checklist.md)：上线切换清单
 
-执行代码 
+本地调试启动：
 
 ```bash
 docker compose up -d --build
 ```
 
+数据库迁移：
 
-## V1.0 边界
+```bash
+docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
+```
+
+## V2.0 边界
 
 ### 已开放
 
@@ -52,7 +58,15 @@ docker compose up -d --build
 说明：
 
 - 响应结构里保留的 `translation / polish / citations` 只是兼容保留字段
-- 不代表这些能力已经进入 V1.0 正式产品面
+- 不代表这些能力已经进入 V2.0 正式产品面
+
+## V2.0 检测契约
+
+- `POST /api/v1/detect` 是正式检测入口，`POST /api/scan` 是旧客户端兼容入口，两者走同一套检测实现。
+- 下游 RepreGuard 必须返回 `score_type="probability"`；缺失或非法分数、标签、阈值会转成 `INVALID_DETECT_RESPONSE`。
+- AI / HUMAN 标签、摘要百分比和段落高亮统一按检测端返回的 `threshold` 解释，不再沿用旧的 `0.34 / 0.67` 概率分档。
+- 后端分段保留原始空白和缩进，避免代码、JSON、路径类文本在送检前被展示层 normalize。
+- 配额统计优先使用 `quota_usage` ledger；手工历史记录不再隐式消耗 quota。
 
 ## 运行结构
 
@@ -92,7 +106,10 @@ POSTGRES_USER=aidetector_app
 POSTGRES_PASSWORD=replace-with-a-strong-app-password
 POSTGRES_DB=AIDetector
 BACKEND_CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
-DETECT_SERVICE_DETECT_URL=https://umcat.cis.um.edu.mo/api/aidetect.php
+DETECT_SERVICE_URL=http://host.docker.internal:9000
+DETECT_SERVICE_DETECT_URL=
+DETECT_SERVICE_HEALTH_URL=http://host.docker.internal:9000/health
+DETECT_SERVICE_TIMEOUT=60
 ```
 
 ### `.env.ops.example`
@@ -152,22 +169,32 @@ cp .env.ops.example .env.ops
 
 ### 启动
 
-推荐直接用脚本：
+PyCharm / PowerShell 本地调试直接用 Docker Compose：
 
-```bash
-bash scripts/server-up.sh
+```powershell
+docker compose up -d --build
 ```
 
-脚本顺序：
+如果你想拆成两个 PyCharm 一键配置：
 
-1. 校验 `.env` 和 `.env.ops`
-2. 启动 `db`
-3. 等数据库 ready
-4. 确保 `.env` 里的运行账号存在并完成授权
-5. 构建 API 镜像
-6. 用管理员账号跑迁移
-7. 启动 `api`
-8. 跑 `health / ready`
+```powershell
+docker compose build api
+docker compose up -d db api
+```
+
+数据库迁移单独建一个 PyCharm 一键配置：
+
+```powershell
+docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
+```
+
+这条迁移命令会把 `.env.ops` 里的管理员数据库账号注入到一次性 `api` 容器里，避免用 `.env` 里的业务账号跑高权限迁移。
+
+如果你要完整启动并顺便做环境校验，也可以用：
+
+```bash
+./scripts/server-up.sh
+```
 
 常用检查：
 
@@ -175,11 +202,19 @@ bash scripts/server-up.sh
 docker compose ps
 docker compose logs -f db
 docker compose logs -f api
-curl http://127.0.0.1:8000/api/v1/health
-curl http://127.0.0.1:8000/api/v1/ready
+curl http://127.0.0.1:8020/api/v1/health
+curl http://127.0.0.1:8020/api/v1/ready
 ```
 
-## V1.0 生产部署
+### 开发检查
+
+```bash
+cd backend
+python -m pytest tests -q
+python -m ruff check app tests
+```
+
+## V2.0 生产部署
 
 ### 1. 准备配置
 
@@ -214,28 +249,41 @@ POSTGRES_DB=AIDetector
 
 ### 2. 端口建议
 
-当前仓库默认开发端口映射是 `8000:8000`。  
-如果你按推荐结构部署，生产建议改成：
+当前推荐端口映射和线上部署保持一致：
 
 ```yml
 ports:
-  - "127.0.0.1:8020:8000"
+  - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-8020}:8000"
 ```
 
-然后由 Nginx / Caddy 转发 `/api` 到 `127.0.0.1:8020`。
+也就是默认只监听宿主机本机 `127.0.0.1:8020`，然后由 Nginx / Caddy 转发 `/api` 到 `127.0.0.1:8020`。
 
 ### 3. 启动
 
-推荐：
+本地 / 生产都可以直接用 Docker Compose：
 
-```bash
-bash scripts/server-up.sh
+```powershell
+docker compose up -d --build
+```
+
+迁移：
+
+```powershell
+docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
 ```
 
 更新代码后：
 
+```powershell
+git pull --ff-only
+docker compose up -d --build
+docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
+```
+
+如果你需要自动检查 `.env`、账号授权、迁移和 `health / ready`，再用脚本：
+
 ```bash
-bash scripts/server-update.sh
+./scripts/server-update.sh
 ```
 
 ### 4. 必须记住
@@ -257,22 +305,17 @@ docker compose exec db psql -U postgres -d AIDetector
 
 ### 手工跑管理员迁移
 
-```bash
-set -a
-source .env.ops
-set +a
-
-docker compose run --rm --no-deps \
-  -e POSTGRES_USER="$POSTGRES_USER" \
-  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-  api alembic upgrade head
+```powershell
+docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
 ```
 
-## V1.0 验收清单
+## V2.0 验收清单
 
 - `docker compose ps`
 - `/api/v1/health`
 - `/api/v1/ready`
+- `/api/v1/detect`
+- `/api/scan`
 - 注册 / 登录
 - 游客检测
 - 登录后检测

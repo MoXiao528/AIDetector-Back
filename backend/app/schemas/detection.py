@@ -45,17 +45,17 @@ class DetectionResponse(SchemaBase):
     model_name: str | None = Field(
         default=None,
         description="Underlying model name returned by RepreGuard.",
-        json_schema_extra={"example": "Qwen/Qwen2.5-7B"},
+        json_schema_extra={"example": "v2.0-roberta"},
     )
     raw_score: float | None = Field(
         default=None,
         description="Raw score returned by the downstream model.",
-        json_schema_extra={"example": 2.93},
+        json_schema_extra={"example": 0.4054651081081642},
     )
     threshold: float | None = Field(
         default=None,
         description="Threshold returned by the downstream model.",
-        json_schema_extra={"example": 2.4924452377944597},
+        json_schema_extra={"example": 0.0},
     )
     currentCredits: int = Field(
         ...,
@@ -91,10 +91,10 @@ class DetectionItem(SchemaBase):
             "example": {
                 "length": 120,
                 "repre_guard": {
-                    "raw_score": 2.93,
-                    "threshold": 2.49,
+                    "raw_score": 0.4054651081081642,
+                    "threshold": 0.0,
                     "label": "AI",
-                    "model_name": "Qwen/Qwen2.5-7B",
+                    "model_name": "v2.0-roberta",
                 },
             }
         },

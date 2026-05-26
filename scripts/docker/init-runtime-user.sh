@@ -22,15 +22,25 @@ psql -v ON_ERROR_STOP=1 --username "$admin_user" --dbname postgres \
   -v app_user="$app_user" \
   -v app_password="$app_password" \
   -v app_db="$app_db" <<'SQL'
+-- psql variables are not interpolated inside a raw DO block, so generate the block first.
+SELECT format(
+  $fmt$
 DO $do$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') THEN
-    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password');
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %L) THEN
+    EXECUTE format('CREATE ROLE %%I LOGIN PASSWORD %%L', %L, %L);
   ELSE
-    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app_user', :'app_password');
+    EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', %L, %L);
   END IF;
 END
 $do$;
+  $fmt$,
+  :'app_user',
+  :'app_user',
+  :'app_password',
+  :'app_user',
+  :'app_password'
+) \gexec
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'app_db', :'app_user') \gexec
 \connect :app_db
 SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app_user') \gexec

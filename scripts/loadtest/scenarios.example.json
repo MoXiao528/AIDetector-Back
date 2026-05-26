@@ -1,0 +1,274 @@
+{
+  "base_url": "https://aiguard.isuperviz.net",
+  "defaults": {
+    "concurrency_levels": [50, 100],
+    "rounds": 3,
+    "timeout_seconds": 30,
+    "verify_tls": true,
+    "headers": {
+      "Accept": "application/json"
+    }
+  },
+  "auth": {
+    "member_bearer_token": "${LOADTEST_MEMBER_TOKEN}",
+    "member_bearer_tokens": [
+      "${LOADTEST_MEMBER_TOKEN_1}",
+      "${LOADTEST_MEMBER_TOKEN_2}",
+      "${LOADTEST_MEMBER_TOKEN_3}"
+    ],
+    "admin_bearer_token": "${LOADTEST_ADMIN_TOKEN}",
+    "member_api_key": "${LOADTEST_MEMBER_API_KEY}",
+    "guest_bearer_tokens": [
+      "${LOADTEST_GUEST_TOKEN_1}",
+      "${LOADTEST_GUEST_TOKEN_2}",
+      "${LOADTEST_GUEST_TOKEN_3}",
+      "${LOADTEST_GUEST_TOKEN_4}",
+      "${LOADTEST_GUEST_TOKEN_5}"
+    ]
+  },
+  "datasets": {
+    "detect_text": "This is a deliberately long sample paragraph for burst load testing. It contains enough visible characters to pass the backend minimum threshold, keeps sentence structure stable, and avoids accidental validation failures. The goal is to exercise the real detection path, database persistence path, quota deduction path, and downstream detect service integration under concurrent traffic.",
+    "history_ids": [101, 102, 103, 104, 105],
+    "detection_ids": [201, 202, 203, 204, 205],
+    "user_ids": [1, 2, 3],
+    "team_ids": [1],
+    "report_locale": "zh-CN"
+  },
+  "scenarios": [
+    {
+      "name": "health",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/health",
+      "auth": "none",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "db_ping",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/db/ping",
+      "auth": "none",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "scan_examples",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/scan/examples",
+      "auth": "none",
+      "query": {
+        "locale": "zh-CN"
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "quota_guest",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/quota",
+      "auth": "guest_bearer_pool",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "detect_member",
+      "enabled": true,
+      "method": "POST",
+      "path": "/api/v1/detect",
+      "auth": "member_bearer_pool",
+      "rounds": 1,
+      "expected_statuses": [200],
+      "json_body": {
+        "text": "{{detect_text}}",
+        "functions": ["scan"]
+      }
+    },
+    {
+      "name": "detect_guest_pool",
+      "enabled": false,
+      "method": "POST",
+      "path": "/api/v1/detect",
+      "auth": "guest_bearer_pool",
+      "rounds": 1,
+      "expected_statuses": [200],
+      "json_body": {
+        "text": "{{detect_text}}",
+        "functions": ["scan"]
+      }
+    },
+    {
+      "name": "parse_files_txt",
+      "enabled": true,
+      "method": "POST",
+      "path": "/api/v1/detections/parse-files",
+      "auth": "member_bearer",
+      "expected_statuses": [200],
+      "files": [
+        {
+          "field": "files",
+          "path": "./fixtures/parse-sample.txt",
+          "content_type": "text/plain"
+        }
+      ]
+    },
+    {
+      "name": "list_detections_member",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/detections/",
+      "auth": "member_bearer",
+      "query": {
+        "page": 1,
+        "page_size": 20
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "history_list_member",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/history",
+      "auth": "member_bearer",
+      "query": {
+        "page": 1,
+        "per_page": 20,
+        "sort": "created_at",
+        "order": "desc"
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "history_get_member",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/history/{{history_ids}}",
+      "auth": "member_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "report_pdf_member",
+      "enabled": true,
+      "method": "POST",
+      "path": "/api/v1/reports/pdf",
+      "auth": "member_bearer",
+      "headers": {
+        "Accept": "application/pdf"
+      },
+      "expected_statuses": [200],
+      "json_body": {
+        "report_type": "scan",
+        "locale": "{{report_locale}}",
+        "history_id": "{{history_ids}}"
+      }
+    },
+    {
+      "name": "api_key_self_test",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/keys/self-test",
+      "auth": "member_api_key",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "list_api_keys",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/keys",
+      "auth": "member_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_status",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/status",
+      "auth": "admin_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_overview",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/overview",
+      "auth": "admin_bearer",
+      "query": {
+        "preset": "week"
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_users",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/users",
+      "auth": "admin_bearer",
+      "query": {
+        "page": 1,
+        "pageSize": 20,
+        "sort": "createdAt",
+        "order": "desc"
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_user_detail",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/users/{{user_ids}}",
+      "auth": "admin_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_detections",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/detections",
+      "auth": "admin_bearer",
+      "query": {
+        "page": 1,
+        "pageSize": 20,
+        "sort": "createdAt",
+        "order": "desc"
+      },
+      "expected_statuses": [200]
+    },
+    {
+      "name": "admin_detection_detail",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/admin/detections/{{detection_ids}}",
+      "auth": "admin_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "team_stats",
+      "enabled": true,
+      "method": "GET",
+      "path": "/api/v1/teams/{{team_ids}}/stats",
+      "auth": "member_bearer",
+      "expected_statuses": [200]
+    },
+    {
+      "name": "auth_guest_rate_limit_check",
+      "enabled": false,
+      "method": "POST",
+      "path": "/api/v1/auth/guest",
+      "auth": "none",
+      "rounds": 1,
+      "expected_statuses": [200, 429]
+    },
+    {
+      "name": "auth_login_rate_limit_check",
+      "enabled": false,
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "auth": "none",
+      "rounds": 1,
+      "expected_statuses": [200, 401, 429],
+      "json_body": {
+        "identifier": "${LOADTEST_LOGIN_IDENTIFIER}",
+        "password": "${LOADTEST_LOGIN_PASSWORD}"
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from http import HTTPStatus
 
 from fastapi import FastAPI, HTTPException, Request
@@ -6,15 +7,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import router as api_router
+from app.api.v1.detections import scan_router
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
+from app.services.repre_guard_client import repre_guard_client
 
 settings = get_settings()
 logger = configure_logging()
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await repre_guard_client.aclose()
+
+
+app = FastAPI(title=settings.app_name, version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,3 +84,4 @@ async def root() -> WelcomeResponse:
 
 # 使用聚合 router 统一挂载 v1 子路由，避免路径冲突。
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(scan_router, prefix="/api")

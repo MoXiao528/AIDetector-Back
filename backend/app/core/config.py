@@ -12,14 +12,18 @@ DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 
 class Settings(BaseSettings):
-    detect_service_url: str = "http://host.docker.internal:9000"
+    detect_service_url: str = "http://127.0.0.1:9000"
     detect_service_detect_url: str | None = None
     detect_service_health_url: str | None = None
-    detect_service_timeout: int = 10
+    detect_service_timeout: int = 60
+    detect_segment_concurrency: int = Field(default=4, ge=1, le=16)
+    detect_request_timeout: int = Field(default=120, ge=1, le=900)
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
     app_name: str = Field(default="AIDetector API")
     environment: str = Field(default="development")
+    api_host_bind: str = Field(default="127.0.0.1")
+    api_host_port: int = Field(default=8020)
     secret_key: str = Field(default="change-me", min_length=8)
 
     backend_cors_origins: List[AnyHttpUrl] | List[str] = Field(
@@ -70,11 +74,15 @@ class Settings(BaseSettings):
         if len(secret_key) < 32 or secret_key.lower() == "change-me":
             raise ValueError("Production-like environments require a strong SECRET_KEY with at least 32 characters.")
 
-        detect_urls = [
-            ("DETECT_SERVICE_URL", self.detect_service_url),
-            ("DETECT_SERVICE_DETECT_URL", self.detect_service_detect_url),
-            ("DETECT_SERVICE_HEALTH_URL", self.detect_service_health_url),
-        ]
+        detect_urls = []
+        if not self.detect_service_detect_url:
+            detect_urls.append(("DETECT_SERVICE_URL", self.detect_service_url))
+        detect_urls.extend(
+            [
+                ("DETECT_SERVICE_DETECT_URL", self.detect_service_detect_url),
+                ("DETECT_SERVICE_HEALTH_URL", self.detect_service_health_url),
+            ]
+        )
         for field_name, url in detect_urls:
             if not url:
                 continue

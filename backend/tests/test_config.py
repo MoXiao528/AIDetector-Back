@@ -45,3 +45,14 @@ def test_settings_accept_safe_production_values():
     )
 
     assert settings.environment == "production"
+
+
+def test_settings_accept_safe_direct_detect_url_without_base_override():
+    settings = Settings(
+        environment="production",
+        secret_key="a" * 32,
+        postgres_password="StrongDbPass!23",
+        detect_service_detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php",
+    )
+
+    assert settings.detect_service_detect_url == "https://umcat.cis.um.edu.mo/api/aidetect.php"
