@@ -16,3 +16,7 @@ httpx
 pypdf
 python-docx
 reportlab
+transformers
+sentencepiece
+protobuf
+nltk

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     detect_service_timeout: int = 60
     detect_segment_concurrency: int = Field(default=4, ge=1, le=16)
     detect_request_timeout: int = Field(default=120, ge=1, le=900)
+    detect_tokenizer_model: str = "WUJUNCHAO/DetectRL-X-XLM-RoBERTa-Detector-All"
+    detect_max_input_tokens: int = Field(default=512, ge=16, le=4096)
+    detect_short_segment_visible_chars: int = Field(default=40, ge=1, le=200)
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
     app_name: str = Field(default="AIDetector API")

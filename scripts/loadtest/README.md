@@ -3,6 +3,7 @@
 ## Files
 
 - `run_loadtest.py`: burst load test runner.
+- `detect_100_users.py`: quota-aware detect-only load test for the online site.
 - `scenarios.example.json`: example config for the online site.
 - `fixtures/parse-sample.txt`: sample file for `/api/v1/detections/parse-files`.
 
@@ -37,6 +38,39 @@ D:\Anaconda\envs\lab\python.exe .\scripts\loadtest\run_loadtest.py `
 ```
 
 ## Useful commands
+
+Detect API only, 100 concurrent users, one round, about 500 chars per request:
+
+```powershell
+$env:LOADTEST_MEMBER_TOKEN_1 = "member-jwt-1"
+$env:LOADTEST_MEMBER_TOKEN_2 = "member-jwt-2"
+$env:LOADTEST_MEMBER_TOKEN_3 = "member-jwt-3"
+
+D:\Anaconda\envs\lab\python.exe .\scripts\loadtest\detect_100_users.py `
+  --base-url https://aiguard.isuperviz.net `
+  --users 100 `
+  --rounds 1 `
+  --chars 500
+```
+
+Or let the script log in and fetch fresh member JWTs:
+
+```powershell
+$env:LOADTEST_LOGIN_IDENTIFIER_1 = "user1@example.com"
+$env:LOADTEST_LOGIN_PASSWORD_1 = "password-1"
+$env:LOADTEST_LOGIN_IDENTIFIER_2 = "user2@example.com"
+$env:LOADTEST_LOGIN_PASSWORD_2 = "password-2"
+$env:LOADTEST_LOGIN_IDENTIFIER_3 = "user3@example.com"
+$env:LOADTEST_LOGIN_PASSWORD_3 = "password-3"
+
+D:\Anaconda\envs\lab\python.exe .\scripts\loadtest\detect_100_users.py `
+  --base-url https://aiguard.isuperviz.net `
+  --users 100 `
+  --rounds 1 `
+  --chars 500
+```
+
+This script checks `/api/v1/quota` before sending detect traffic. With the default 100 x 500-char run, use at least three member tokens or at least thirteen guest tokens. If a copied token includes the `Bearer ` prefix or quotes, the script strips them automatically.
 
 Only run a few scenarios:
 

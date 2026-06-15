@@ -20,6 +20,7 @@ from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
+from app.services.token_chunker import TOO_SHORT_STATUS, build_token_aware_segments
 
 LONG_TEXT = (
     "This is a sufficiently long detection sample that keeps repeating structured content "
@@ -44,6 +45,43 @@ LONG_PARAGRAPH_B = LONG_PARAGRAPH_B.strip()
 ROBERTA_MODEL_NAME = "openai-community/roberta-base-openai-detector"
 ROBERTA_THRESHOLD = 0.0
 
+
+class FakeTokenizer:
+    @staticmethod
+    def _pieces(text: str) -> list[str]:
+        return [piece for piece in str(text or "").replace("\n", " ").split(" ") if piece]
+
+    def encode(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool = True,
+        truncation: bool = False,
+        max_length: int | None = None,
+    ) -> list[int]:
+        body = list(range(len(self._pieces(text))))
+        if truncation and max_length is not None:
+            special_count = 2 if add_special_tokens else 0
+            body = body[: max(max_length - special_count, 0)]
+        if not add_special_tokens:
+            return body
+        return [-1, *body, -2]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        _ = skip_special_tokens, clean_up_tokenization_spaces
+        return " ".join(f"tok{token_id}" for token_id in token_ids if token_id >= 0)
+
+
+def _fake_token_weight(text: str) -> int:
+    return len(FakeTokenizer().encode(text, add_special_tokens=False))
+
+
 @pytest.fixture(autouse=True)
 def mock_repre_guard(monkeypatch):
     """
@@ -64,6 +102,7 @@ def mock_repre_guard(monkeypatch):
 
     # 把单例实例上的 detect 方法替换掉
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+    monkeypatch.setattr("app.services.token_chunker.get_tokenizer", lambda model_name=ROBERTA_MODEL_NAME: FakeTokenizer())
     yield
 
 @pytest.mark.anyio
@@ -261,9 +300,9 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     short_probability = 1.0 / (1.0 + exp(-(-1.3862943611198906 - ROBERTA_THRESHOLD)))
     long_probability = 1.0 / (1.0 + exp(-(0.4054651081081642 - ROBERTA_THRESHOLD)))
     expected_probability = (
-        short_probability * len("".join(LONG_PARAGRAPH_A.split()))
-        + long_probability * len("".join(LONG_PARAGRAPH_B.split()))
-    ) / (len("".join(LONG_PARAGRAPH_A.split())) + len("".join(LONG_PARAGRAPH_B.split())))
+        short_probability * _fake_token_weight(LONG_PARAGRAPH_A)
+        + long_probability * _fake_token_weight(LONG_PARAGRAPH_B)
+    ) / (_fake_token_weight(LONG_PARAGRAPH_A) + _fake_token_weight(LONG_PARAGRAPH_B))
 
     assert response.label == "human"
     assert response.score == pytest.approx(expected_probability)
@@ -275,8 +314,8 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     assert response.result.sentences[1].start_paragraph == 2
     assert response.result.sentences[1].end_paragraph == 2
     expected_ai_summary = round(
-        (len("".join(LONG_PARAGRAPH_B.split())))
-        / (len("".join(LONG_PARAGRAPH_A.split())) + len("".join(LONG_PARAGRAPH_B.split())))
+        _fake_token_weight(LONG_PARAGRAPH_B)
+        / (_fake_token_weight(LONG_PARAGRAPH_A) + _fake_token_weight(LONG_PARAGRAPH_B))
         * 100
     )
     assert response.result.sentences[0].type == "human"
@@ -298,7 +337,7 @@ async def test_detect_rejects_text_under_minimum_visible_chars(db_session, uniqu
 
 
 @pytest.mark.anyio
-async def test_detect_merges_short_paragraph_into_next_chunk(db_session, unique_email, monkeypatch):
+async def test_detect_marks_short_paragraph_without_downstream_call(db_session, unique_email, monkeypatch):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
     calls = []
@@ -318,11 +357,15 @@ async def test_detect_merges_short_paragraph_into_next_chunk(db_session, unique_
     text = f"Short intro\n{LONG_PARAGRAPH_A}"
     response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
-    assert calls == [text]
-    assert len(response.result.sentences) == 1
-    assert response.result.sentences[0].text == text
+    assert calls == [LONG_PARAGRAPH_A]
+    assert len(response.result.sentences) == 2
+    assert response.result.sentences[0].text == "Short intro"
     assert response.result.sentences[0].start_paragraph == 1
-    assert response.result.sentences[0].end_paragraph == 2
+    assert response.result.sentences[0].end_paragraph == 1
+    assert response.result.sentences[0].type == TOO_SHORT_STATUS
+    assert response.result.sentences[1].text == LONG_PARAGRAPH_A
+    assert response.result.sentences[1].start_paragraph == 2
+    assert response.result.sentences[1].end_paragraph == 2
 
 
 def test_segmenting_preserves_indentation_and_sentence_spacing():
@@ -334,6 +377,37 @@ def test_segmenting_preserves_indentation_and_sentence_spacing():
     assert paragraphs[1].startswith("    value")
     assert merged[0]["text"] == text
     assert "one. English" in str(merged[0]["text"])
+
+
+def test_token_aware_segments_mark_short_paragraphs():
+    segments = build_token_aware_segments(["Short title", LONG_PARAGRAPH_A], tokenizer_model=ROBERTA_MODEL_NAME)
+
+    assert len(segments) == 2
+    assert segments[0]["status"] == TOO_SHORT_STATUS
+    assert segments[0]["weight"] == 0
+    assert segments[1]["status"] == "detectable"
+
+
+def test_token_aware_segments_split_long_paragraph_by_sentence():
+    sentence = " ".join(f"word{i}" for i in range(220)) + ". "
+    segments = build_token_aware_segments([sentence * 3], tokenizer_model=ROBERTA_MODEL_NAME)
+
+    assert len(segments) == 2
+    assert all(segment["status"] == "detectable" for segment in segments)
+    assert all(int(segment["token_count"]) <= 512 for segment in segments)
+    assert all(segment["start"] == 0 and segment["end"] == 0 for segment in segments)
+
+
+def test_token_aware_segments_truncate_single_oversized_sentence():
+    oversized_sentence = " ".join(f"word{i}" for i in range(600)) + "."
+    segments = build_token_aware_segments([oversized_sentence], tokenizer_model=ROBERTA_MODEL_NAME)
+
+    assert len(segments) == 1
+    assert segments[0]["status"] == "detectable"
+    assert segments[0]["truncated"] is True
+    assert int(segments[0]["token_count"]) <= 512
+    assert str(segments[0]["detect_text"]).startswith("tok0")
+    assert segments[0]["text"] == oversized_sentence
 
 
 def test_combine_repre_guard_raw_logit_preserves_score_scale():

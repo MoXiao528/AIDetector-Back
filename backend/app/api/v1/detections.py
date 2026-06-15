@@ -30,6 +30,7 @@ from app.services.detection_service import DetectionService
 from app.services.quota_service import QuotaExceededError, consume_quota, get_quota_limit, get_today_bounds, get_used_today
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 from app.services.scan_example_service import ScanExampleService
+from app.services.token_chunker import DETECTABLE_STATUS, TOO_SHORT_STATUS, build_token_aware_segments
 
 router = APIRouter(tags=["detections"])
 detect_router = APIRouter(tags=["detections"])
@@ -392,13 +393,13 @@ def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
     return supported
 
 
-async def _detect_segments_with_limit(segments: list[dict[str, int | str]]) -> list[dict]:
+async def _detect_segments_with_limit(segments: list[dict[str, int | str | bool]]) -> list[dict]:
     concurrency = max(1, int(settings.detect_segment_concurrency))
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def detect_segment(segment: dict[str, int | str]) -> dict:
+    async def detect_segment(segment: dict[str, int | str | bool]) -> dict:
         async with semaphore:
-            return await _detect_text_with_retry(str(segment["text"]))
+            return await _detect_text_with_retry(str(segment.get("detect_text") or segment["text"]))
 
     tasks = [detect_segment(segment) for segment in segments]
     return await asyncio.wait_for(
@@ -409,34 +410,41 @@ async def _detect_segments_with_limit(segments: list[dict[str, int | str]]) -> l
 
 def _build_history_analysis(
     text: str,
-    paragraph_scores: list[dict[str, float | str | int]],
+    paragraph_scores: list[dict[str, float | str | int | bool]],
     functions: set[str],
 ) -> Analysis:
-    total_weight = sum(int(item["weight"]) for item in paragraph_scores) or 1
+    total_weight = sum(int(item["weight"]) for item in paragraph_scores if item.get("status") != TOO_SHORT_STATUS)
     bucket_weights = {"ai": 0, "mixed": 0, "human": 0}
 
     reason_map = {
         "ai": "This segment is highly patterned and is more likely to be machine-generated.",
         "mixed": "This segment is borderline and should be reviewed manually.",
         "human": "This segment reads more like natural human writing.",
+        TOO_SHORT_STATUS: "This segment is too short for a reliable model judgment.",
     }
     suggestion_map = {
         "ai": "Add concrete facts, distinctive examples, and less templated phrasing.",
         "mixed": "Add more specific detail or domain context to make this segment less formulaic.",
         "human": "This segment already looks relatively natural.",
+        TOO_SHORT_STATUS: "No action is needed unless this short section should be merged into surrounding context.",
     }
 
     history_sentences = []
     html_parts: list[str] = []
     for index, paragraph_result in enumerate(paragraph_scores):
         paragraph_text = str(paragraph_result["text"])
-        raw_score = float(paragraph_result["raw_score"])
-        threshold = float(paragraph_result["threshold"])
-        score_type = str(paragraph_result["score_type"])
-        display_probability = _score_to_display_probability(raw_score, threshold, score_type)
-        paragraph_type = _resolve_segment_type(raw_score, threshold, score_type)
-        paragraph_score = max(0, min(int(round(display_probability * 100)), 100))
-        bucket_weights[paragraph_type] += int(paragraph_result["weight"])
+        if paragraph_result.get("status") == TOO_SHORT_STATUS:
+            display_probability = 0.0
+            paragraph_type = TOO_SHORT_STATUS
+            paragraph_score = 0
+        else:
+            raw_score = float(paragraph_result["raw_score"])
+            threshold = float(paragraph_result["threshold"])
+            score_type = str(paragraph_result["score_type"])
+            display_probability = _score_to_display_probability(raw_score, threshold, score_type)
+            paragraph_type = _resolve_segment_type(raw_score, threshold, score_type)
+            paragraph_score = max(0, min(int(round(display_probability * 100)), 100))
+            bucket_weights[paragraph_type] += int(paragraph_result["weight"])
         start_paragraph = int(paragraph_result["start"]) + 1
         end_paragraph = int(paragraph_result["end"]) + 1
         history_sentences.append(
@@ -451,24 +459,35 @@ def _build_history_analysis(
                 score=paragraph_score,
                 reason=reason_map[paragraph_type],
                 suggestion=suggestion_map[paragraph_type],
+                token_count=int(paragraph_result.get("token_count") or 0) or None,
+                visible_chars=int(paragraph_result.get("visible_chars") or paragraph_result.get("weight") or 0) or None,
+                is_truncated=bool(paragraph_result.get("truncated")),
             )
+        )
+        highlight_class = (
+            "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
+            if paragraph_type == TOO_SHORT_STATUS
+            else _resolve_highlight_class(display_probability)
         )
         html_parts.extend(
             [
-                f'<p><span class="highlight-chip {_resolve_highlight_class(display_probability)}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
+                f'<p><span class="highlight-chip {highlight_class}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
                 for line in paragraph_text.split("\n")
                 if line.strip()
             ]
         )
 
-    summary_values = {
-        key: max(0, min(int(round((weight / total_weight) * 100)), 100))
-        for key, weight in bucket_weights.items()
-    }
-    diff = sum(summary_values.values()) - 100
-    if diff != 0:
-        largest_bucket = max(summary_values, key=lambda key: summary_values[key])
-        summary_values[largest_bucket] = max(0, min(summary_values[largest_bucket] - diff, 100))
+    if total_weight > 0:
+        summary_values = {
+            key: max(0, min(int(round((weight / total_weight) * 100)), 100))
+            for key, weight in bucket_weights.items()
+        }
+        diff = sum(summary_values.values()) - 100
+        if diff != 0:
+            largest_bucket = max(summary_values, key=lambda key: summary_values[key])
+            summary_values[largest_bucket] = max(0, min(summary_values[largest_bucket] - diff, 100))
+    else:
+        summary_values = {"ai": 0, "mixed": 0, "human": 0}
     summary = Summary(ai=summary_values["ai"], mixed=summary_values["mixed"], human=summary_values["human"])
 
     _ = functions
@@ -505,7 +524,7 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     sentences = [
         SentenceAnalysis(
             text=segment.text,
-            is_ai=segment.type != "human",
+            is_ai=segment.type in {"ai", "mixed"},
             confidence=segment.probability,
         )
         for segment in analysis.sentences
@@ -579,8 +598,14 @@ async def _detect_impl(
 
     try:
         paragraphs = _split_paragraphs(payload.text)
-        merged_paragraphs = _merge_short_paragraphs(paragraphs, max_chars=MAX_SEGMENT_VISIBLE_CHARS)
-        rg_results = await _detect_segments_with_limit(merged_paragraphs)
+        token_segments = build_token_aware_segments(
+            paragraphs,
+            short_visible_chars=settings.detect_short_segment_visible_chars,
+            max_tokens=settings.detect_max_input_tokens,
+            tokenizer_model=settings.detect_tokenizer_model,
+        )
+        detectable_segments = [segment for segment in token_segments if segment.get("status") == DETECTABLE_STATUS]
+        rg_results = await _detect_segments_with_limit(detectable_segments) if detectable_segments else []
     except TimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -626,30 +651,55 @@ async def _detect_impl(
             },
         ) from exc
 
-    paragraph_scores: list[dict[str, float | str | int]] = []
+    paragraph_scores: list[dict[str, float | str | int | bool]] = []
     total_weight = 0
     weighted_probability = 0.0
     weighted_raw_score = 0.0
     weighted_threshold = 0.0
     model_names: list[str] = []
     score_types: list[str] = []
-    for merged_segment, rg in zip(merged_paragraphs, rg_results, strict=True):
-        segment_text = str(merged_segment["text"])
+    rg_iter = iter(rg_results)
+    for token_segment in token_segments:
+        segment_text = str(token_segment["text"])
+        if token_segment.get("status") == TOO_SHORT_STATUS:
+            paragraph_scores.append(
+                {
+                    "text": segment_text,
+                    "start": int(token_segment["start"]),
+                    "end": int(token_segment["end"]),
+                    "raw_score": 0.0,
+                    "threshold": 1.0,
+                    "probability": 0.0,
+                    "weight": 0,
+                    "visible_chars": int(token_segment["visible_chars"]),
+                    "token_count": int(token_segment.get("token_count") or 0),
+                    "score_type": "probability",
+                    "status": TOO_SHORT_STATUS,
+                    "truncated": bool(token_segment.get("truncated")),
+                }
+            )
+            continue
+
+        rg = next(rg_iter)
         raw_score = float(rg["score"])
         threshold = float(rg["threshold"])
         score_type = str(rg["score_type"])
         probability = _score_to_probability(raw_score, threshold, score_type)
-        weight = int(merged_segment["visible_chars"])
+        weight = int(token_segment.get("weight") or token_segment["visible_chars"])
         paragraph_scores.append(
             {
                 "text": segment_text,
-                "start": int(merged_segment["start"]),
-                "end": int(merged_segment["end"]),
+                "start": int(token_segment["start"]),
+                "end": int(token_segment["end"]),
                 "raw_score": raw_score,
                 "threshold": threshold,
                 "probability": probability,
                 "weight": weight,
+                "visible_chars": int(token_segment["visible_chars"]),
+                "token_count": int(token_segment.get("token_count") or 0),
                 "score_type": score_type,
+                "status": DETECTABLE_STATUS,
+                "truncated": bool(token_segment.get("truncated")),
             }
         )
         total_weight += weight
@@ -662,7 +712,7 @@ async def _detect_impl(
     total_weight = total_weight or 1
     normalized_score = weighted_probability / total_weight
     raw_score = weighted_raw_score / total_weight
-    threshold = weighted_threshold / total_weight
+    threshold = weighted_threshold / total_weight if score_types else 1.0
     score_type = score_types[0] if score_types else "probability"
     if any(item != score_type for item in score_types):
         raise HTTPException(
@@ -704,8 +754,12 @@ async def _detect_impl(
                     "raw_score": item["raw_score"],
                     "threshold": item["threshold"],
                     "probability": item["probability"],
-                    "visible_chars": item["weight"],
+                    "visible_chars": item.get("visible_chars", item["weight"]),
+                    "token_count": item.get("token_count"),
+                    "weight": item["weight"],
                     "score_type": item["score_type"],
+                    "status": item.get("status", DETECTABLE_STATUS),
+                    "truncated": item.get("truncated", False),
                 }
                 for index, item in enumerate(paragraph_scores)
             ],
