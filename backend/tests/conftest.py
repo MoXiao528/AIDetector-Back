@@ -15,6 +15,43 @@ if str(ROOT_DIR) not in sys.path:
 from app.db.base_class import Base  # noqa: E402
 
 
+class FakeTokenizer:
+    @staticmethod
+    def _pieces(text: str) -> list[str]:
+        return [piece for piece in str(text or "").replace("\n", " ").split(" ") if piece]
+
+    def encode(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool = True,
+        truncation: bool = False,
+        max_length: int | None = None,
+    ) -> list[int]:
+        body = list(range(len(self._pieces(text))))
+        if truncation and max_length is not None:
+            special_count = 2 if add_special_tokens else 0
+            body = body[: max(max_length - special_count, 0)]
+        if not add_special_tokens:
+            return body
+        return [-1, *body, -2]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        _ = skip_special_tokens, clean_up_tokenization_spaces
+        return " ".join(f"tok{token_id}" for token_id in token_ids if token_id >= 0)
+
+
+@pytest.fixture(autouse=True)
+def fake_tokenizer(monkeypatch):
+    monkeypatch.setattr("app.services.token_chunker.get_tokenizer", lambda model_name=None: FakeTokenizer())
+
+
 @pytest.fixture(scope="session", autouse=True)
 def configure_test_settings():
     from app.api.v1 import auth as auth_api

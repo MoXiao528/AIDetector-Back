@@ -29,11 +29,14 @@ class Sentence(SchemaBase):
         json_schema_extra={"example": 4},
         description="1-based end paragraph index covered by this segment",
     )
-    type: str = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/mixed/human")
+    type: str = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/mixed/human/too_short")
     probability: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.85}, description="AI probability in [0, 1]")
     score: int = Field(..., ge=0, le=100, json_schema_extra={"example": 85}, description="Display score in [0, 100]")
     reason: str = Field(..., json_schema_extra={"example": "Highly structured phrasing"}, description="Explanation")
     suggestion: str = Field(..., json_schema_extra={"example": "Use a more natural rewrite"}, description="Suggestion")
+    token_count: int | None = Field(default=None, ge=0, description="Tokenizer token count for this segment")
+    visible_chars: int | None = Field(default=None, ge=0, description="Non-whitespace character count for this segment")
+    is_truncated: bool = Field(default=False, description="Whether the segment was truncated before model inference")
 
 
 class Citation(SchemaBase):
