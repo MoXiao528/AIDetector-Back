@@ -318,17 +318,33 @@ def _merge_short_paragraphs(
     if not seeds:
         return []
 
-    merged: list[dict[str, int | str]] = []
-    buffer: dict[str, int | str] | None = None
+    merged: list[dict[str, int | str | bool]] = []
+    buffer: dict[str, int | str | bool] | None = None
+
+    def strip_internal_meta(segment: dict[str, int | str | bool]) -> dict[str, int | str]:
+        return {
+            "start": int(segment["start"]),
+            "end": int(segment["end"]),
+            "text": str(segment["text"]),
+            "visible_chars": int(segment["visible_chars"]),
+        }
 
     for seed in seeds:
+        seed_visible_chars = int(seed["visible_chars"])
+        seed_buffer: dict[str, int | str | bool] = {
+            **seed,
+            "_all_parts_short": seed_visible_chars < min_chars,
+        }
         if buffer is None:
-            buffer = seed.copy()
+            buffer = seed_buffer
             continue
 
         buffer_visible_chars = int(buffer["visible_chars"])
-        seed_visible_chars = int(seed["visible_chars"])
-        can_merge = buffer_visible_chars < min_chars and (buffer_visible_chars + seed_visible_chars) <= max_chars
+        can_merge = (
+            bool(buffer.get("_all_parts_short"))
+            and seed_visible_chars < min_chars
+            and (buffer_visible_chars + seed_visible_chars) <= max_chars
+        )
 
         if can_merge:
             same_paragraph = int(buffer["end"]) == int(seed["start"]) == int(seed["end"])
@@ -338,27 +354,12 @@ def _merge_short_paragraphs(
             continue
 
         merged.append(buffer)
-        buffer = seed.copy()
+        buffer = seed_buffer
 
     if buffer is not None:
-        buffer_visible_chars = int(buffer["visible_chars"])
-        if merged and buffer_visible_chars < min_chars:
-            previous_visible_chars = int(merged[-1]["visible_chars"])
-            if previous_visible_chars + buffer_visible_chars <= max_chars:
-                same_paragraph = int(merged[-1]["end"]) == int(buffer["start"]) == int(buffer["end"])
-                merged[-1]["text"] = _combine_segment_text(
-                    str(merged[-1]["text"]),
-                    str(buffer["text"]),
-                    same_paragraph=same_paragraph,
-                )
-                merged[-1]["end"] = int(buffer["end"])
-                merged[-1]["visible_chars"] = previous_visible_chars + buffer_visible_chars
-            else:
-                merged.append(buffer)
-        else:
-            merged.append(buffer)
+        merged.append(buffer)
 
-    return merged
+    return [strip_internal_meta(segment) for segment in merged]
 
 
 def _resolve_segment_type(score: float, threshold: float, score_type: str) -> str:
@@ -598,12 +599,24 @@ async def _detect_impl(
 
     try:
         paragraphs = _split_paragraphs(payload.text)
-        token_segments = build_token_aware_segments(
+        merged_segments = _merge_short_paragraphs(
             paragraphs,
-            short_visible_chars=settings.detect_short_segment_visible_chars,
-            max_tokens=settings.detect_max_input_tokens,
-            tokenizer_model=settings.detect_tokenizer_model,
+            min_chars=settings.detect_short_segment_visible_chars,
+            max_chars=MAX_SEGMENT_VISIBLE_CHARS,
         )
+        token_segments: list[dict[str, int | str | bool]] = []
+        for merged_segment in merged_segments:
+            segment_parts = build_token_aware_segments(
+                [str(merged_segment["text"])],
+                short_visible_chars=settings.detect_short_segment_visible_chars,
+                max_tokens=settings.detect_max_input_tokens,
+                tokenizer_model=settings.detect_tokenizer_model,
+            )
+            for segment_part in segment_parts:
+                segment = segment_part.copy()
+                segment["start"] = int(merged_segment["start"])
+                segment["end"] = int(merged_segment["end"])
+                token_segments.append(segment)
         detectable_segments = [segment for segment in token_segments if segment.get("status") == DETECTABLE_STATUS]
         rg_results = await _detect_segments_with_limit(detectable_segments) if detectable_segments else []
     except TimeoutError as exc:

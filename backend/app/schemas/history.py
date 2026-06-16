@@ -67,6 +67,7 @@ class HistoryRecordCreate(SchemaBase):
     )
     editor_html: str = Field(..., json_schema_extra={"example": "<p>The quick brown fox...</p>"}, description="Editor HTML content")
     analysis: Analysis | None = Field(None, description="Analysis result")
+    is_pinned: bool = Field(default=False, description="Whether the history record is pinned")
 
 
 class ClaimGuestHistoryRequest(SchemaBase):
@@ -78,7 +79,8 @@ class ClaimGuestHistoryResponse(SchemaBase):
 
 
 class HistoryRecordUpdate(SchemaBase):
-    title: str = Field(..., max_length=255, json_schema_extra={"example": "New Title"}, description="Updated title")
+    title: str | None = Field(None, max_length=255, json_schema_extra={"example": "New Title"}, description="Updated title")
+    is_pinned: bool | None = Field(None, description="Updated pinned state")
 
 
 class HistoryRecordResponse(SchemaBase):
@@ -89,6 +91,7 @@ class HistoryRecordResponse(SchemaBase):
     functions: list[str] = Field(default_factory=list, json_schema_extra={"example": ["scan"]}, description="Enabled functions")
     input_text: str = Field(..., json_schema_extra={"example": "The quick brown fox..."}, description="Original input text")
     editor_html: str | None = Field(None, json_schema_extra={"example": "<p>The quick brown fox...</p>"}, description="Editor HTML content")
+    is_pinned: bool = Field(default=False, description="Whether the history record is pinned")
     analysis: Analysis | None = Field(None, description="Analysis result")
 
 

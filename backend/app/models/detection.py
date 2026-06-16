@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -21,6 +21,7 @@ class Detection(Base):
         Index("ix_detections_user_id", "user_id"),
         Index("ix_detections_created_at", "created_at"),
         Index("ix_detections_actor_type_actor_id", "actor_type", "actor_id"),
+        Index("ix_detections_user_pinned_created", "user_id", "is_pinned", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -34,6 +35,7 @@ class Detection(Base):
     functions_used: Mapped[list[str] | None] = mapped_column(JSONType, nullable=True)
     result_label: Mapped[str] = mapped_column(String(50), nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"), default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     meta_json: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 

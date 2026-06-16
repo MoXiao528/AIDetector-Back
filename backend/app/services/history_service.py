@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import ceil
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.detection import Detection
@@ -27,6 +27,7 @@ class HistoryService:
         input_text: str,
         editor_html: str,
         analysis: dict[str, Any] | None = None,
+        is_pinned: bool = False,
     ) -> Detection:
         if not input_text or not input_text.strip():
             raise ValueError("input_text cannot be empty")
@@ -48,6 +49,7 @@ class HistoryService:
             functions_used=functions,
             result_label="human",
             score=0.0,
+            is_pinned=is_pinned,
             meta_json=meta_json,
         )
 
@@ -97,17 +99,28 @@ class HistoryService:
         per_page: int = 20,
         sort: str = "created_at",
         order: str = "desc",
+        q: str | None = None,
+        pinned: bool | None = None,
     ) -> tuple[list[Detection], int, int]:
         per_page = min(per_page, 100)
 
         query = select(Detection).where(Detection.user_id == user_id)
 
-        if sort == "created_at":
-            order_by = Detection.created_at.desc() if order == "desc" else Detection.created_at.asc()
-        else:
-            order_by = Detection.created_at.desc()
+        search = (q or "").strip()
+        if search:
+            pattern = f"%{search}%"
+            query = query.where(
+                or_(
+                    Detection.title.ilike(pattern),
+                    Detection.input_text.ilike(pattern),
+                )
+            )
 
-        ordered_records = list(self.db.scalars(query.order_by(order_by)).all())
+        if pinned is not None:
+            query = query.where(Detection.is_pinned.is_(pinned))
+
+        created_order = Detection.created_at.desc() if sort == "created_at" and order == "desc" else Detection.created_at.asc()
+        ordered_records = list(self.db.scalars(query.order_by(Detection.is_pinned.desc(), created_order)).all())
         valid_records = [record for record in ordered_records if self._is_displayable_history(record)]
 
         total = len(valid_records)
@@ -120,13 +133,17 @@ class HistoryService:
         self,
         user_id: int,
         history_id: int,
-        title: str,
+        title: str | None = None,
+        is_pinned: bool | None = None,
     ) -> Detection | None:
         detection = self.get_history(user_id, history_id)
         if not detection:
             return None
 
-        detection.title = title
+        if title is not None:
+            detection.title = title
+        if is_pinned is not None:
+            detection.is_pinned = is_pinned
         self.db.commit()
         self.db.refresh(detection)
         return detection
@@ -171,7 +188,10 @@ class HistoryService:
             to_delete = total - self.MAX_HISTORY_RECORDS + 1
             oldest_stmt = (
                 select(Detection.id)
-                .where(Detection.user_id == user_id)
+                .where(
+                    Detection.user_id == user_id,
+                    Detection.is_pinned.is_(False),
+                )
                 .order_by(Detection.created_at.asc())
                 .limit(to_delete)
             )

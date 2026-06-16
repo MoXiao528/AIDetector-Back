@@ -316,6 +316,17 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+          description: Search title or input text
+        - name: pinned
+          in: query
+          schema:
+            type: boolean
+          description: Filter pinned records
       responses:
         '200':
           description: History list
@@ -1721,14 +1732,17 @@ components:
         analysis:
           $ref: '#/components/schemas/HistoryAnalysis'
           nullable: true
+        isPinned:
+          type: boolean
+          default: false
     HistoryRecordUpdateRequest:
       type: object
-      required:
-        - title
       properties:
         title:
           type: string
           maxLength: 255
+        isPinned:
+          type: boolean
     HistoryRecordResponse:
       type: object
       required:
@@ -1737,6 +1751,7 @@ components:
         - createdAt
         - functions
         - inputText
+        - isPinned
       properties:
         id:
           type: integer
@@ -1757,6 +1772,8 @@ components:
         editorHtml:
           type: string
           nullable: true
+        isPinned:
+          type: boolean
         analysis:
           $ref: '#/components/schemas/HistoryAnalysis'
           nullable: true

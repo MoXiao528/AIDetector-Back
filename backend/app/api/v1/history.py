@@ -1,5 +1,7 @@
 """History API endpoints."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.deps import ActiveMemberDep, SessionDep, _decode_token
@@ -36,6 +38,7 @@ def _detection_to_history_response(detection) -> HistoryRecordResponse:
         functions=detection.functions_used or [],
         input_text=detection.input_text,
         editor_html=detection.editor_html,
+        is_pinned=bool(getattr(detection, "is_pinned", False)),
         analysis=analysis_data,
     )
 
@@ -66,10 +69,12 @@ def _resolve_guest_id_from_token(guest_token: str) -> str:
 async def list_histories(
     db: SessionDep,
     current_user: ActiveMemberDep,
-    page: int = Query(1, ge=1, description="Page number, default 1"),
-    per_page: int = Query(20, ge=1, le=100, description="Page size, default 20, max 100"),
-    sort: str = Query("created_at", description="Sort field, default created_at"),
-    order: str = Query("desc", description="Sort order, asc or desc, default desc"),
+    page: Annotated[int, Query(ge=1, description="Page number, default 1")] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100, description="Page size, default 20, max 100")] = 20,
+    sort: Annotated[str, Query(description="Sort field, default created_at")] = "created_at",
+    order: Annotated[str, Query(description="Sort order, asc or desc, default desc")] = "desc",
+    q: Annotated[str | None, Query(max_length=200, description="Search title or input text")] = None,
+    pinned: Annotated[bool | None, Query(description="Filter pinned state")] = None,
 ) -> HistoryListResponse:
     service = HistoryService(db)
     records, total, total_pages = service.list_histories(
@@ -78,6 +83,8 @@ async def list_histories(
         per_page=per_page,
         sort=sort,
         order=order,
+        q=q,
+        pinned=pinned,
     )
 
     return HistoryListResponse(
@@ -145,6 +152,7 @@ async def create_history(
             input_text=payload.input_text,
             editor_html=payload.editor_html,
             analysis=analysis_dict,
+            is_pinned=payload.is_pinned,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -182,11 +190,18 @@ async def update_history(
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> HistoryRecordResponse:
+    if payload.title is None and payload.is_pinned is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "INVALID_HISTORY_DATA", "message": "No history fields were provided."},
+        )
+
     service = HistoryService(db)
     detection = service.update_history(
         user_id=current_user.id,
         history_id=history_id,
         title=payload.title,
+        is_pinned=payload.is_pinned,
     )
 
     if not detection:

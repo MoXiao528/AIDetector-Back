@@ -42,6 +42,18 @@ LONG_PARAGRAPH_B = (
 ) * 3
 LONG_PARAGRAPH_B = LONG_PARAGRAPH_B.strip()
 
+WRAPPED_CHINESE_LINES = [
+    "我与父亲不相见已二年余了，我最不能忘记的是他的背影。那年冬天，祖",
+    "母死了，父亲的差使也交卸了，正是祸不单行的日子，我从北京到徐州，",
+    "打算跟着父亲奔丧回家。到徐州见着父亲，看见满院狼藉的东西，又想起",
+    "祖母，不禁簌簌地流下眼泪。父亲说，事已如此，不必难过，好在天无",
+    "绝人之路！",
+    "回家变卖典质，父亲还了亏空；又借钱办了丧事。这些日子，家中光",
+    "景很是惨淡，一半为了丧事，一半为了父亲赋闲。丧事完毕，父亲要到南",
+    "京谋事，我也要回北京念书，我们便同行。",
+]
+WRAPPED_CHINESE_TEXT = "\n".join(WRAPPED_CHINESE_LINES)
+
 ROBERTA_MODEL_NAME = "openai-community/roberta-base-openai-detector"
 ROBERTA_THRESHOLD = 0.0
 
@@ -368,6 +380,66 @@ async def test_detect_marks_short_paragraph_without_downstream_call(db_session, 
     assert response.result.sentences[1].end_paragraph == 2
 
 
+@pytest.mark.anyio
+async def test_detect_merges_line_wrapped_chinese_text_for_detection(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+    calls = []
+
+    async def fake_detect(text: str) -> dict:
+        calls.append(text)
+        return {
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
+            "label": "AI",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+
+    response = await detect(payload=DetectionRequest(text=WRAPPED_CHINESE_TEXT), db=db_session, current_actor=actor)
+
+    assert calls == [WRAPPED_CHINESE_TEXT]
+    assert len(response.result.sentences) == 1
+    sentence = response.result.sentences[0]
+    assert sentence.text == WRAPPED_CHINESE_TEXT
+    assert sentence.start_paragraph == 1
+    assert sentence.end_paragraph == len(WRAPPED_CHINESE_LINES)
+    assert sentence.type != TOO_SHORT_STATUS
+    assert "\n" in sentence.text
+    assert response.result.highlighted_html.count("<p>") == len(WRAPPED_CHINESE_LINES)
+
+
+@pytest.mark.anyio
+async def test_detect_keeps_two_long_paragraphs_independent(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+    calls = []
+
+    async def fake_detect(text: str) -> dict:
+        calls.append(text)
+        return {
+            "score": 0.4054651081081642,
+            "threshold": ROBERTA_THRESHOLD,
+            "label": "AI",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "raw_logit",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+
+    text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
+    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+
+    assert calls == [LONG_PARAGRAPH_A, LONG_PARAGRAPH_B]
+    assert len(response.result.sentences) == 2
+    assert response.result.sentences[0].start_paragraph == 1
+    assert response.result.sentences[0].end_paragraph == 1
+    assert response.result.sentences[1].start_paragraph == 2
+    assert response.result.sentences[1].end_paragraph == 2
+
+
 def test_segmenting_preserves_indentation_and_sentence_spacing():
     text = 'def run():\n    value = {"path": "C:\\\\tmp\\\\file.txt"}\n    return value\nEnglish sentence one. English sentence two.'
 
@@ -377,6 +449,18 @@ def test_segmenting_preserves_indentation_and_sentence_spacing():
     assert paragraphs[1].startswith("    value")
     assert merged[0]["text"] == text
     assert "one. English" in str(merged[0]["text"])
+
+
+def test_merge_short_paragraphs_does_not_merge_short_title_into_long_body():
+    merged = _merge_short_paragraphs(["Short intro", LONG_PARAGRAPH_A], min_chars=40, max_chars=1500)
+
+    assert len(merged) == 2
+    assert merged[0]["text"] == "Short intro"
+    assert merged[0]["start"] == 0
+    assert merged[0]["end"] == 0
+    assert merged[1]["text"] == LONG_PARAGRAPH_A
+    assert merged[1]["start"] == 1
+    assert merged[1]["end"] == 1
 
 
 def test_token_aware_segments_mark_short_paragraphs():
