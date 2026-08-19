@@ -1,19 +1,19 @@
 import pytest
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 from starlette.requests import Request
+from uuid import UUID
 
-from app.api.v1.auth import guest_login, login, logout, read_current_user, register_user
-from app.api.v1.detections import detect, list_detections
-from app.api.v1.quota import get_quota
+from app.api.v1.auth import login, logout, read_current_user, register_user
 from app.core.rate_limit import auth_rate_limiter
 from app.core.roles import UserRole
 from app.core.security import create_access_token
 from app.db.deps import get_current_actor, get_current_user
 from app.db.session import get_db
 from app.main import app
-from app.schemas.auth import GuestTokenRequest, LoginRequest, RegisterRequest
-from app.schemas.detection import DetectionRequest
+from app.models.guest_session import GuestSession
+from app.schemas.auth import LoginRequest, RegisterRequest
 from app.services.repre_guard_client import repre_guard_client
 
 LONG_TEXT = (
@@ -50,6 +50,16 @@ def build_request(ip: str = "127.0.0.1") -> Request:
             "client": (ip, 12345),
         }
     )
+
+
+def _response_value(payload: dict, snake_case: str, camel_case: str) -> str:
+    return str(payload.get(snake_case) or payload.get(camel_case) or "")
+
+
+def _recovery_cookie(response, access_token: str) -> tuple[str, str]:
+    cookies = [(name, value) for name, value in response.cookies.items() if value != access_token]
+    assert cookies, "guest response must set a recovery cookie distinct from the access token"
+    return cookies[0]
 
 
 @pytest.mark.anyio
@@ -190,34 +200,162 @@ async def test_register_user_has_30000_default_credits(db_session, unique_email)
     assert created_user.credits == 30000
 
 
-@pytest.mark.anyio
-async def test_guest_token_reuse_preserves_guest_quota(db_session):
-    first_guest = await guest_login()
-    first_actor = get_current_actor(db=db_session, token=first_guest.access_token)
+def test_guest_id_without_recovery_cookie_is_rejected(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
 
-    await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=first_actor)
-    first_quota = await get_quota(db=db_session, current_actor=first_actor)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/auth/guest",
+                json={"guest_id": "known-victim-guest-id"},
+            )
+    finally:
+        app.dependency_overrides.clear()
 
-    renewed_guest = await guest_login(GuestTokenRequest(guest_id=first_guest.guest_id))
-    renewed_actor = get_current_actor(db=db_session, token=renewed_guest.access_token)
-    renewed_quota = await get_quota(db=db_session, current_actor=renewed_actor)
-    history = await list_detections(
-        db=db_session,
-        current_actor=renewed_actor,
-        page=1,
-        page_size=10,
-        from_time=None,
-        to_time=None,
+    assert response.status_code == 422
+
+
+def test_guest_login_issues_server_uuid_and_http_only_recovery_cookie(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    access_token = _response_value(payload, "access_token", "accessToken")
+    guest_id = _response_value(payload, "guest_id", "guestId")
+    assert access_token
+    assert UUID(guest_id).version == 4
+    _recovery_cookie(response, access_token)
+    assert "httponly" in response.headers.get("set-cookie", "").lower()
+
+
+def test_guest_bearer_without_recovery_cookie_does_not_create_session(db_session):
+    guest_id = "5db45cb0-c886-4d12-88ac-d798461264a7"
+    access_token = create_access_token(
+        subject=guest_id,
+        extra_claims={"sub_type": "guest", "sid": guest_id},
     )
+    before_count = db_session.scalar(select(func.count()).select_from(GuestSession))
+    app.dependency_overrides[get_db] = lambda: db_session
 
-    assert first_guest.guest_id
-    assert renewed_guest.guest_id == first_guest.guest_id
-    assert renewed_actor.actor_type == "guest"
-    assert renewed_actor.actor_id == first_actor.actor_id == first_guest.guest_id
-    assert history.total == 1
-    assert first_quota.used_today > 0
-    assert renewed_quota.used_today == first_quota.used_today
-    assert renewed_quota.remaining == first_quota.remaining
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    after_count = db_session.scalar(select(func.count()).select_from(GuestSession))
+    assert response.status_code == 401
+    assert response.json()["code"] == "GUEST_SESSION_INVALID"
+    assert "aid_guest_refresh" not in response.headers.get("set-cookie", "")
+    assert after_count == before_count
+
+
+def test_guest_recovery_cookie_rotation_preserves_identity_quota_and_history(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            first_response = client.post("/api/v1/auth/guest")
+            assert first_response.status_code == 200
+            first_payload = first_response.json()
+            first_token = _response_value(first_payload, "access_token", "accessToken")
+            guest_id = _response_value(first_payload, "guest_id", "guestId")
+            cookie_name, first_cookie = _recovery_cookie(first_response, first_token)
+
+            detect_response = client.post(
+                "/api/v1/detect",
+                json={"text": LONG_TEXT},
+                headers={"Authorization": f"Bearer {first_token}"},
+            )
+            assert detect_response.status_code == 200
+            detection_id = detect_response.json().get("detectionId") or detect_response.json().get("detection_id")
+
+            first_quota_response = client.get(
+                "/api/v1/quota",
+                headers={"Authorization": f"Bearer {first_token}"},
+            )
+            first_history_response = client.get(
+                "/api/v1/detections/",
+                headers={"Authorization": f"Bearer {first_token}"},
+            )
+            assert first_quota_response.status_code == 200
+            assert first_history_response.status_code == 200
+
+            first_renewal = client.post("/api/v1/auth/guest")
+            assert first_renewal.status_code == 200
+            first_renewal_payload = first_renewal.json()
+            first_renewal_token = _response_value(first_renewal_payload, "access_token", "accessToken")
+            assert _response_value(first_renewal_payload, "guest_id", "guestId") == guest_id
+            renewed_cookie_name, renewed_cookie = _recovery_cookie(first_renewal, first_renewal_token)
+            assert renewed_cookie_name == cookie_name
+            assert renewed_cookie != first_cookie
+
+            second_renewal = client.post("/api/v1/auth/guest")
+            assert second_renewal.status_code == 200
+            second_renewal_payload = second_renewal.json()
+            latest_token = _response_value(second_renewal_payload, "access_token", "accessToken")
+            assert _response_value(second_renewal_payload, "guest_id", "guestId") == guest_id
+
+            renewed_quota_response = client.get(
+                "/api/v1/quota",
+                headers={"Authorization": f"Bearer {latest_token}"},
+            )
+            renewed_history_response = client.get(
+                "/api/v1/detections/",
+                headers={"Authorization": f"Bearer {latest_token}"},
+            )
+
+            assert renewed_quota_response.status_code == 200
+            assert renewed_history_response.status_code == 200
+            first_quota = first_quota_response.json()
+            renewed_quota = renewed_quota_response.json()
+            assert renewed_quota.get("usedToday", renewed_quota.get("used_today")) == first_quota.get(
+                "usedToday", first_quota.get("used_today")
+            )
+            assert renewed_quota["remaining"] == first_quota["remaining"]
+            assert renewed_history_response.json()["total"] == 1
+            renewed_item = renewed_history_response.json()["items"][0]
+            assert renewed_item["id"] == detection_id
+
+        with TestClient(app) as replay_client:
+            replay_client.cookies.set(cookie_name, first_cookie)
+            replay_response = replay_client.post("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert replay_response.status_code == 401
+    assert "aid_guest_refresh" not in replay_response.headers.get("set-cookie", "")
+
+
+def test_legacy_guest_token_is_rejected_by_current_actor(db_session):
+    legacy_token = create_access_token(
+        subject="6c6f4ad0-1176-4778-bd70-f5f2752bd4f0",
+        extra_claims={
+            "sub_type": "guest",
+            "guest_id": "6c6f4ad0-1176-4778-bd70-f5f2752bd4f0",
+        },
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/detections/",
+                headers={"Authorization": f"Bearer {legacy_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
 
 
 @pytest.mark.anyio

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import EmailStr, Field
+from pydantic import ConfigDict, EmailStr, Field
 
 from app.schemas.base import SchemaBase
 
@@ -20,7 +20,7 @@ class LoginRequest(SchemaBase):
 
 
 class GuestTokenRequest(SchemaBase):
-    guest_id: str | None = Field(default=None, min_length=1, max_length=64, json_schema_extra={"example": "9c8bf2e9-47b2-47d5-8b4a-04ae0fca0d3f"})
+    model_config = ConfigDict(extra="forbid")
 
 
 class Token(SchemaBase):
@@ -34,4 +34,4 @@ class TokenPayload(SchemaBase):
     exp: int | None = None
     iat: datetime | None = None
     sub_type: Literal["user", "guest"]
-    guest_id: str | None = None
+    sid: str | None = None

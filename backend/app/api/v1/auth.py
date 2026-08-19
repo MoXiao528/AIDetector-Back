@@ -1,20 +1,28 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
-from sqlalchemy import select
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
+from sqlalchemy import or_, select, update
 
 from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
 from app.core.roles import UserRole
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.db.deps import CurrentUserDep, SessionDep
+from app.db.deps import CurrentUserDep, SessionDep, TokenDep
+from app.models.guest_session import GuestSession
 from app.models.user import User
 from app.schemas import ErrorResponse, GuestTokenRequest, LoginRequest, RegisterRequest, Token, UserProfileUpdate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 AUTH_COOKIE_NAME = "aid_access_token"
+GUEST_REFRESH_COOKIE_NAME = "aid_guest_refresh"
+GUEST_REFRESH_COOKIE_PATH = "/api/v1/auth/guest"
+GUEST_SESSION_TTL = timedelta(days=30)
 DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 
@@ -42,6 +50,47 @@ def _clear_auth_cookie(response: Response) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def _hash_guest_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _set_guest_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=GUEST_REFRESH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        max_age=int(GUEST_SESSION_TTL.total_seconds()),
+        path=GUEST_REFRESH_COOKIE_PATH,
+    )
+
+
+def _clear_guest_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=GUEST_REFRESH_COOKIE_NAME,
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        path=GUEST_REFRESH_COOKIE_PATH,
+    )
+
+
+def _invalid_guest_refresh_response(*, clear_cookie: bool = False) -> JSONResponse:
+    error = ErrorResponse(
+        code="GUEST_SESSION_INVALID",
+        message="Guest session is invalid or expired",
+        detail="Obtain a new guest session.",
+    )
+    response = JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content=error.model_dump(by_alias=True),
+    )
+    if clear_cookie:
+        _clear_guest_refresh_cookie(response)
+    return response
 
 
 def _resolve_client_ip(request: Request | None) -> str:
@@ -181,15 +230,68 @@ async def login(payload: LoginRequest, response: Response, db: SessionDep, reque
     response_model=Token,
     summary="游客登录获取 JWT",
 )
-async def guest_login(payload: GuestTokenRequest | None = None, request: Request = None) -> Token:
+async def guest_login(
+    response: Response,
+    db: SessionDep,
+    token: TokenDep,
+    payload: GuestTokenRequest | None = None,
+    guest_refresh: Annotated[str | None, Cookie(alias=GUEST_REFRESH_COOKIE_NAME)] = None,
+    request: Request = None,
+) -> Token | Response:
     _enforce_rate_limit(request=request, action="guest-ip", limit=20, window_seconds=300)
-    guest_id = payload.guest_id.strip() if payload and payload.guest_id and payload.guest_id.strip() else str(uuid4())
+
+    now = datetime.now(timezone.utc)
+    refresh_token = secrets.token_urlsafe(32)
+    expires_at = now + GUEST_SESSION_TTL
+    refresh_token_hash = _hash_guest_refresh_token(refresh_token)
+
+    if guest_refresh:
+        provided_refresh_hash = _hash_guest_refresh_token(guest_refresh)
+        guest_id = db.scalar(
+            update(GuestSession)
+            .where(
+                GuestSession.refresh_token_hash == provided_refresh_hash,
+                GuestSession.revoked_at.is_(None),
+                GuestSession.expires_at > now,
+            )
+            .values(
+                refresh_token_hash=refresh_token_hash,
+                expires_at=expires_at,
+                updated_at=now,
+            )
+            .returning(GuestSession.id)
+        )
+        if guest_id is None:
+            terminal_session_id = db.scalar(
+                select(GuestSession.id).where(
+                    GuestSession.refresh_token_hash == provided_refresh_hash,
+                    or_(
+                        GuestSession.revoked_at.is_not(None),
+                        GuestSession.expires_at <= now,
+                    ),
+                )
+            )
+            return _invalid_guest_refresh_response(clear_cookie=terminal_session_id is not None)
+    elif token:
+        return _invalid_guest_refresh_response()
+    else:
+        guest_id = str(uuid4())
+        db.add(
+            GuestSession(
+                id=guest_id,
+                refresh_token_hash=refresh_token_hash,
+                expires_at=expires_at,
+            )
+        )
+
+    db.commit()
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         subject=guest_id,
         expires_delta=access_token_expires,
-        extra_claims={"sub_type": "guest", "guest_id": guest_id},
+        extra_claims={"sub_type": "guest", "sid": guest_id},
     )
+    _set_guest_refresh_cookie(response, refresh_token)
     return Token(access_token=access_token, token_type="bearer", guest_id=guest_id)
 
 

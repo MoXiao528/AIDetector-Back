@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.db.deps import ActiveMemberDep, SessionDep, _decode_token
+from app.db.deps import ActiveMemberDep, SessionDep, _decode_token, _resolve_active_guest_session_id
 from app.schemas.history import (
     Analysis,
     BatchDeleteRequest,
@@ -43,22 +43,21 @@ def _detection_to_history_response(detection) -> HistoryRecordResponse:
     )
 
 
-def _resolve_guest_id_from_token(guest_token: str) -> str:
-    token_data = _decode_token(guest_token)
-    actor_type = (token_data.sub_type or "user").lower()
-    if actor_type != "guest":
+def _resolve_guest_id_from_token(db: SessionDep, guest_token: str) -> str:
+    try:
+        token_data = _decode_token(guest_token)
+        return _resolve_active_guest_session_id(db, token_data)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_401_UNAUTHORIZED:
+            raise
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "INVALID_GUEST_TOKEN", "message": "Provided token is not a guest token."},
-        )
-
-    guest_id = token_data.guest_id or token_data.sub
-    if not guest_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "INVALID_GUEST_TOKEN", "message": "Guest token is missing guest_id."},
-        )
-    return str(guest_id)
+            detail={
+                "code": "INVALID_GUEST_TOKEN",
+                "message": "Invalid guest token",
+                "detail": "The provided guest session is invalid or expired.",
+            },
+        ) from exc
 
 
 @router.get(
@@ -173,7 +172,7 @@ async def claim_guest_history(
     db: SessionDep,
     current_user: ActiveMemberDep,
 ) -> ClaimGuestHistoryResponse:
-    guest_id = _resolve_guest_id_from_token(payload.guest_token)
+    guest_id = _resolve_guest_id_from_token(db, payload.guest_token)
     service = HistoryService(db)
     claimed_count = service.claim_guest_histories(user_id=current_user.id, guest_id=guest_id)
     return ClaimGuestHistoryResponse(claimed_count=claimed_count)

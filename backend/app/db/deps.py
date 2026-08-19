@@ -14,6 +14,7 @@ from app.core.roles import UserRole, has_required_role, normalize_role
 from app.core.security import hash_api_key
 from app.db.session import get_db
 from app.models.api_key import APIKey, APIKeyStatus
+from app.models.guest_session import GuestSession
 from app.models.user import User
 from app.schemas import TokenPayload
 
@@ -122,6 +123,31 @@ def _decode_token(token: str) -> TokenPayload:
         ) from exc
 
 
+def _resolve_active_guest_session_id(db: Session, token_data: TokenPayload) -> str:
+    session_id = token_data.sid
+    if token_data.sub_type != "guest" or not session_id or token_data.sub != session_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    active_session_id = db.scalar(
+        select(GuestSession.id).where(
+            GuestSession.id == session_id,
+            GuestSession.revoked_at.is_(None),
+            GuestSession.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    if active_session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return active_session_id
+
+
 def get_current_actor(
     db: SessionDep,
     token: TokenDep,
@@ -153,14 +179,8 @@ def get_current_actor(
 
     actor_type = token_data.sub_type
     if actor_type == "guest":
-        guest_id = token_data.guest_id or token_data.sub
-        if not guest_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return ActorContext(actor_type="guest", actor_id=str(guest_id))
+        session_id = _resolve_active_guest_session_id(db, token_data)
+        return ActorContext(actor_type="guest", actor_id=session_id)
 
     if actor_type != "user":
         raise HTTPException(

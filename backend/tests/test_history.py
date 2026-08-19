@@ -2,11 +2,11 @@
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.api.v1.auth import register_user
 from app.api.v1.history import (
     batch_delete_histories,
-    claim_guest_history,
     clear_all_histories,
     create_history,
     delete_history,
@@ -15,12 +15,13 @@ from app.api.v1.history import (
     update_history,
 )
 from app.core.security import create_access_token
+from app.db.session import get_db
+from app.main import app
 from app.models.detection import Detection
 from app.schemas.auth import RegisterRequest
 from app.schemas.history import (
     Analysis,
     BatchDeleteRequest,
-    ClaimGuestHistoryRequest,
     HistoryRecordCreate,
     HistoryRecordUpdate,
     Sentence,
@@ -590,45 +591,59 @@ async def test_limit_enforcement_preserves_pinned_history(db_session, unique_ema
 @pytest.mark.anyio
 async def test_claim_guest_history_assigns_guest_records_to_user(db_session, unique_email):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
-
-    guest_id = "guest-claim-test"
-    guest_token = create_access_token(
-        subject=guest_id,
-        extra_claims={"sub_type": "guest", "guest_id": guest_id},
+    user_token = create_access_token(
+        subject=str(user.id),
+        extra_claims={"sub_type": "user"},
     )
-    detection = Detection(
-        user_id=None,
-        actor_type="guest",
-        actor_id=guest_id,
-        chars_used=12,
-        title="Guest Record",
-        input_text="Guest history",
-        editor_html="<p>Guest history</p>",
-        functions_used=["scan"],
-        result_label="ai",
-        score=0.82,
-        meta_json={
-            "analysis": {
-                "summary": {"ai": 82, "mixed": 10, "human": 8},
-                "sentences": [],
-                "translation": "",
-                "polish": "",
-                "citations": [],
-                "ai_likely_count": 0,
-                "highlighted_html": "",
-            }
-        },
-    )
-    db_session.add(detection)
-    db_session.commit()
+    app.dependency_overrides[get_db] = lambda: db_session
 
-    response = await claim_guest_history(
-        payload=ClaimGuestHistoryRequest(guest_token=guest_token),
-        db=db_session,
-        current_user=user,
-    )
+    try:
+        with TestClient(app) as client:
+            guest_response = client.post("/api/v1/auth/guest")
+            assert guest_response.status_code == 200
+            guest_payload = guest_response.json()
+            guest_id = str(guest_payload.get("guest_id") or guest_payload.get("guestId") or "")
+            guest_token = str(guest_payload.get("access_token") or guest_payload.get("accessToken") or "")
+            assert guest_id
+            assert guest_token
 
-    assert response.claimed_count == 1
+            detection = Detection(
+                user_id=None,
+                actor_type="guest",
+                actor_id=guest_id,
+                chars_used=12,
+                title="Guest Record",
+                input_text="Guest history",
+                editor_html="<p>Guest history</p>",
+                functions_used=["scan"],
+                result_label="ai",
+                score=0.82,
+                meta_json={
+                    "analysis": {
+                        "summary": {"ai": 82, "mixed": 10, "human": 8},
+                        "sentences": [],
+                        "translation": "",
+                        "polish": "",
+                        "citations": [],
+                        "ai_likely_count": 0,
+                        "highlighted_html": "",
+                    }
+                },
+            )
+            db_session.add(detection)
+            db_session.commit()
+
+            claim_response = client.post(
+                "/api/v1/history/claim-guest",
+                json={"guest_token": guest_token},
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert claim_response.status_code == 200
+    claim_payload = claim_response.json()
+    assert claim_payload.get("claimedCount", claim_payload.get("claimed_count")) == 1
 
     histories = await list_histories(
         db=db_session,
@@ -640,6 +655,54 @@ async def test_claim_guest_history_assigns_guest_records_to_user(db_session, uni
     )
     assert histories.total == 1
     assert histories.items[0].title == "Guest Record"
+
+
+@pytest.mark.anyio
+async def test_legacy_guest_token_cannot_claim_history(db_session, unique_email):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    user_token = create_access_token(
+        subject=str(user.id),
+        extra_claims={"sub_type": "user"},
+    )
+    legacy_guest_id = "09a2aaad-ddf6-410d-85ed-424a5c212c7f"
+    legacy_guest_token = create_access_token(
+        subject=legacy_guest_id,
+        extra_claims={
+            "sub_type": "guest",
+            "guest_id": legacy_guest_id,
+        },
+    )
+    detection = Detection(
+        user_id=None,
+        actor_type="guest",
+        actor_id=legacy_guest_id,
+        chars_used=12,
+        title="Legacy Guest Record",
+        input_text="Legacy guest history",
+        editor_html="<p>Legacy guest history</p>",
+        functions_used=["scan"],
+        result_label="ai",
+        score=0.82,
+        meta_json=None,
+    )
+    db_session.add(detection)
+    db_session.commit()
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/history/claim-guest",
+                json={"guest_token": legacy_guest_token},
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_GUEST_TOKEN"
+    db_session.refresh(detection)
+    assert detection.user_id is None
 
 
 @pytest.mark.anyio
