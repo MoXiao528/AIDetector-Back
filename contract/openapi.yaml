@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AIDetector API
-  version: 1.1.0
-  description: V1.1 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
+  version: 1.2.0
+  description: V1.2 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
 servers:
   - url: https://api.example.com
     description: Production
@@ -80,6 +80,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
+    get:
+      tags: [auth]
+      summary: Preview guest migration state
+      description: Returns only whether an active guest session exists and its unclaimed server-side history count. The recovery cookie is used when no valid guest Bearer token is available.
+      operationId: previewGuestSession
+      security:
+        - BearerAuth: []
+        - GuestRefreshCookie: []
+        - {}
+      responses:
+        '200':
+          description: Guest migration preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestMigrationPreviewResponse'
+    delete:
+      tags: [auth]
+      summary: Discard guest session
+      description: Revokes the server-side guest session when a valid guest Bearer token is supplied. A request without Authorization only clears the browser recovery cookie; an invalid, expired, malformed, or non-guest Bearer fails closed without clearing it.
+      operationId: discardGuestSession
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        '204':
+          description: Guest session discarded or already absent
+        '401':
+          description: Supplied Authorization credentials cannot prove guest-session ownership
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/health:
     get:
       tags: [health]
@@ -1117,6 +1150,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    GuestRefreshCookie:
+      type: apiKey
+      in: cookie
+      name: aid_guest_refresh
     ApiKeyAuth:
       type: apiKey
       in: header
@@ -1156,6 +1193,17 @@ components:
         tokenType:
           type: string
           example: bearer
+    GuestMigrationPreviewResponse:
+      type: object
+      required:
+        - active
+        - historyCount
+      properties:
+        active:
+          type: boolean
+        historyCount:
+          type: integer
+          minimum: 0
     LoginRequest:
       type: object
       required:

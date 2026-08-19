@@ -4,18 +4,28 @@ import secrets
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
 from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
 from app.core.roles import UserRole
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.db.deps import CurrentUserDep, SessionDep, TokenDep
+from app.db.deps import CurrentUserDep, SessionDep, TokenDep, _decode_token
+from app.models.detection import Detection
 from app.models.guest_session import GuestSession
 from app.models.user import User
-from app.schemas import ErrorResponse, GuestTokenRequest, LoginRequest, RegisterRequest, Token, UserProfileUpdate, UserResponse
+from app.schemas import (
+    ErrorResponse,
+    GuestMigrationPreviewResponse,
+    GuestTokenRequest,
+    LoginRequest,
+    RegisterRequest,
+    Token,
+    UserProfileUpdate,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -91,6 +101,55 @@ def _invalid_guest_refresh_response(*, clear_cookie: bool = False) -> JSONRespon
     if clear_cookie:
         _clear_guest_refresh_cookie(response)
     return response
+
+
+def _decode_guest_session_id(token: str | None) -> str | None:
+    if not token:
+        return None
+    try:
+        token_data = _decode_token(token)
+    except HTTPException:
+        return None
+    session_id = token_data.sid
+    if token_data.sub_type != "guest" or not session_id or token_data.sub != session_id:
+        return None
+    return session_id
+
+
+def _get_optional_bearer_token(authorization: str | None) -> str | None:
+    scheme, separator, credentials = str(authorization or "").partition(" ")
+    if separator and scheme.lower() == "bearer" and credentials.strip():
+        return credentials.strip()
+    return None
+
+
+def _resolve_guest_session_for_preview(
+    db: SessionDep,
+    token: str | None,
+    guest_refresh: str | None,
+) -> str | None:
+    now = datetime.now(timezone.utc)
+    session_id = _decode_guest_session_id(token)
+    if session_id:
+        active_session_id = db.scalar(
+            select(GuestSession.id).where(
+                GuestSession.id == session_id,
+                GuestSession.revoked_at.is_(None),
+                GuestSession.expires_at > now,
+            )
+        )
+        if active_session_id:
+            return active_session_id
+
+    if not guest_refresh:
+        return None
+    return db.scalar(
+        select(GuestSession.id).where(
+            GuestSession.refresh_token_hash == _hash_guest_refresh_token(guest_refresh),
+            GuestSession.revoked_at.is_(None),
+            GuestSession.expires_at > now,
+        )
+    )
 
 
 def _resolve_client_ip(request: Request | None) -> str:
@@ -293,6 +352,64 @@ async def guest_login(
     )
     _set_guest_refresh_cookie(response, refresh_token)
     return Token(access_token=access_token, token_type="bearer", guest_id=guest_id)
+
+
+@router.get(
+    "/guest",
+    response_model=GuestMigrationPreviewResponse,
+    summary="预览游客迁移数据",
+)
+async def preview_guest_session(
+    db: SessionDep,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    guest_refresh: Annotated[str | None, Cookie(alias=GUEST_REFRESH_COOKIE_NAME)] = None,
+) -> GuestMigrationPreviewResponse:
+    token = _get_optional_bearer_token(authorization)
+    guest_id = _resolve_guest_session_for_preview(db, token, guest_refresh)
+    if guest_id is None:
+        return GuestMigrationPreviewResponse(active=False, history_count=0)
+
+    history_count = db.scalar(
+        select(func.count())
+        .select_from(Detection)
+        .where(
+            Detection.actor_type == "guest",
+            Detection.actor_id == guest_id,
+            Detection.user_id.is_(None),
+        )
+    )
+    return GuestMigrationPreviewResponse(active=True, history_count=history_count or 0)
+
+
+@router.delete(
+    "/guest",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="丢弃游客会话",
+)
+async def discard_guest_session(
+    db: SessionDep,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> Response:
+    token = _get_optional_bearer_token(authorization)
+    guest_id = _decode_guest_session_id(token)
+    if authorization is not None and guest_id is None:
+        return _invalid_guest_refresh_response()
+
+    if guest_id:
+        now = datetime.now(timezone.utc)
+        db.execute(
+            update(GuestSession)
+            .where(
+                GuestSession.id == guest_id,
+                GuestSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=now, updated_at=now)
+        )
+        db.commit()
+
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _clear_guest_refresh_cookie(response)
+    return response
 
 
 @router.post(

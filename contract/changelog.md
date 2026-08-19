@@ -2,6 +2,11 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 1.2.0 - 2026-08-20
+- Added `GET /api/v1/auth/guest` to preview only guest-session activity and the unclaimed server-history count, including recovery-cookie-only sessions, without returning detection contents or creating a new guest session.
+- Added idempotent `DELETE /api/v1/auth/guest` so clients can revoke a guest capability and clear its HttpOnly recovery cookie before discarding browser-local guest data.
+- A valid guest Bearer token is required to revoke an active server-side guest session. Cookie-only and anonymous discard requests only clear `aid_guest_refresh`; invalid, expired, malformed, and non-guest Bearer credentials fail closed with 401 and preserve the cookie for a safe retry.
+
 ## 1.1.0 - 2026-08-19
 - Added `ApiKeyAuth` using the `X-API-Key` header.
 - Restricted API keys to the canonical `/api/v1/detect` and `/api/v1/quota` automation paths; both paths now accept either Bearer authentication or API key authentication.

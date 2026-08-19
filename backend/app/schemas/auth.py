@@ -23,6 +23,11 @@ class GuestTokenRequest(SchemaBase):
     model_config = ConfigDict(extra="forbid")
 
 
+class GuestMigrationPreviewResponse(SchemaBase):
+    active: bool
+    history_count: int = Field(..., ge=0)
+
+
 class Token(SchemaBase):
     access_token: str = Field(..., json_schema_extra={"example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."})
     token_type: str = Field(default="bearer", json_schema_extra={"example": "bearer"})

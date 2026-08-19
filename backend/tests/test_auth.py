@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
@@ -12,6 +14,7 @@ from app.core.security import create_access_token
 from app.db.deps import get_current_actor, get_current_user
 from app.db.session import get_db
 from app.main import app
+from app.models.detection import Detection
 from app.models.guest_session import GuestSession
 from app.schemas.auth import LoginRequest, RegisterRequest
 from app.services.repre_guard_client import repre_guard_client
@@ -60,6 +63,42 @@ def _recovery_cookie(response, access_token: str) -> tuple[str, str]:
     cookies = [(name, value) for name, value in response.cookies.items() if value != access_token]
     assert cookies, "guest response must set a recovery cookie distinct from the access token"
     return cookies[0]
+
+
+def _issue_guest_session(client: TestClient) -> tuple[str, str, str, str]:
+    response = client.post("/api/v1/auth/guest")
+    assert response.status_code == 200
+    payload = response.json()
+    access_token = _response_value(payload, "access_token", "accessToken")
+    guest_id = _response_value(payload, "guest_id", "guestId")
+    cookie_name, refresh_cookie = _recovery_cookie(response, access_token)
+    assert access_token
+    assert guest_id
+    return guest_id, access_token, cookie_name, refresh_cookie
+
+
+def _add_detection(
+    db_session,
+    *,
+    actor_type: str,
+    actor_id: str,
+    user_id: int | None = None,
+    input_text: str = "preview-secret-input",
+) -> None:
+    db_session.add(
+        Detection(
+            user_id=user_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            chars_used=len(input_text),
+            title="Preview secret title",
+            input_text=input_text,
+            editor_html=f"<p>{input_text}</p>",
+            functions_used=["scan"],
+            result_label="human",
+            score=0.1,
+        )
+    )
 
 
 @pytest.mark.anyio
@@ -232,6 +271,353 @@ def test_guest_login_issues_server_uuid_and_http_only_recovery_cookie(db_session
     assert UUID(guest_id).version == 4
     _recovery_cookie(response, access_token)
     assert "httponly" in response.headers.get("set-cookie", "").lower()
+
+
+def test_guest_session_preview_without_credentials_is_inactive_and_minimal(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"active": False, "historyCount": 0}
+
+
+@pytest.mark.anyio
+async def test_guest_session_preview_cookie_counts_only_unclaimed_records_for_that_guest(
+    db_session,
+    unique_email,
+):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, _, _, _ = _issue_guest_session(client)
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id=guest_id,
+                input_text="target-guest-secret",
+            )
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id="another-guest-id",
+                input_text="other-guest-secret",
+            )
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id=guest_id,
+                user_id=user.id,
+                input_text="already-owned-secret",
+            )
+            _add_detection(
+                db_session,
+                actor_type="user",
+                actor_id=guest_id,
+                input_text="wrong-actor-secret",
+            )
+            db_session.commit()
+
+            response = client.get("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"active": True, "historyCount": 1}
+    assert "secret" not in response.text.lower()
+    assert "items" not in response.json()
+
+
+def test_guest_session_preview_accepts_active_bearer_without_refresh_cookie(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as issuing_client:
+            guest_id, access_token, _, _ = _issue_guest_session(issuing_client)
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id=guest_id,
+            )
+            db_session.commit()
+
+        with TestClient(app) as bearer_client:
+            response = bearer_client.get(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"active": True, "historyCount": 1}
+
+
+@pytest.mark.parametrize(
+    "wrong_bearer",
+    [
+        "not-a-valid-jwt",
+        create_access_token(subject="1", extra_claims={"sub_type": "user"}),
+    ],
+    ids=["invalid-bearer", "user-bearer"],
+)
+def test_guest_session_preview_falls_back_to_valid_cookie_when_bearer_is_not_guest(
+    wrong_bearer,
+    db_session,
+):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, _, _, _ = _issue_guest_session(client)
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id=guest_id,
+            )
+            db_session.commit()
+
+            response = client.get(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {wrong_bearer}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"active": True, "historyCount": 1}
+
+
+@pytest.mark.parametrize("terminal_state", ["revoked", "expired"])
+def test_guest_session_preview_terminal_session_is_inactive(
+    terminal_state,
+    db_session,
+):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, access_token, _, _ = _issue_guest_session(client)
+            _add_detection(
+                db_session,
+                actor_type="guest",
+                actor_id=guest_id,
+            )
+            guest_session = db_session.get(GuestSession, guest_id)
+            assert guest_session is not None
+            if terminal_state == "revoked":
+                guest_session.revoked_at = datetime.now(timezone.utc)
+            else:
+                guest_session.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            db_session.commit()
+
+            response = client.get(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"active": False, "historyCount": 0}
+
+
+def test_discard_guest_session_revokes_bearer_clears_refresh_cookie_and_is_idempotent(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, access_token, cookie_name, refresh_cookie = _issue_guest_session(client)
+
+            discard_response = client.delete(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+            client.cookies.set(
+                cookie_name,
+                refresh_cookie,
+                path="/api/v1/auth/guest",
+            )
+            repeated_discard_response = client.delete(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+            old_bearer_response = client.get(
+                "/api/v1/quota",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        with TestClient(app) as replay_client:
+            replay_client.cookies.set(
+                cookie_name,
+                refresh_cookie,
+                path="/api/v1/auth/guest",
+            )
+            old_refresh_response = replay_client.post("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert discard_response.status_code == 204
+    set_cookie = discard_response.headers.get("set-cookie", "").lower()
+    assert "aid_guest_refresh=" in set_cookie
+    assert "max-age=0" in set_cookie
+    assert "path=/api/v1/auth/guest" in set_cookie
+
+    db_session.expire_all()
+    discarded_session = db_session.get(GuestSession, guest_id)
+    assert discarded_session is not None
+    assert discarded_session.revoked_at is not None
+
+    assert repeated_discard_response.status_code == 204
+    repeated_set_cookie = repeated_discard_response.headers.get("set-cookie", "").lower()
+    assert "aid_guest_refresh=" in repeated_set_cookie
+    assert "max-age=0" in repeated_set_cookie
+    assert "path=/api/v1/auth/guest" in repeated_set_cookie
+    assert old_bearer_response.status_code == 401
+    assert old_refresh_response.status_code == 401
+    assert old_refresh_response.json()["code"] == "GUEST_SESSION_INVALID"
+
+
+def test_discard_guest_session_without_bearer_only_clears_recovery_cookie(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, _, cookie_name, _ = _issue_guest_session(client)
+            discard_response = client.delete("/api/v1/auth/guest")
+            assert client.cookies.get(cookie_name) is None
+    finally:
+        app.dependency_overrides.clear()
+
+    assert discard_response.status_code == 204
+    db_session.expire_all()
+    discarded_session = db_session.get(GuestSession, guest_id)
+    assert discarded_session is not None
+    assert discarded_session.revoked_at is None
+
+
+def test_discard_guest_session_without_credentials_is_idempotent(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.delete("/api/v1/auth/guest")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    set_cookie = response.headers.get("set-cookie", "").lower()
+    assert "aid_guest_refresh=" in set_cookie
+    assert "max-age=0" in set_cookie
+    assert "path=/api/v1/auth/guest" in set_cookie
+
+
+def test_guest_migration_runtime_openapi_does_not_require_bearer_credentials():
+    guest_operations = app.openapi()["paths"]["/api/v1/auth/guest"]
+
+    for method in ("get", "delete"):
+        operation = guest_operations[method]
+        assert "security" not in operation
+        authorization = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["name"] == "Authorization"
+        )
+        assert authorization["in"] == "header"
+        assert authorization["required"] is False
+
+
+@pytest.mark.parametrize(
+    "invalid_credential_kind",
+    ["expired", "malformed", "user"],
+    ids=["expired-guest-bearer", "malformed-bearer", "user-bearer"],
+)
+def test_discard_guest_session_rejects_invalid_bearer_without_clearing_recovery_cookie(
+    invalid_credential_kind,
+    db_session,
+):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_id, access_token, cookie_name, refresh_cookie = _issue_guest_session(client)
+
+            if invalid_credential_kind == "expired":
+                invalid_token = create_access_token(
+                    subject=guest_id,
+                    expires_delta=timedelta(seconds=-1),
+                    extra_claims={"sub_type": "guest", "sid": guest_id},
+                )
+            elif invalid_credential_kind == "malformed":
+                invalid_token = "not-a-valid-jwt"
+            else:
+                invalid_token = create_access_token(
+                    subject="1",
+                    extra_claims={"sub_type": "user"},
+                )
+
+            discard_response = client.delete(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {invalid_token}"},
+            )
+            retained_refresh_cookie = client.cookies.get(cookie_name)
+            old_bearer_response = client.get(
+                "/api/v1/quota",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert discard_response.status_code == 401
+    assert discard_response.json()["code"] == "GUEST_SESSION_INVALID"
+    assert "aid_guest_refresh=" not in discard_response.headers.get("set-cookie", "").lower()
+    assert retained_refresh_cookie == refresh_cookie
+    assert old_bearer_response.status_code == 200
+
+    db_session.expire_all()
+    guest_session = db_session.get(GuestSession, guest_id)
+    assert guest_session is not None
+    assert guest_session.revoked_at is None
+
+
+def test_discard_guest_session_uses_valid_guest_bearer_as_revocation_identity(db_session):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as victim_client:
+            victim_guest_id, victim_access_token, _, _ = _issue_guest_session(victim_client)
+            with TestClient(app) as other_guest_client:
+                other_guest_id, other_access_token, _, _ = _issue_guest_session(other_guest_client)
+
+            discard_response = victim_client.delete(
+                "/api/v1/auth/guest",
+                headers={"Authorization": f"Bearer {other_access_token}"},
+            )
+            victim_bearer_response = victim_client.get(
+                "/api/v1/quota",
+                headers={"Authorization": f"Bearer {victim_access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert discard_response.status_code == 204
+    assert victim_bearer_response.status_code == 200
+
+    db_session.expire_all()
+    victim_guest_session = db_session.get(GuestSession, victim_guest_id)
+    assert victim_guest_session is not None
+    assert victim_guest_session.revoked_at is None
+    other_guest_session = db_session.get(GuestSession, other_guest_id)
+    assert other_guest_session is not None
+    assert other_guest_session.revoked_at is not None
 
 
 def test_guest_bearer_without_recovery_cookie_does_not_create_session(db_session):
