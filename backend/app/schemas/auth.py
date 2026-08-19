@@ -1,6 +1,7 @@
 """认证相关的 Pydantic 模型。"""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import EmailStr, Field
 
@@ -32,5 +33,5 @@ class TokenPayload(SchemaBase):
     sub: str | None = None
     exp: int | None = None
     iat: datetime | None = None
-    sub_type: str | None = None
+    sub_type: Literal["user", "guest"]
     guest_id: str | None = None

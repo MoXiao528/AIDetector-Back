@@ -167,7 +167,11 @@ async def login(payload: LoginRequest, response: Response, db: SessionDep, reque
         raise _invalid_credentials_error()
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = create_access_token(subject=str(user.id), expires_delta=access_token_expires)
+    access_token = create_access_token(
+        subject=str(user.id),
+        expires_delta=access_token_expires,
+        extra_claims={"sub_type": "user"},
+    )
     _set_auth_cookie(response, access_token)
     return Token(access_token=access_token, token_type="bearer")
 

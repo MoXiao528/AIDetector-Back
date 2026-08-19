@@ -59,21 +59,13 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        payload = jwt.decode(resolved_token, settings.secret_key, algorithms=["HS256"])
-        token_data = TokenPayload(**payload)
-    except jwt.ExpiredSignatureError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-    except (jwt.InvalidTokenError, ValidationError) as exc:  # pragma: no cover - JWT 库内部异常
+    token_data = _decode_token(resolved_token)
+    if token_data.sub_type != "user":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+        )
 
     if token_data.sub is None:
         raise HTTPException(
@@ -159,7 +151,7 @@ def get_current_actor(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    actor_type = (token_data.sub_type or "user").lower()
+    actor_type = token_data.sub_type
     if actor_type == "guest":
         guest_id = token_data.guest_id or token_data.sub
         if not guest_id:
@@ -169,6 +161,13 @@ def get_current_actor(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return ActorContext(actor_type="guest", actor_id=str(guest_id))
+
+    if actor_type != "user":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     try:
         user_id = int(token_data.sub)

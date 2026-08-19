@@ -1,12 +1,17 @@
 import pytest
 from fastapi import HTTPException, Response
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.api.v1.auth import guest_login, login, logout, read_current_user, register_user
-from app.core.rate_limit import auth_rate_limiter
-from app.api.v1.detections import detect
+from app.api.v1.detections import detect, list_detections
 from app.api.v1.quota import get_quota
-from app.db.deps import get_current_actor
+from app.core.rate_limit import auth_rate_limiter
+from app.core.roles import UserRole
+from app.core.security import create_access_token
+from app.db.deps import get_current_actor, get_current_user
+from app.db.session import get_db
+from app.main import app
 from app.schemas.auth import GuestTokenRequest, LoginRequest, RegisterRequest
 from app.schemas.detection import DetectionRequest
 from app.services.repre_guard_client import repre_guard_client
@@ -59,9 +64,63 @@ async def test_register_login_and_me(db_session, unique_email):
     assert token_resp.access_token
     assert "aid_access_token=" in response.headers.get("set-cookie", "")
 
-    me = await read_current_user(current_user=created_user)
+    authenticated_user = get_current_user(db=db_session, token=token_resp.access_token)
+    me = await read_current_user(current_user=authenticated_user)
     assert me.email == unique_email
     assert getattr(me.role, "value", me.role) == "INDIVIDUAL"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/auth/me",
+        "/api/v1/keys",
+        "/api/v1/admin/status",
+    ],
+)
+async def test_numeric_guest_token_is_rejected_by_user_routes(path, db_session, unique_email):
+    victim = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    victim.role = UserRole.SYS_ADMIN
+    db_session.commit()
+    db_session.refresh(victim)
+    assert victim.id == 1
+
+    guest_token = create_access_token(
+        subject="1",
+        extra_claims={"sub_type": "guest", "guest_id": "1"},
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.get(path, headers={"Authorization": f"Bearer {guest_token}"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("resolver", [get_current_user, get_current_actor])
+@pytest.mark.parametrize(
+    ("subject", "extra_claims"),
+    [
+        ("1", None),
+        ("1", {"sub_type": "service"}),
+        ("not-a-number", {"sub_type": "user"}),
+    ],
+    ids=["missing-sub-type", "unknown-sub-type", "non-numeric-user-sub"],
+)
+async def test_token_claims_fail_closed(resolver, subject, extra_claims, db_session, unique_email):
+    victim = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    assert victim.id == 1
+    token = create_access_token(subject=subject, extra_claims=extra_claims)
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolver(db=db_session, token=token)
+
+    assert exc_info.value.status_code == 401
 
 
 @pytest.mark.anyio
@@ -142,11 +201,20 @@ async def test_guest_token_reuse_preserves_guest_quota(db_session):
     renewed_guest = await guest_login(GuestTokenRequest(guest_id=first_guest.guest_id))
     renewed_actor = get_current_actor(db=db_session, token=renewed_guest.access_token)
     renewed_quota = await get_quota(db=db_session, current_actor=renewed_actor)
+    history = await list_detections(
+        db=db_session,
+        current_actor=renewed_actor,
+        page=1,
+        page_size=10,
+        from_time=None,
+        to_time=None,
+    )
 
     assert first_guest.guest_id
     assert renewed_guest.guest_id == first_guest.guest_id
     assert renewed_actor.actor_type == "guest"
     assert renewed_actor.actor_id == first_actor.actor_id == first_guest.guest_id
+    assert history.total == 1
     assert first_quota.used_today > 0
     assert renewed_quota.used_today == first_quota.used_today
     assert renewed_quota.remaining == first_quota.remaining
