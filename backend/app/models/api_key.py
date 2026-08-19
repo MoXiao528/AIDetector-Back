@@ -12,6 +12,10 @@ from app.db.base_class import Base
 if TYPE_CHECKING:  # pragma: no cover - 类型检查辅助
     from app.models.user import User
 
+API_KEY_SCOPES: tuple[str, ...] = ("detect:write", "quota:read")
+API_KEY_TTL_DAYS = 90
+MAX_ACTIVE_API_KEYS = 5
+
 
 class APIKeyStatus(str, Enum):
     ACTIVE = "active"
@@ -40,5 +44,7 @@ class APIKey(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="api_keys")

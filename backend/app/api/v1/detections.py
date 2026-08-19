@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pypdf import PdfReader
 
 from app.core.config import get_settings
-from app.db.deps import ActiveMemberDep, CurrentActorDep, SessionDep
+from app.db.deps import ActiveMemberDep, CurrentActorDep, DetectActorDep, SessionDep
 from app.schemas import (
     AnalysisResponse,
     Citation,
@@ -858,12 +858,17 @@ def _extension_from_filename(filename: str) -> str:
     "/detect",
     response_model=DetectionResponse,
     summary="Detect text and persist a record",
-    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
 )
 async def detect(
     payload: DetectionRequest,
     db: SessionDep,
-    current_actor: CurrentActorDep,
+    current_actor: DetectActorDep,
 ) -> DetectionResponse:
     return await _detect_impl(payload=payload, db=db, current_actor=current_actor)
 
@@ -872,12 +877,17 @@ async def detect(
     "/detect",
     response_model=AnalysisResponse,
     summary="Compatibility analysis endpoint",
-    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
 )
 async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
-    current_actor: CurrentActorDep,
+    current_actor: DetectActorDep,
 ) -> AnalysisResponse:
     functions = _normalize_detection_functions(payload.functions)
 
@@ -894,12 +904,17 @@ async def detect_scan(
     "",
     response_model=AnalysisResponse,
     summary="Compatibility scan endpoint",
-    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
 )
 async def detect_scan_root(
     payload: DetectRequest,
     db: SessionDep,
-    current_actor: CurrentActorDep,
+    current_actor: DetectActorDep,
 ) -> AnalysisResponse:
     return await detect_scan(payload=payload, db=db, current_actor=current_actor)
 

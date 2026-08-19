@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.db.deps import CurrentActorDep, SessionDep
+from app.db.deps import QuotaActorDep, SessionDep
 from app.schemas import ErrorResponse, QuotaResponse
 from app.services.quota_service import get_quota_limit, get_today_bounds, get_used_today
 
@@ -11,11 +11,11 @@ router = APIRouter(tags=["quota"])
     "/quota",
     response_model=QuotaResponse,
     summary="查询今日字符额度",
-    responses={401: {"model": ErrorResponse}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
 async def get_quota(
     db: SessionDep,
-    current_actor: CurrentActorDep,
+    current_actor: QuotaActorDep,
 ) -> QuotaResponse:
     day_start, day_end = get_today_bounds()
     used_today = get_used_today(

@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.core.roles import UserRole, has_required_role, normalize_role
 from app.core.security import hash_api_key
 from app.db.session import get_db
-from app.models.api_key import APIKey, APIKeyStatus
+from app.models.api_key import API_KEY_SCOPES, APIKey, APIKeyStatus
 from app.models.guest_session import GuestSession
 from app.models.user import User
 from app.schemas import TokenPayload
@@ -29,28 +29,35 @@ AuthCookieDep = Annotated[str | None, Cookie(alias=AUTH_COOKIE_NAME)]
 APIKeyHeaderDep = Annotated[str | None, Header(alias="X-API-Key")]
 
 
+def _ambiguous_credentials_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "AMBIGUOUS_CREDENTIALS",
+            "message": "Ambiguous credentials",
+            "detail": "Use either a token session or X-API-Key, not both.",
+        },
+    )
+
+
 def get_current_user(
     db: SessionDep,
     token: TokenDep,
     auth_cookie: AuthCookieDep = None,
     api_key_header: APIKeyHeaderDep = None,
 ) -> User:
-    if api_key_header:
-        key_hash = hash_api_key(api_key_header)
-        api_key = db.scalar(
-            select(APIKey).where(APIKey.key_hash == key_hash, APIKey.status == APIKeyStatus.ACTIVE)
-        )
-        if api_key is None or api_key.user is None or not api_key.user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key",
-                headers={"WWW-Authenticate": "API-Key"},
-            )
+    if api_key_header and (token or auth_cookie):
+        raise _ambiguous_credentials_error()
 
-        api_key.last_used_at = datetime.now(timezone.utc)
-        db.add(api_key)
-        db.commit()
-        return api_key.user
+    if api_key_header:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "API_KEY_SCOPE_FORBIDDEN",
+                "message": "API key scope forbidden",
+                "detail": "This endpoint requires an interactive user session.",
+            },
+        )
 
     resolved_token = token or auth_cookie
     if resolved_token is None:
@@ -103,6 +110,9 @@ class ActorContext:
     actor_type: str
     actor_id: str
     user: User | None = None
+    auth_method: Literal["token", "api_key"] = "token"
+    scopes: frozenset[str] = field(default_factory=frozenset)
+    api_key_id: int | None = None
 
 
 def _decode_token(token: str) -> TokenPayload:
@@ -148,6 +158,33 @@ def _resolve_active_guest_session_id(db: Session, token_data: TokenPayload) -> s
     return active_session_id
 
 
+def _resolve_active_api_key(db: Session, raw_key: str) -> APIKey:
+    now = datetime.now(timezone.utc)
+    api_key = db.scalar(
+        select(APIKey).where(
+            APIKey.key_hash == hash_api_key(raw_key),
+            APIKey.status == APIKeyStatus.ACTIVE,
+            APIKey.revoked_at.is_(None),
+            APIKey.expires_at > now,
+        )
+    )
+    if api_key is None or api_key.user is None or not api_key.user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "INVALID_API_KEY",
+                "message": "Invalid API key",
+                "detail": "The API key is invalid, expired, or revoked.",
+            },
+            headers={"WWW-Authenticate": "API-Key"},
+        )
+
+    api_key.last_used_at = now
+    db.add(api_key)
+    db.commit()
+    return api_key
+
+
 def get_current_actor(
     db: SessionDep,
     token: TokenDep,
@@ -157,8 +194,15 @@ def get_current_actor(
     resolved_token = token or auth_cookie
     if resolved_token is None:
         if api_key_header:
-            user = get_current_user(db=db, token=None, api_key_header=api_key_header)
-            return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+            api_key = _resolve_active_api_key(db, api_key_header)
+            return ActorContext(
+                actor_type="user",
+                actor_id=str(api_key.user.id),
+                user=api_key.user,
+                auth_method="api_key",
+                scopes=frozenset(API_KEY_SCOPES),
+                api_key_id=api_key.id,
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -170,6 +214,9 @@ def get_current_actor(
         )
 
     token_data = _decode_token(resolved_token)
+    if api_key_header:
+        raise _ambiguous_credentials_error()
+
     if token_data.sub is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -209,7 +256,55 @@ def get_current_actor(
     return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
 
-CurrentActorDep = Annotated[ActorContext, Depends(get_current_actor)]
+AuthenticatedActorDep = Annotated[ActorContext, Depends(get_current_actor)]
+
+
+def require_session_actor(current_actor: AuthenticatedActorDep) -> ActorContext:
+    if current_actor.auth_method == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "API_KEY_SCOPE_FORBIDDEN",
+                "message": "API key scope forbidden",
+                "detail": "This endpoint requires a token session.",
+            },
+        )
+    return current_actor
+
+
+def require_actor_scope(required_scope: str):
+    def _checker(current_actor: AuthenticatedActorDep) -> ActorContext:
+        if current_actor.auth_method == "api_key" and required_scope not in current_actor.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "API_KEY_SCOPE_FORBIDDEN",
+                    "message": "API key scope forbidden",
+                    "detail": f"The API key requires the {required_scope} scope.",
+                },
+            )
+        return current_actor
+
+    return Depends(_checker)
+
+
+def require_api_key_actor(current_actor: AuthenticatedActorDep) -> ActorContext:
+    if current_actor.auth_method != "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "API_KEY_REQUIRED",
+                "message": "API key required",
+                "detail": "Authenticate this endpoint with X-API-Key.",
+            },
+        )
+    return current_actor
+
+
+CurrentActorDep = Annotated[ActorContext, Depends(require_session_actor)]
+DetectActorDep = Annotated[ActorContext, require_actor_scope("detect:write")]
+QuotaActorDep = Annotated[ActorContext, require_actor_scope("quota:read")]
+APIKeyActorDep = Annotated[ActorContext, Depends(require_api_key_actor)]
 
 
 def require_roles(allowed_roles: list[UserRole]):

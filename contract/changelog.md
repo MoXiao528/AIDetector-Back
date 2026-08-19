@@ -2,6 +2,14 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 1.1.0 - 2026-08-19
+- Added `ApiKeyAuth` using the `X-API-Key` header.
+- Restricted API keys to the canonical `/api/v1/detect` and `/api/v1/quota` automation paths; both paths now accept either Bearer authentication or API key authentication.
+- Changed `/api/v1/keys/self-test` to API key authentication only, while API key creation, listing, and deactivation remain Bearer-session operations.
+- Added fixed API key scopes (`detect:write`, `quota:read`) and exposed `scopes`, `expiresAt`, and `revokedAt` in API key responses.
+- API keys no longer represent interactive user or administrator sessions; profile, history, report, team, upload, key-management, and admin routes remain Bearer-only.
+- Requests that mix Bearer/cookie credentials with `X-API-Key` now fail closed with `AMBIGUOUS_CREDENTIALS`.
+
 ## 1.0.0 - 2026-04-01
 - Rebuilt the active contract baseline and unified active routes under `/api/v1/*`.
 - Removed legacy `/api/*` path definitions to match the real backend mount prefix; `/api/scan` is not an active public contract path.

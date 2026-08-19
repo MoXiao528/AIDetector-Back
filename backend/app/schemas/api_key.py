@@ -5,6 +5,7 @@ from enum import Enum
 
 from pydantic import Field, ConfigDict
 
+from app.models.api_key import API_KEY_SCOPES
 from app.schemas.base import SchemaBase
 
 
@@ -21,8 +22,11 @@ class APIKeyBase(SchemaBase):
     id: int = Field(..., json_schema_extra={"example": 1})
     name: str = Field(..., json_schema_extra={"example": "CLI access"})
     status: APIKeyStatus = Field(..., json_schema_extra={"example": APIKeyStatus.ACTIVE})
+    scopes: tuple[str, ...] = Field(default=API_KEY_SCOPES, json_schema_extra={"example": list(API_KEY_SCOPES)})
     created_at: datetime = Field(..., json_schema_extra={"example": "2024-01-01T00:00:00Z"})
     last_used_at: datetime | None = Field(default=None, json_schema_extra={"example": "2024-01-02T12:00:00Z"})
+    expires_at: datetime = Field(..., json_schema_extra={"example": "2024-04-01T00:00:00Z"})
+    revoked_at: datetime | None = Field(default=None, json_schema_extra={"example": None})
 
     model_config = ConfigDict(from_attributes=True)
 

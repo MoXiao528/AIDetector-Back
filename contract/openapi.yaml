@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AIDetector API
-  version: 1.0.0
-  description: V1.0 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
+  version: 1.1.0
+  description: V1.1 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
 servers:
   - url: https://api.example.com
     description: Production
@@ -163,6 +163,7 @@ paths:
       operationId: getQuota
       security:
         - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         '200':
           description: Quota snapshot
@@ -170,8 +171,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QuotaResponse'
+        '400':
+          description: Multiple credential types supplied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope does not allow quota access
           content:
             application/json:
               schema:
@@ -183,6 +196,7 @@ paths:
       operationId: detectText
       security:
         - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -196,8 +210,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DetectResponse'
+        '400':
+          description: Multiple credential types supplied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope does not allow detection
           content:
             application/json:
               schema:
@@ -501,7 +527,7 @@ paths:
       summary: Validate API key
       operationId: apiKeySelfTest
       security:
-        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         '200':
           description: API key is valid
@@ -509,6 +535,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIKeySelfTestResponse'
+        '400':
+          description: Multiple credential types supplied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           content:
@@ -1085,6 +1117,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
   schemas:
     ErrorResponse:
       type: object
@@ -1396,6 +1432,9 @@ components:
     APIKeyStatus:
       type: string
       enum: [active, inactive]
+    APIKeyScope:
+      type: string
+      enum: [detect:write, quota:read]
     APIKeyCreateRequest:
       type: object
       required:
@@ -1412,6 +1451,8 @@ components:
         - name
         - status
         - createdAt
+        - scopes
+        - expiresAt
       properties:
         id:
           type: integer
@@ -1423,6 +1464,20 @@ components:
           type: string
           format: date-time
         lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        scopes:
+          type: array
+          minItems: 2
+          maxItems: 2
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/APIKeyScope'
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
           type: string
           format: date-time
           nullable: true
