@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import ceil
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.detection import Detection
+from app.models.guest_session import GuestSession
+
+
+class GuestSessionNotClaimableError(Exception):
+    """The guest capability is invalid, expired, or already consumed."""
 
 
 class HistoryService:
@@ -60,30 +66,44 @@ class HistoryService:
 
     def claim_guest_histories(self, user_id: int, guest_id: str) -> int:
         if not guest_id:
-            return 0
+            raise GuestSessionNotClaimableError
 
-        stmt = (
-            select(Detection)
-            .where(
-                Detection.actor_type == "guest",
-                Detection.actor_id == guest_id,
-                Detection.user_id.is_(None),
+        now = datetime.now(timezone.utc)
+        try:
+            claimed_session_id = self.db.scalar(
+                update(GuestSession)
+                .where(
+                    GuestSession.id == guest_id,
+                    GuestSession.revoked_at.is_(None),
+                    GuestSession.expires_at > now,
+                )
+                .values(revoked_at=now, updated_at=now)
+                .returning(GuestSession.id)
             )
-            .order_by(Detection.created_at.asc(), Detection.id.asc())
-        )
-        records = list(self.db.scalars(stmt).all())
-        if not records:
-            return 0
+            if claimed_session_id is None:
+                raise GuestSessionNotClaimableError
 
-        claimed_count = 0
-        for record in records:
-            if not self._is_displayable_history(record):
-                continue
-            record.user_id = user_id
-            claimed_count += 1
-
-        self.db.commit()
-        return claimed_count
+            claimed_ids = list(
+                self.db.scalars(
+                    update(Detection)
+                    .where(
+                        Detection.actor_type == "guest",
+                        Detection.actor_id == guest_id,
+                        Detection.user_id.is_(None),
+                    )
+                    .values(
+                        user_id=user_id,
+                        actor_type="user",
+                        actor_id=str(user_id),
+                    )
+                    .returning(Detection.id)
+                ).all()
+            )
+            self.db.commit()
+            return len(claimed_ids)
+        except Exception:
+            self.db.rollback()
+            raise
 
     def get_history(self, user_id: int, history_id: int) -> Detection | None:
         stmt = select(Detection).where(

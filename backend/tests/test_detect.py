@@ -1,10 +1,10 @@
+from datetime import datetime, timedelta, timezone
 from math import exp
 
 import pytest
-
-from app.api.v1.auth import register_user
 from fastapi import HTTPException
 
+from app.api.v1.auth import register_user
 from app.api.v1.detections import (
     _combine_repre_guard_results,
     _merge_short_paragraphs,
@@ -15,6 +15,7 @@ from app.api.v1.detections import (
 )
 from app.api.v1.keys import create_api_key
 from app.db.deps import ActorContext, get_current_actor
+from app.models.guest_session import GuestSession
 from app.schemas.analysis import DetectRequest
 from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
@@ -158,6 +159,14 @@ async def test_detect_with_user(db_session, unique_email):
 
 @pytest.mark.anyio
 async def test_detect_with_guest(db_session):
+    db_session.add(
+        GuestSession(
+            id="guest-test",
+            refresh_token_hash="a" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    db_session.flush()
     actor = ActorContext(actor_type="guest", actor_id="guest-test")
     detection = await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
     assert detection.detection_id > 0

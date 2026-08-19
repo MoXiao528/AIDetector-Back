@@ -10,7 +10,13 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pypdf import PdfReader
 
 from app.core.config import get_settings
-from app.db.deps import ActiveMemberDep, CurrentActorDep, DetectActorDep, SessionDep
+from app.db.deps import (
+    ActiveMemberDep,
+    CurrentActorDep,
+    DetectActorDep,
+    SessionDep,
+    _get_active_guest_session_id,
+)
 from app.schemas import (
     AnalysisResponse,
     Citation,
@@ -785,6 +791,9 @@ async def _detect_impl(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "USER_NOT_FOUND", "message": "User not found"},
         )
+
+    if actor_type == "guest":
+        _get_active_guest_session_id(db, actor_id, lock=True)
 
     try:
         quota_result = consume_quota(

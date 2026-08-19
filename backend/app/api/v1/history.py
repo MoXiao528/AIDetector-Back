@@ -17,7 +17,7 @@ from app.schemas.history import (
     HistoryRecordResponse,
     HistoryRecordUpdate,
 )
-from app.services.history_service import HistoryService
+from app.services.history_service import GuestSessionNotClaimableError, HistoryService
 
 router = APIRouter(prefix="/history", tags=["history"])
 
@@ -43,6 +43,17 @@ def _detection_to_history_response(detection) -> HistoryRecordResponse:
     )
 
 
+def _invalid_guest_token_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "INVALID_GUEST_TOKEN",
+            "message": "Invalid guest token",
+            "detail": "The provided guest session is invalid or expired.",
+        },
+    )
+
+
 def _resolve_guest_id_from_token(db: SessionDep, guest_token: str) -> str:
     try:
         token_data = _decode_token(guest_token)
@@ -50,14 +61,7 @@ def _resolve_guest_id_from_token(db: SessionDep, guest_token: str) -> str:
     except HTTPException as exc:
         if exc.status_code != status.HTTP_401_UNAUTHORIZED:
             raise
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "INVALID_GUEST_TOKEN",
-                "message": "Invalid guest token",
-                "detail": "The provided guest session is invalid or expired.",
-            },
-        ) from exc
+        raise _invalid_guest_token_error() from exc
 
 
 @router.get(
@@ -174,7 +178,10 @@ async def claim_guest_history(
 ) -> ClaimGuestHistoryResponse:
     guest_id = _resolve_guest_id_from_token(db, payload.guest_token)
     service = HistoryService(db)
-    claimed_count = service.claim_guest_histories(user_id=current_user.id, guest_id=guest_id)
+    try:
+        claimed_count = service.claim_guest_histories(user_id=current_user.id, guest_id=guest_id)
+    except GuestSessionNotClaimableError as exc:
+        raise _invalid_guest_token_error() from exc
     return ClaimGuestHistoryResponse(claimed_count=claimed_count)
 
 

@@ -144,6 +144,8 @@ class DetectionService:
             Detection.actor_type == actor_type,
             Detection.actor_id == actor_id,
         )
+        if actor_type == "guest":
+            query = query.where(Detection.user_id.is_(None))
 
         if from_time:
             query = query.where(Detection.created_at >= from_time)

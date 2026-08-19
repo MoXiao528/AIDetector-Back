@@ -1,9 +1,12 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 import pytest
 
 from app.db.deps import ActorContext, get_current_actor
 from app.db.session import get_db
 from app.main import app
+from app.models.guest_session import GuestSession
 from app.services.repre_guard_client import repre_guard_client
 
 
@@ -14,6 +17,14 @@ LONG_TEXT = (
 
 
 def _install_route_overrides(db_session):
+    db_session.add(
+        GuestSession(
+            id="route-guest",
+            refresh_token_hash="b" * 64,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    db_session.flush()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_actor] = lambda: ActorContext(actor_type="guest", actor_id="route-guest")
 

@@ -18,6 +18,7 @@ from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
 from app.models.detection import Detection
+from app.models.guest_session import GuestSession
 from app.schemas.auth import RegisterRequest
 from app.schemas.history import (
     Analysis,
@@ -633,17 +634,46 @@ async def test_claim_guest_history_assigns_guest_records_to_user(db_session, uni
             db_session.add(detection)
             db_session.commit()
 
+            guest_history_response = client.get(
+                "/api/v1/detections/",
+                headers={"Authorization": f"Bearer {guest_token}"},
+            )
+            assert guest_history_response.status_code == 200
+            assert guest_history_response.json()["total"] == 1
+
             claim_response = client.post(
                 "/api/v1/history/claim-guest",
                 json={"guest_token": guest_token},
                 headers={"Authorization": f"Bearer {user_token}"},
             )
+            assert claim_response.status_code == 200
+            claim_payload = claim_response.json()
+            assert claim_payload.get("claimedCount", claim_payload.get("claimed_count")) == 1
+
+            db_session.refresh(detection)
+            guest_session = db_session.get(GuestSession, guest_id)
+            assert detection.user_id == user.id
+            assert detection.actor_type == "user"
+            assert detection.actor_id == str(user.id)
+            assert guest_session is not None
+            assert guest_session.revoked_at is not None
+
+            for path in ("/api/v1/detections/", "/api/v1/scan/history", "/api/scan/history"):
+                old_guest_response = client.get(
+                    path,
+                    headers={"Authorization": f"Bearer {guest_token}"},
+                )
+                assert old_guest_response.status_code == 401
+
+            repeated_claim_response = client.post(
+                "/api/v1/history/claim-guest",
+                json={"guest_token": guest_token},
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert repeated_claim_response.status_code == 400
+            assert repeated_claim_response.json()["code"] == "INVALID_GUEST_TOKEN"
     finally:
         app.dependency_overrides.clear()
-
-    assert claim_response.status_code == 200
-    claim_payload = claim_response.json()
-    assert claim_payload.get("claimedCount", claim_payload.get("claimed_count")) == 1
 
     histories = await list_histories(
         db=db_session,
@@ -655,6 +685,47 @@ async def test_claim_guest_history_assigns_guest_records_to_user(db_session, uni
     )
     assert histories.total == 1
     assert histories.items[0].title == "Guest Record"
+
+
+@pytest.mark.anyio
+async def test_guest_detection_history_hides_records_already_owned_by_a_user(db_session, unique_email):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            guest_response = client.post("/api/v1/auth/guest")
+            assert guest_response.status_code == 200
+            guest_payload = guest_response.json()
+            guest_id = str(guest_payload.get("guest_id") or guest_payload.get("guestId") or "")
+            guest_token = str(guest_payload.get("access_token") or guest_payload.get("accessToken") or "")
+
+            db_session.add(
+                Detection(
+                    user_id=user.id,
+                    actor_type="guest",
+                    actor_id=guest_id,
+                    chars_used=12,
+                    title="Already Claimed",
+                    input_text="Already claimed guest history",
+                    editor_html="<p>Already claimed guest history</p>",
+                    functions_used=["scan"],
+                    result_label="ai",
+                    score=0.82,
+                    meta_json=None,
+                )
+            )
+            db_session.commit()
+
+            response = client.get(
+                "/api/v1/detections/",
+                headers={"Authorization": f"Bearer {guest_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
 
 
 @pytest.mark.anyio

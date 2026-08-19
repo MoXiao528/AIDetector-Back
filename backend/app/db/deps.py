@@ -133,6 +133,25 @@ def _decode_token(token: str) -> TokenPayload:
         ) from exc
 
 
+def _get_active_guest_session_id(db: Session, session_id: str, *, lock: bool = False) -> str:
+    statement = select(GuestSession.id).where(
+        GuestSession.id == session_id,
+        GuestSession.revoked_at.is_(None),
+        GuestSession.expires_at > datetime.now(timezone.utc),
+    )
+    if lock:
+        statement = statement.with_for_update()
+
+    active_session_id = db.scalar(statement)
+    if active_session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return active_session_id
+
+
 def _resolve_active_guest_session_id(db: Session, token_data: TokenPayload) -> str:
     session_id = token_data.sid
     if token_data.sub_type != "guest" or not session_id or token_data.sub != session_id:
@@ -142,20 +161,7 @@ def _resolve_active_guest_session_id(db: Session, token_data: TokenPayload) -> s
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    active_session_id = db.scalar(
-        select(GuestSession.id).where(
-            GuestSession.id == session_id,
-            GuestSession.revoked_at.is_(None),
-            GuestSession.expires_at > datetime.now(timezone.utc),
-        )
-    )
-    if active_session_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return active_session_id
+    return _get_active_guest_session_id(db, session_id)
 
 
 def _resolve_active_api_key(db: Session, raw_key: str) -> APIKey:
