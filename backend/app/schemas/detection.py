@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
 from app.schemas.base import SchemaBase
 from app.schemas.history import Analysis
@@ -22,7 +22,7 @@ class DetectionRequest(SchemaBase):
     )
     options: dict[str, Any] | None = Field(
         default=None,
-        description="Optional detection parameters.",
+        description="Optional detection parameters. The top-level repre_guard namespace is reserved for server output.",
         json_schema_extra={"example": {"language": "en"}},
     )
     editor_html: str | None = Field(
@@ -30,6 +30,13 @@ class DetectionRequest(SchemaBase):
         description="Optional editor HTML used to preserve original document structure in history/preview flows.",
         json_schema_extra={"example": "<p>Sample text to classify.</p>"},
     )
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def reject_reserved_option_namespace(cls, value: Any) -> Any:
+        if isinstance(value, dict) and any(str(key).strip().casefold() == "repre_guard" for key in value):
+            raise ValueError("options.repre_guard is reserved for server output")
+        return value
 
 
 class DetectionResponse(SchemaBase):

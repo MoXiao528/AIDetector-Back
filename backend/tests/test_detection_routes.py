@@ -29,6 +29,44 @@ def _install_route_overrides(db_session):
     app.dependency_overrides[get_current_actor] = lambda: ActorContext(actor_type="guest", actor_id="route-guest")
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param({"repre_guard": "invalid"}, id="string"),
+        pytest.param({"repre_guard": []}, id="array"),
+        pytest.param({"repre_guard": None}, id="null"),
+        pytest.param({"repre_guard": {"nested": {"unexpected": True}}}, id="object"),
+        pytest.param({"REPRE_GUARD": {}}, id="case-alias"),
+        pytest.param({" repre_guard ": {}}, id="whitespace-alias"),
+    ],
+)
+def test_detect_route_rejects_reserved_repre_guard_before_inference(db_session, monkeypatch, options):
+    detector_calls = []
+
+    async def fake_detect(text: str) -> dict:
+        detector_calls.append(text)
+        return {
+            "score": 0.003,
+            "threshold": 0.0028,
+            "label": "AI",
+            "model_name": "route-model",
+            "score_type": "probability",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+    _install_route_overrides(db_session)
+
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/v1/detect", json={"text": LONG_TEXT, "options": options})
+
+        assert response.status_code == 422
+        assert response.json()["message"] == "Validation Error"
+        assert detector_calls == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_detect_route_returns_detection_payload(db_session, monkeypatch):
     async def fake_detect(text: str) -> dict:
         return {
@@ -44,7 +82,10 @@ def test_detect_route_returns_detection_payload(db_session, monkeypatch):
 
     try:
         with TestClient(app) as client:
-            response = client.post("/api/v1/detect", json={"text": LONG_TEXT, "functions": ["scan"]})
+            response = client.post(
+                "/api/v1/detect",
+                json={"text": LONG_TEXT, "functions": ["scan"], "options": {"language": "en"}},
+            )
             assert response.status_code == 200
             payload = response.json()
             assert payload["label"] == "ai"

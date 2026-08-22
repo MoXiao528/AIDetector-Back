@@ -155,6 +155,8 @@ async def test_detect_with_user(db_session, unique_email):
     assert listed.items[0].meta_json["options"]["api_key"] == "***"
     assert listed.items[0].meta_json["options"]["provider"]["api_key"] == "***"
     assert listed.items[0].meta_json["options"]["provider"]["token"] == "***"
+    assert listed.items[0].meta_json["options"]["repre_guard"]["provider_model_name"] == ROBERTA_MODEL_NAME
+    assert listed.items[0].meta_json["options"]["repre_guard"]["raw_score"] == pytest.approx(0.4054651081081642)
 
 
 @pytest.mark.anyio

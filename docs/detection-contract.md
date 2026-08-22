@@ -53,6 +53,8 @@
 - `functions`
 - `options`
 
+`options.repre_guard` 是服务端检测结果的保留命名空间；客户端提交该顶层键（包括大小写或首尾空格别名）会在模型调用前返回 `422`。其他非保留 `options` metadata 继续兼容。
+
 ### `functions`
 
 当前只允许：

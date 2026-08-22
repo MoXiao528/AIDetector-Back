@@ -754,36 +754,33 @@ async def _detect_impl(
     )
 
     options = payload.options.copy() if payload.options else {}
-    options.setdefault("repre_guard", {})
-    options["repre_guard"].update(
-        {
-            "raw_score": raw_score,
-            "threshold": threshold,
-            "label": label,
-            "model_name": model_name,
-            "provider_model_name": provider_model_name,
-            "score_type": score_type,
-            "segments": [
-                {
-                    "index": index,
-                    "start": item["start"],
-                    "end": item["end"],
-                    "start_paragraph": int(item["start"]) + 1,
-                    "end_paragraph": int(item["end"]) + 1,
-                    "raw_score": item["raw_score"],
-                    "threshold": item["threshold"],
-                    "probability": item["probability"],
-                    "visible_chars": item.get("visible_chars", item["weight"]),
-                    "token_count": item.get("token_count"),
-                    "weight": item["weight"],
-                    "score_type": item["score_type"],
-                    "status": item.get("status", DETECTABLE_STATUS),
-                    "truncated": item.get("truncated", False),
-                }
-                for index, item in enumerate(paragraph_scores)
-            ],
-        }
-    )
+    options["repre_guard"] = {
+        "raw_score": raw_score,
+        "threshold": threshold,
+        "label": label,
+        "model_name": model_name,
+        "provider_model_name": provider_model_name,
+        "score_type": score_type,
+        "segments": [
+            {
+                "index": index,
+                "start": item["start"],
+                "end": item["end"],
+                "start_paragraph": int(item["start"]) + 1,
+                "end_paragraph": int(item["end"]) + 1,
+                "raw_score": item["raw_score"],
+                "threshold": item["threshold"],
+                "probability": item["probability"],
+                "visible_chars": item.get("visible_chars", item["weight"]),
+                "token_count": item.get("token_count"),
+                "weight": item["weight"],
+                "score_type": item["score_type"],
+                "status": item.get("status", DETECTABLE_STATUS),
+                "truncated": item.get("truncated", False),
+            }
+            for index, item in enumerate(paragraph_scores)
+        ],
+    }
 
     user_id = current_actor.user.id if current_actor.user else None
     if actor_type == "user" and user_id is None:
