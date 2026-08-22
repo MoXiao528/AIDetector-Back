@@ -1,3 +1,4 @@
+import os
 import sys
 import uuid
 from collections.abc import Generator
@@ -7,6 +8,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+os.environ.setdefault(
+    "REPRE_GUARD_SERVICE_TOKEN",
+    "test-repre-guard-service-token-1234567890",
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:

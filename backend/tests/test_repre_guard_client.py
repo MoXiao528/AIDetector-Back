@@ -1,8 +1,13 @@
+from contextlib import asynccontextmanager
+
 import httpx
 import pytest
 
 import app.services.repre_guard_client as client_module
 from app.services.repre_guard_client import HEALTH_PROBE_TEXT, RepreGuardClient, RepreGuardError
+
+SERVICE_TOKEN = "test-repre-guard-service-token-1234567890"
+SERVICE_HEADERS = {"X-RepreGuard-Token": SERVICE_TOKEN}
 
 
 def _detect_payload():
@@ -26,13 +31,13 @@ def _build_async_client(monkeypatch, calls, responder):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url):
-            calls.append(("GET", url, None))
-            return responder("GET", url, None)
+        @asynccontextmanager
+        async def stream(self, method, url, *, headers, json=None):
+            calls.append((method, url, json, headers))
+            yield responder(method, url, json)
 
-        async def post(self, url, json):
-            calls.append(("POST", url, json))
-            return responder("POST", url, json)
+        async def aclose(self):
+            return None
 
     monkeypatch.setattr(client_module.httpx, "AsyncClient", DummyAsyncClient)
 
@@ -49,12 +54,13 @@ async def test_detect_uses_explicit_detect_url(monkeypatch):
     client = RepreGuardClient(
         base_url="https://detect.internal.example.com",
         detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php",
+        service_token=SERVICE_TOKEN,
     )
     data = await client.detect("test payload")
 
     assert data["model_name"] == "openai-community/roberta-base-openai-detector"
     assert calls == [
-        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "test payload"}),
+        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "test payload"}, SERVICE_HEADERS),
     ]
 
 
@@ -67,11 +73,11 @@ async def test_detect_uses_legacy_base_url_suffix(monkeypatch):
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
     await client.detect("legacy payload")
 
     assert calls == [
-        ("POST", "https://detect.internal.example.com/detect", {"text": "legacy payload"}),
+        ("POST", "https://detect.internal.example.com/detect", {"text": "legacy payload"}, SERVICE_HEADERS),
     ]
 
 
@@ -84,11 +90,14 @@ async def test_detect_accepts_direct_detect_url_from_legacy_setting(monkeypatch)
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(base_url="https://umcat.cis.um.edu.mo/api/aidetect.php")
+    client = RepreGuardClient(
+        base_url="https://umcat.cis.um.edu.mo/api/aidetect.php",
+        service_token=SERVICE_TOKEN,
+    )
     await client.detect("compat payload")
 
     assert calls == [
-        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "compat payload"}),
+        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "compat payload"}, SERVICE_HEADERS),
     ]
 
 
@@ -101,12 +110,15 @@ async def test_health_uses_detect_probe_when_only_detect_endpoint_is_available(m
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php")
+    client = RepreGuardClient(
+        detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php",
+        service_token=SERVICE_TOKEN,
+    )
     data = await client.health()
 
     assert data == {"status": "ok", "mode": "detect_probe"}
     assert calls == [
-        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": HEALTH_PROBE_TEXT}),
+        ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": HEALTH_PROBE_TEXT}, SERVICE_HEADERS),
     ]
 
 
@@ -122,12 +134,13 @@ async def test_health_uses_explicit_health_url(monkeypatch):
     client = RepreGuardClient(
         detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php",
         health_url="https://umcat.cis.um.edu.mo/api/health.php",
+        service_token=SERVICE_TOKEN,
     )
     data = await client.health()
 
     assert data == {"status": "ok"}
     assert calls == [
-        ("GET", "https://umcat.cis.um.edu.mo/api/health.php", None),
+        ("GET", "https://umcat.cis.um.edu.mo/api/health.php", None, SERVICE_HEADERS),
     ]
 
 
@@ -142,7 +155,7 @@ async def test_detect_rejects_missing_score_type(monkeypatch):
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
     with pytest.raises(RepreGuardError) as exc_info:
         await client.detect("bad payload")
 
@@ -161,7 +174,7 @@ async def test_detect_rejects_bad_numeric_payload(monkeypatch):
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
     with pytest.raises(RepreGuardError) as exc_info:
         await client.detect("bad payload")
 
@@ -181,9 +194,55 @@ async def test_detect_rejects_probability_out_of_range(monkeypatch):
 
     _build_async_client(monkeypatch, calls, responder)
 
-    client = RepreGuardClient(base_url="https://detect.internal.example.com")
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
     with pytest.raises(RepreGuardError) as exc_info:
         await client.detect("bad payload")
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.code == "INVALID_DETECT_RESPONSE"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_detect_maps_auth_failure_to_stable_generic_error(monkeypatch, status_code):
+    calls = []
+
+    def responder(method, url, payload):
+        return httpx.Response(
+            status_code,
+            json={"detail": {"code": "INTERNAL_SECRET", "message": "token mismatch: secret-value"}},
+            request=httpx.Request(method, url, json=payload),
+        )
+
+    _build_async_client(monkeypatch, calls, responder)
+
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
+    with pytest.raises(RepreGuardError) as exc_info:
+        await client.detect("payload")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "DETECT_SERVICE_AUTH_FAILED"
+    assert exc_info.value.message == "detect service authentication failed"
+    assert exc_info.value.detail is None
+
+
+@pytest.mark.anyio
+async def test_detect_rejects_streamed_response_over_128_kib(monkeypatch):
+    calls = []
+
+    def responder(method, url, payload):
+        return httpx.Response(
+            200,
+            content=b"x" * (131072 + 1),
+            headers={"content-length": "1", "content-type": "application/json"},
+            request=httpx.Request(method, url, json=payload),
+        )
+
+    _build_async_client(monkeypatch, calls, responder)
+
+    client = RepreGuardClient(base_url="https://detect.internal.example.com", service_token=SERVICE_TOKEN)
+    with pytest.raises(RepreGuardError) as exc_info:
+        await client.detect("payload")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "DETECT_SERVICE_RESPONSE_TOO_LARGE"

@@ -64,6 +64,8 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 
 - `POST /api/v1/detect` 是正式检测入口，`POST /api/scan` 是旧客户端兼容入口，两者走同一套检测实现。
 - 下游 RepreGuard 必须返回 `score_type="probability"`；缺失或非法分数、标签、阈值会转成 `INVALID_DETECT_RESPONSE`。
+- 后端调用 RepreGuard 的 `/detect`、`/health` 和 readiness probe 时统一携带 `X-RepreGuard-Token`；Token 至少 32 个可打印 ASCII 字符，必须独立生成，不能复用用户 JWT 或后端 `SECRET_KEY`。
+- RepreGuard 响应按实际数据流限制为 128 KiB；401/403 不透传检测端内部信息，统一转换成 `DETECT_SERVICE_AUTH_FAILED`。
 - AI / HUMAN 标签、摘要百分比和段落高亮统一按检测端返回的 `threshold` 解释，不再沿用旧的 `0.34 / 0.67` 概率分档。
 - 后端分段保留原始空白和缩进，避免代码、JSON、路径类文本在送检前被展示层 normalize。
 - 配额统计优先使用 `quota_usage` ledger；手工历史记录不再隐式消耗 quota。
@@ -110,7 +112,11 @@ DETECT_SERVICE_URL=http://host.docker.internal:9000
 DETECT_SERVICE_DETECT_URL=
 DETECT_SERVICE_HEALTH_URL=http://host.docker.internal:9000/health
 DETECT_SERVICE_TIMEOUT=60
+REPRE_GUARD_SERVICE_TOKEN=replace-me
 ```
+
+`REPRE_GUARD_SERVICE_TOKEN` 必须与检测端进程使用的值完全一致。缺失、少于 32 字符或包含非 ASCII 字符时，API 会拒绝启动。
+可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一次，然后把结果分别写入后端 `.env` 和检测端进程环境变量。
 
 ### `.env.ops.example`
 
@@ -236,8 +242,13 @@ POSTGRES_USER=aidetector_app
 POSTGRES_PASSWORD=强业务密码
 POSTGRES_DB=AIDetector
 BACKEND_CORS_ORIGINS=https://你的域名
-DETECT_SERVICE_DETECT_URL=https://你的检测服务地址
+DETECT_SERVICE_URL=https://你的RepreGuard地址
+DETECT_SERVICE_DETECT_URL=
+DETECT_SERVICE_HEALTH_URL=https://你的RepreGuard地址/health
+REPRE_GUARD_SERVICE_TOKEN=独立生成的至少32位强随机串
 ```
+
+生产环境实际使用的 detect / health 端点必须是 HTTPS 且同源；旧 `.php` 检测地址只保留开发兼容，不能作为生产配置。
 
 `.env.ops`
 
@@ -294,6 +305,7 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 - 反代层统一处理 `/api`
 - `.env` 只放运行账号
 - `.env.ops` 只放管理员账号
+- 后端与 RepreGuard 使用同一个独立 `REPRE_GUARD_SERVICE_TOKEN`
 
 ## 手工维护
 

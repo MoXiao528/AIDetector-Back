@@ -13,6 +13,7 @@
 - API 长期运行在 `aidetector_app`
 - `.env` 只存运行账号
 - `.env.ops` 只存管理员账号
+- 后端与 RepreGuard 使用同一个独立服务 Token
 - `/api/v1/health` 正常
 - `/api/v1/ready` 正常
 
@@ -85,8 +86,13 @@ POSTGRES_USER=aidetector_app
 POSTGRES_PASSWORD=你的强业务密码
 POSTGRES_DB=AIDetector
 BACKEND_CORS_ORIGINS=https://你的域名
-DETECT_SERVICE_DETECT_URL=https://你的检测服务地址
+DETECT_SERVICE_URL=https://你的RepreGuard地址
+DETECT_SERVICE_DETECT_URL=
+DETECT_SERVICE_HEALTH_URL=https://你的RepreGuard地址/health
+REPRE_GUARD_SERVICE_TOKEN=独立生成的至少32位强随机串
 ```
+
+`REPRE_GUARD_SERVICE_TOKEN` 不能复用用户 JWT、后端 `SECRET_KEY` 或数据库密码，且必须与 RepreGuard 进程配置完全一致。生产 detect / health 端点必须使用 HTTPS、保持同源，不能使用旧 `.php` 地址。
 
 ## 6. 准备运维 `.env.ops`
 
@@ -179,6 +185,7 @@ WHERE datname = 'AIDetector';
 - `aidetector_app` 已强密码
 - `.env` 使用 `aidetector_app`
 - `.env.ops` 保存 `postgres`
+- 后端与 RepreGuard 的独立服务 Token 一致
 - 生产目录没有 `docker-compose.override.yml`
 - `docker compose ps` 没有 DB 宿主机端口映射
 - 云安全组没有开放 `5432` / `15432`

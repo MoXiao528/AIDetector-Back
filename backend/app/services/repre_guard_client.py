@@ -14,6 +14,8 @@ REQUIRED_RESPONSE_KEYS = ("score", "threshold", "label", "model_name", "score_ty
 HEALTH_PROBE_TEXT = "This is a readiness probe."
 VALID_LABELS = {"AI", "HUMAN"}
 VALID_SCORE_TYPES = {"probability", "raw_logit"}
+SERVICE_TOKEN_HEADER = "X-RepreGuard-Token"
+MAX_DETECT_RESPONSE_BYTES = 128 * 1024
 
 
 class RepreGuardError(Exception):
@@ -41,6 +43,7 @@ class RepreGuardClient:
         timeout: float | None = None,
         detect_url: str | None = None,
         health_url: str | None = None,
+        service_token: str | None = None,
     ) -> None:
         resolved_base_url = base_url if base_url is not None else settings.detect_service_url
         resolved_detect_url = detect_url if detect_url is not None else (
@@ -54,6 +57,11 @@ class RepreGuardClient:
         self.detect_url = self._normalize_url(resolved_detect_url)
         self.health_url = self._normalize_url(resolved_health_url)
         self.timeout = timeout or settings.detect_service_timeout
+        self.service_token = (
+            settings.repre_guard_service_token.get_secret_value() if service_token is None else service_token
+        )
+        if len(self.service_token) < 32 or any(not 0x21 <= ord(char) <= 0x7E for char in self.service_token):
+            raise ValueError("RepreGuard service token must contain at least 32 printable ASCII characters.")
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -93,6 +101,43 @@ class RepreGuardClient:
         if self.detect_url or self._looks_like_direct_detect_url(self.base_url):
             return None
         return f"{self.base_url}/health"
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_payload: Dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        headers = {SERVICE_TOKEN_HEADER: self.service_token}
+        async with self._get_client().stream(method, url, headers=headers, json=json_payload) as resp:
+            declared_size = resp.headers.get("content-length")
+            if declared_size:
+                try:
+                    if int(declared_size) > MAX_DETECT_RESPONSE_BYTES:
+                        raise RepreGuardError(
+                            "detect service response exceeded 128 KiB",
+                            code="DETECT_SERVICE_RESPONSE_TOO_LARGE",
+                        )
+                except ValueError:
+                    pass
+
+            content = bytearray()
+            async for chunk in resp.aiter_bytes():
+                if len(content) + len(chunk) > MAX_DETECT_RESPONSE_BYTES:
+                    raise RepreGuardError(
+                        "detect service response exceeded 128 KiB",
+                        code="DETECT_SERVICE_RESPONSE_TOO_LARGE",
+                    )
+                content.extend(chunk)
+
+            return httpx.Response(
+                status_code=resp.status_code,
+                headers=resp.headers,
+                content=bytes(content),
+                request=resp.request,
+                extensions=resp.extensions,
+            )
 
     @staticmethod
     def _validate_detect_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,6 +225,13 @@ class RepreGuardClient:
 
     @staticmethod
     def _raise_for_error_response(resp: httpx.Response) -> None:
+        if resp.status_code in {401, 403}:
+            raise RepreGuardError(
+                "detect service authentication failed",
+                status_code=502,
+                code="DETECT_SERVICE_AUTH_FAILED",
+            )
+
         payload = RepreGuardClient._decode_error_payload(resp)
         normalized_payload = payload.get("detail") if isinstance(payload, dict) and isinstance(payload.get("detail"), dict) else payload
 
@@ -205,7 +257,7 @@ class RepreGuardClient:
             return {"status": "ok", "mode": "detect_probe"}
 
         try:
-            resp = await self._get_client().get(health_url)
+            resp = await self._request("GET", health_url)
         except httpx.RequestError as exc:
             raise RepreGuardError(f"failed to call detect service health endpoint: {exc}") from exc
 
@@ -229,7 +281,7 @@ class RepreGuardClient:
         detect_url = self._resolve_detect_url()
 
         try:
-            resp = await self._get_client().post(detect_url, json=payload)
+            resp = await self._request("POST", detect_url, json_payload=payload)
         except httpx.RequestError as exc:
             raise RepreGuardError(f"failed to call detect service: {exc}") from exc
 
