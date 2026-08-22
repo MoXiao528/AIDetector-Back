@@ -2,6 +2,12 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 1.3.0 - 2026-08-22
+- Added `POST /api/v1/auth/logout` to revoke the supplied current user access credential and clear its access cookie; an absent or already-revoked credential remains idempotent.
+- Revocation applies only to the credential presented to logout; access tokens issued by another login remain valid.
+- Existing JWTs without `iss`, `aud`, `iat`, and `jti` are rejected after this change. Users must log in again; guests with a valid recovery cookie can obtain a replacement access token.
+- Refresh tokens, refresh endpoints, and all-device logout are not part of this contract version.
+
 ## 1.2.0 - 2026-08-20
 - Added `GET /api/v1/auth/guest` to preview only guest-session activity and the unclaimed server-history count, including recovery-cookie-only sessions, without returning detection contents or creating a new guest session.
 - Added idempotent `DELETE /api/v1/auth/guest` so clients can revoke a guest capability and clear its HttpOnly recovery cookie before discarding browser-local guest data.

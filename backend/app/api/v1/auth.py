@@ -6,7 +6,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
@@ -15,6 +16,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.db.deps import CurrentUserDep, SessionDep, TokenDep, _decode_token
 from app.models.detection import Detection
 from app.models.guest_session import GuestSession
+from app.models.revoked_access_token import RevokedAccessToken
 from app.models.user import User
 from app.schemas import (
     ErrorResponse,
@@ -415,9 +417,39 @@ async def discard_guest_session(
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="清除登录会话",
+    summary="撤销当前登录凭证",
 )
-async def logout() -> Response:
+async def logout(
+    db: SessionDep,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    auth_cookie: Annotated[str | None, Cookie(alias=AUTH_COOKIE_NAME)] = None,
+) -> Response:
+    token = _get_optional_bearer_token(authorization)
+    if authorization is not None and token is None:
+        raise _invalid_credentials_error()
+
+    resolved_token = token or auth_cookie
+    if resolved_token is not None:
+        token_data = _decode_token(resolved_token)
+        if token_data.sub_type != "user":
+            raise _invalid_credentials_error()
+
+        now = datetime.now(timezone.utc)
+        jti = str(token_data.jti)
+        try:
+            db.execute(delete(RevokedAccessToken).where(RevokedAccessToken.expires_at <= now))
+            db.merge(
+                RevokedAccessToken(
+                    jti=jti,
+                    expires_at=datetime.fromtimestamp(token_data.exp, tz=timezone.utc),
+                )
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if db.get(RevokedAccessToken, jti) is None:
+                raise
+
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_auth_cookie(response)
     return response

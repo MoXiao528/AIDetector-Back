@@ -1,13 +1,15 @@
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
+import jwt
 import pytest
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from starlette.requests import Request
-from uuid import UUID
 
-from app.api.v1.auth import login, logout, read_current_user, register_user
+from app.api.v1.auth import login, read_current_user, register_user
+from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
 from app.core.roles import UserRole
 from app.core.security import create_access_token
@@ -24,6 +26,7 @@ LONG_TEXT = (
     "while still remaining deterministic for quota accounting across repeated guest sessions. "
 ) * 3
 LONG_TEXT = LONG_TEXT.strip()
+REQUIRED_ACCESS_TOKEN_CLAIMS = {"iss", "aud", "iat", "jti", "exp"}
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +80,36 @@ def _issue_guest_session(client: TestClient) -> tuple[str, str, str, str]:
     return guest_id, access_token, cookie_name, refresh_cookie
 
 
+def _issue_user_tokens(client: TestClient, email: str, *, count: int = 1) -> list[str]:
+    register_response = client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "StrongPass!23"},
+    )
+    assert register_response.status_code == 201, register_response.text
+
+    tokens = []
+    for _ in range(count):
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"identifier": email, "password": "StrongPass!23"},
+        )
+        assert login_response.status_code == 200, login_response.text
+        token = _response_value(login_response.json(), "access_token", "accessToken")
+        assert token
+        tokens.append(token)
+
+    client.cookies.clear()
+    return tokens
+
+
+def _decode_unverified(token: str) -> dict:
+    return jwt.decode(token, options={"verify_signature": False})
+
+
+def _resign_claims(claims: dict) -> str:
+    return jwt.encode(claims, get_settings().secret_key, algorithm="HS256")
+
+
 def _add_detection(
     db_session,
     *,
@@ -117,6 +150,79 @@ async def test_register_login_and_me(db_session, unique_email):
     me = await read_current_user(current_user=authenticated_user)
     assert me.email == unique_email
     assert getattr(me.role, "value", me.role) == "INDIVIDUAL"
+
+
+def test_login_access_token_has_required_claims_and_is_accepted(db_session, unique_email):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            (access_token,) = _issue_user_tokens(client, unique_email)
+            claims = _decode_unverified(access_token)
+            me_response = client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert REQUIRED_ACCESS_TOKEN_CLAIMS <= claims.keys()
+    assert isinstance(claims["iss"], str) and claims["iss"]
+    assert isinstance(claims["aud"], str) and claims["aud"]
+    assert isinstance(claims["iat"], int)
+    assert isinstance(claims["jti"], str) and claims["jti"]
+    assert isinstance(claims["exp"], int)
+    assert claims["iat"] < claims["exp"]
+    assert me_response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "invalid_claim",
+    [
+        "missing-iss",
+        "missing-aud",
+        "missing-iat",
+        "missing-jti",
+        "missing-exp",
+        "wrong-iss",
+        "wrong-aud",
+        "malformed-jti",
+        "future-iat",
+        "expired-exp",
+    ],
+)
+def test_invalid_access_token_claims_are_rejected(invalid_claim, db_session, unique_email):
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            (access_token,) = _issue_user_tokens(client, unique_email)
+            claims = _decode_unverified(access_token)
+            missing_claims = REQUIRED_ACCESS_TOKEN_CLAIMS - claims.keys()
+            assert not missing_claims, f"login token missing required claims: {sorted(missing_claims)}"
+
+            if invalid_claim.startswith("missing-"):
+                claims.pop(invalid_claim.removeprefix("missing-"))
+            elif invalid_claim == "wrong-iss":
+                claims["iss"] = f"{claims['iss']}-wrong"
+            elif invalid_claim == "wrong-aud":
+                claims["aud"] = f"{claims['aud']}-wrong"
+            elif invalid_claim == "malformed-jti":
+                claims["jti"] = "not-a-uuid"
+            elif invalid_claim == "future-iat":
+                claims["iat"] = int(datetime.now(timezone.utc).timestamp()) + 300
+            else:
+                claims["exp"] = int(datetime.now(timezone.utc).timestamp()) - 1
+
+            invalid_token = _resign_claims(claims)
+            response = client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {invalid_token}"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
 
 
 @pytest.mark.anyio
@@ -744,8 +850,106 @@ def test_legacy_guest_token_is_rejected_by_current_actor(db_session):
     assert response.status_code == 401
 
 
-@pytest.mark.anyio
-async def test_logout_clears_auth_cookie():
-    response = await logout()
-    assert response.status_code == 204
-    assert "aid_access_token=" in response.headers.get("set-cookie", "")
+@pytest.mark.parametrize("credential_transport", ["bearer", "cookie"])
+def test_logout_revokes_only_current_access_token(credential_transport, db_session, unique_email):
+    app.dependency_overrides[get_db] = lambda: db_session
+    protected_paths = ("/api/v1/auth/me", "/api/v1/detections/")
+
+    try:
+        with TestClient(app) as client:
+            token_a, token_b = _issue_user_tokens(client, unique_email, count=2)
+            assert _decode_unverified(token_a)["jti"] != _decode_unverified(token_b)["jti"]
+            headers_a = {"Authorization": f"Bearer {token_a}"}
+            headers_b = {"Authorization": f"Bearer {token_b}"}
+
+            before_logout = {
+                path: (
+                    client.get(path, headers=headers_a).status_code,
+                    client.get(path, headers=headers_b).status_code,
+                )
+                for path in protected_paths
+            }
+            if credential_transport == "cookie":
+                client.cookies.set("aid_access_token", token_a, domain="testserver.local", path="/")
+                logout_response = client.post("/api/v1/auth/logout")
+            else:
+                logout_response = client.post("/api/v1/auth/logout", headers=headers_a)
+            cookie_after_logout = client.cookies.get("aid_access_token")
+            db_session.expunge_all()
+            repeated_logout_response = client.post("/api/v1/auth/logout", headers=headers_a)
+            after_logout = {
+                path: (
+                    client.get(path, headers=headers_a).status_code,
+                    client.get(path, headers=headers_b).status_code,
+                )
+                for path in protected_paths
+            }
+    finally:
+        app.dependency_overrides.clear()
+
+    assert before_logout == {path: (200, 200) for path in protected_paths}
+    assert logout_response.status_code == 204
+    set_cookie = logout_response.headers.get("set-cookie", "").lower()
+    assert "aid_access_token=" in set_cookie
+    assert "max-age=0" in set_cookie
+    assert cookie_after_logout is None
+    assert repeated_logout_response.status_code == 204
+    assert after_logout == {path: (401, 200) for path in protected_paths}
+
+
+@pytest.mark.parametrize(
+    ("authorization", "expected_status", "clears_cookie"),
+    [
+        (None, 204, True),
+        ("Bearer not-a-valid-jwt", 401, False),
+        ("Basic Zm9vOmJhcg==", 401, False),
+        ("Bearer ", 401, False),
+    ],
+    ids=["already-absent", "invalid-jwt", "wrong-scheme", "empty-bearer"],
+)
+def test_logout_handles_absent_and_invalid_credentials(
+    authorization,
+    expected_status,
+    clears_cookie,
+    db_session,
+):
+    app.dependency_overrides[get_db] = lambda: db_session
+    headers = {"Authorization": authorization} if authorization is not None else {}
+
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/v1/auth/logout", headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == expected_status
+    assert ("aid_access_token=" in response.headers.get("set-cookie", "")) is clears_cookie
+
+
+def test_logout_rejects_expired_and_guest_access_tokens(db_session):
+    expired_user_token = create_access_token(
+        subject="1",
+        expires_delta=timedelta(seconds=-1),
+        extra_claims={"sub_type": "user"},
+    )
+    guest_id = "5db45cb0-c886-4d12-88ac-d798461264a7"
+    guest_token = create_access_token(
+        subject=guest_id,
+        extra_claims={"sub_type": "guest", "sid": guest_id},
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            responses = [
+                client.post(
+                    "/api/v1/auth/logout",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                for token in (expired_user_token, guest_token)
+            ]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert [response.status_code for response in responses] == [401, 401]
+    assert all("aid_access_token=" not in response.headers.get("set-cookie", "") for response in responses)

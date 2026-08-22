@@ -1,7 +1,7 @@
 """认证相关的 Pydantic 模型。"""
 
-from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import ConfigDict, EmailStr, Field
 
@@ -35,8 +35,11 @@ class Token(SchemaBase):
 
 
 class TokenPayload(SchemaBase):
-    sub: str | None = None
-    exp: int | None = None
-    iat: datetime | None = None
+    sub: str
+    iss: str
+    aud: str
+    iat: int
+    exp: int
+    jti: UUID
     sub_type: Literal["user", "guest"]
     sid: str | None = None

@@ -6,5 +6,6 @@ import app.models.api_key  # noqa: F401
 import app.models.detection  # noqa: F401
 import app.models.guest_session  # noqa: F401
 import app.models.quota_usage  # noqa: F401
+import app.models.revoked_access_token  # noqa: F401
 import app.models.scan_example  # noqa: F401
 import app.models.team  # noqa: F401

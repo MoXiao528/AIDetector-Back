@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.roles import UserRole, has_required_role, normalize_role
-from app.core.security import hash_api_key
+from app.core.security import JWT_AUDIENCE, JWT_ISSUER, hash_api_key
 from app.db.session import get_db
 from app.models.api_key import API_KEY_SCOPES, APIKey, APIKeyStatus
 from app.models.guest_session import GuestSession
+from app.models.revoked_access_token import RevokedAccessToken
 from app.models.user import User
 from app.schemas import TokenPayload
 
@@ -75,7 +76,49 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if token_data.sub is None:
+    return _resolve_active_user(db, token_data)
+
+
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+@dataclass
+class ActorContext:
+    actor_type: str
+    actor_id: str
+    user: User | None = None
+    auth_method: Literal["token", "api_key"] = "token"
+    scopes: frozenset[str] = field(default_factory=frozenset)
+    api_key_id: int | None = None
+
+
+def _decode_token(token: str) -> TokenPayload:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require": ["sub", "sub_type", "iss", "aud", "iat", "exp", "jti"]},
+        )
+        return TokenPayload(**payload)
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (jwt.InvalidTokenError, ValidationError) as exc:  # pragma: no cover - JWT 库内部异常
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def _resolve_active_user(db: Session, token_data: TokenPayload) -> User:
+    if db.get(RevokedAccessToken, str(token_data.jti)) is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -100,37 +143,6 @@ def get_current_user(
         )
 
     return user
-
-
-CurrentUserDep = Annotated[User, Depends(get_current_user)]
-
-
-@dataclass
-class ActorContext:
-    actor_type: str
-    actor_id: str
-    user: User | None = None
-    auth_method: Literal["token", "api_key"] = "token"
-    scopes: frozenset[str] = field(default_factory=frozenset)
-    api_key_id: int | None = None
-
-
-def _decode_token(token: str) -> TokenPayload:
-    try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
-        return TokenPayload(**payload)
-    except jwt.ExpiredSignatureError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-    except (jwt.InvalidTokenError, ValidationError) as exc:  # pragma: no cover - JWT 库内部异常
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
 
 
 def _get_active_guest_session_id(db: Session, session_id: str, *, lock: bool = False) -> str:
@@ -223,13 +235,6 @@ def get_current_actor(
     if api_key_header:
         raise _ambiguous_credentials_error()
 
-    if token_data.sub is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
     actor_type = token_data.sub_type
     if actor_type == "guest":
         session_id = _resolve_active_guest_session_id(db, token_data)
@@ -242,22 +247,7 @@ def get_current_actor(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        user_id = int(token_data.sub)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - 非数字 sub
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Inactive or invalid user",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    user = _resolve_active_user(db, token_data)
 
     return ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AIDetector API
-  version: 1.2.0
-  description: V1.2 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
+  version: 1.3.0
+  description: V1.3 active contract baseline for auth, detection, history, quota, admin, report, key, and team APIs.
 servers:
   - url: https://api.example.com
     description: Production
@@ -64,6 +64,24 @@ paths:
                 $ref: '#/components/schemas/UserResponse'
         '409':
           description: Email or name conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Log out current user credential
+      description: Revokes only the supplied current user access token and clears the access cookie. An absent or already-revoked credential is handled idempotently; an invalid, expired, or non-user credential fails closed. Access tokens issued by separate logins remain valid; refresh and all-device logout are not part of this contract.
+      operationId: logout
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        '204':
+          description: Current user access token revoked or already absent, and access cookie cleared
+        '401':
+          description: Supplied access token is invalid, expired, or not a user token
           content:
             application/json:
               schema:
