@@ -116,7 +116,7 @@ REPRE_GUARD_SERVICE_TOKEN=replace-me
 ```
 
 `REPRE_GUARD_SERVICE_TOKEN` 必须与检测端进程使用的值完全一致。缺失、少于 32 字符或包含非 ASCII 字符时，API 会拒绝启动。
-可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一次，然后把结果分别写入后端 `.env` 和检测端进程环境变量。
+可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一次，然后把结果分别写入后端 `.env` 和 RepreGuard 项目根目录 `.env`；容器或服务管理器显式注入的环境变量仍可覆盖文件值。
 
 ### `.env.ops.example`
 
