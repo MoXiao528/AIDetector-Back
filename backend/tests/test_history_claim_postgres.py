@@ -25,6 +25,7 @@ from app.core.roles import UserRole
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.detection import Detection
+from app.models.detection_request import DetectionRequest
 from app.models.guest_session import GuestSession
 from app.models.quota_usage import QuotaUsage
 from app.models.user import User
@@ -143,6 +144,12 @@ def _cleanup_claim_case(postgres_engine, case: dict[str, object]) -> None:
     with Session(postgres_engine) as session:
         session.rollback()
         session.execute(
+            delete(DetectionRequest).where(
+                DetectionRequest.actor_type == "guest",
+                DetectionRequest.actor_id == guest_id,
+            )
+        )
+        session.execute(
             delete(Detection).where(
                 (Detection.id == detection_id)
                 | (Detection.actor_id == guest_id)
@@ -172,6 +179,7 @@ def test_postgres_claim_waits_for_locked_guest_detection_and_migrates_its_record
     claim_pid_ready = Event()
     detect_backend_pid: dict[str, int] = {}
     claim_backend_pid: dict[str, int] = {}
+    guest_lock_calls = 0
     get_active_guest_session_id = detections_api._get_active_guest_session_id
 
     async def _successful_detect(segments):
@@ -187,11 +195,14 @@ def test_postgres_claim_waits_for_locked_guest_detection_and_migrates_its_record
         ]
 
     def _hold_after_final_guest_lock(db, session_id, *, lock=False):
+        nonlocal guest_lock_calls
         active_session_id = get_active_guest_session_id(db, session_id, lock=lock)
         if lock:
-            detect_backend_pid["value"] = db.scalar(select(func.pg_backend_pid()))
-            final_guest_lock_acquired.set()
-            assert release_detection.wait(timeout=5)
+            guest_lock_calls += 1
+            if guest_lock_calls == 2:
+                detect_backend_pid["value"] = db.scalar(select(func.pg_backend_pid()))
+                final_guest_lock_acquired.set()
+                assert release_detection.wait(timeout=5)
         return active_session_id
 
     def _claim_session():
@@ -215,7 +226,10 @@ def test_postgres_claim_waits_for_locked_guest_detection_and_migrates_its_record
                     )
                     * 3
                 },
-                headers={"Authorization": f"Bearer {case['guest_token']}"},
+                headers={
+                    "Authorization": f"Bearer {case['guest_token']}",
+                    "Idempotency-Key": str(uuid4()),
+                },
             )
 
     def _run_claim():
@@ -352,7 +366,10 @@ def test_postgres_claim_prevents_inflight_guest_detection_from_writing_after_rev
                     )
                     * 3
                 },
-                headers={"Authorization": f"Bearer {case['guest_token']}"},
+                headers={
+                    "Authorization": f"Bearer {case['guest_token']}",
+                    "Idempotency-Key": str(uuid4()),
+                },
             )
 
     try:
@@ -394,7 +411,8 @@ def test_postgres_claim_prevents_inflight_guest_detection_from_writing_after_rev
             assert [(record.user_id, record.actor_type, record.actor_id) for record in records] == [
                 (case["user_ids"][0], "user", str(case["user_ids"][0]))
             ]
-            assert quota_usage is None
+            assert quota_usage is not None
+            assert quota_usage.used == 15
     finally:
         release_inference.set()
         _cleanup_claim_case(postgres_engine, case)

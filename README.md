@@ -62,7 +62,8 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 
 ## V2.0 检测契约
 
-- `POST /api/v1/detect` 是正式检测入口，`POST /api/scan` 是旧客户端兼容入口，两者走同一套检测实现。
+- `POST /api/v1/detect` 是正式检测入口；`/api/v1/scan/detect`、`/api/v1/scan`、`/api/scan/detect`、`/api/scan` 是兼容入口，五者走同一套检测实现。
+- 五个入口硬切要求 UUID `Idempotency-Key`：新逻辑请求生成新 key，同一次请求重试复用原 key；处理中返回带 `Retry-After` 的 `409`，请求冲突返回 `409`，结果无法回放返回 `410`。
 - 下游 RepreGuard 必须返回 `score_type="probability"`；缺失或非法分数、标签、阈值会转成 `INVALID_DETECT_RESPONSE`。
 - 后端调用 RepreGuard 的 `/detect`、`/health` 和 readiness probe 时统一携带 `X-RepreGuard-Token`；Token 至少 32 个可打印 ASCII 字符，必须独立生成，不能复用用户 JWT 或后端 `SECRET_KEY`。
 - RepreGuard 响应按实际数据流限制为 128 KiB；401/403 不透传检测端内部信息，统一转换成 `DETECT_SERVICE_AUTH_FAILED`。

@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from app.db.deps import QuotaActorDep, SessionDep
 from app.schemas import ErrorResponse, QuotaResponse
-from app.services.quota_service import get_quota_limit, get_today_bounds, get_used_today
+from app.services.quota_service import get_effective_used_today, get_quota_limit, get_today_bounds
 
 router = APIRouter(tags=["quota"])
 
@@ -18,7 +18,7 @@ async def get_quota(
     current_actor: QuotaActorDep,
 ) -> QuotaResponse:
     day_start, day_end = get_today_bounds()
-    used_today = get_used_today(
+    used_today = get_effective_used_today(
         db,
         actor_type=current_actor.actor_type,
         actor_id=current_actor.actor_id,

@@ -99,6 +99,7 @@ D:\Anaconda\envs\lab\python.exe .\scripts\loadtest\run_loadtest.py `
 
 ## Notes
 
+- Every logical detection request gets a fresh UUID `Idempotency-Key`. Generic scenarios receive it as `{{idempotency_key}}`; a retry of the same logical operation must reuse that original value instead of rebuilding the runtime context.
 - `detect_member` defaults to `rounds=1`, and should use `member_bearer_tokens` so detect traffic is spread across multiple member accounts.
 - `detect_guest_pool` is disabled by default. If you enable it, use multiple guest tokens.
 - Auth endpoints are included only as rate-limit verification scenarios, not as true performance tests.

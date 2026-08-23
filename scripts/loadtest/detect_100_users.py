@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -399,6 +400,7 @@ async def detect_once(
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token.value}",
+                "Idempotency-Key": str(uuid4()),
             },
             json={"text": text, "functions": ["scan"]},
         )

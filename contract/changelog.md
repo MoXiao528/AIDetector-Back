@@ -2,6 +2,13 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 2.0.0 - 2026-08-23
+- **Breaking hard cut:** all five detection entry points (`/api/v1/detect`, `/api/v1/scan/detect`, `/api/v1/scan`, `/api/scan/detect`, and `/api/scan`) require an `Idempotency-Key` header containing a UUID. Missing or malformed keys return `422`; the server does not generate a fallback key.
+- One logical request owns one key. A transport retry must reuse the original key, while a new user-initiated detection must use a new UUID.
+- Reusing the same actor/key for a different canonical request returns `409` without starting inference or consuming quota. An already-processing request also returns `409` and supplies `Retry-After` in whole seconds.
+- If a completed idempotency record can no longer replay its result, the server returns `410`; that key never starts inference again.
+- Clients and scripts must be upgraded before deploying this contract. There is no compatibility grace period for callers that omit the header.
+
 ## 1.3.0 - 2026-08-22
 - Added `POST /api/v1/auth/logout` to revoke the supplied current user access credential and clear its access cookie; an absent or already-revoked credential remains idempotent.
 - Revocation applies only to the credential presented to logout; access tokens issued by another login remain valid.

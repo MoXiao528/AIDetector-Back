@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -272,10 +273,10 @@ async def test_api_key_keeps_detect_and_quota_access(db_session, unique_email, r
     )
     detect_responses = [
         route_client.post(
-            path,
-            json={"text": DETECT_TEXT, "functions": ["scan"]},
-            headers=api_key_headers,
-        )
+                path,
+                json={"text": DETECT_TEXT, "functions": ["scan"]},
+                headers={**api_key_headers, "Idempotency-Key": str(uuid4())},
+            )
         for path in detect_paths
     ]
     quota_response = route_client.get("/api/v1/quota", headers=api_key_headers)

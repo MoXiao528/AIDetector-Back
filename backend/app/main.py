@@ -34,6 +34,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 
@@ -48,7 +49,7 @@ def _build_error_response(status_code: int, detail: object, message: str | None 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     logger.warning("HTTPException raised", extra={"path": request.url.path, "status_code": exc.status_code})
     error = _build_error_response(status_code=exc.status_code, detail=exc.detail)
-    return JSONResponse(status_code=exc.status_code, content=error.model_dump(by_alias=True))
+    return JSONResponse(status_code=exc.status_code, content=error.model_dump(by_alias=True), headers=exc.headers)
 
 
 @app.exception_handler(RequestValidationError)

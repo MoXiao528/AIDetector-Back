@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -237,6 +238,7 @@ def build_runtime_context(
             context[key] = expand_env_placeholders(value[sequence % len(value)])
         else:
             context[key] = expand_env_placeholders(value)
+    context["idempotency_key"] = str(uuid4())
     return context
 
 

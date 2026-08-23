@@ -78,6 +78,9 @@
       "auth": "member_bearer_pool",
       "rounds": 1,
       "expected_statuses": [200],
+      "headers": {
+        "Idempotency-Key": "{{idempotency_key}}"
+      },
       "json_body": {
         "text": "{{detect_text}}",
         "functions": ["scan"]
@@ -91,6 +94,9 @@
       "auth": "guest_bearer_pool",
       "rounds": 1,
       "expected_statuses": [200],
+      "headers": {
+        "Idempotency-Key": "{{idempotency_key}}"
+      },
       "json_body": {
         "text": "{{detect_text}}",
         "functions": ["scan"]

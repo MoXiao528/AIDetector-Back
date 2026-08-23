@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from math import exp
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -118,12 +119,30 @@ def mock_repre_guard(monkeypatch):
     monkeypatch.setattr("app.services.token_chunker.get_tokenizer", lambda model_name=ROBERTA_MODEL_NAME: FakeTokenizer())
     yield
 
+
+async def _detect_once(*, payload, db, current_actor):
+    return await detect(
+        payload=payload,
+        db=db,
+        current_actor=current_actor,
+        idempotency_key=uuid4(),
+    )
+
+
+async def _detect_scan_once(*, payload, db, current_actor):
+    return await detect_scan(
+        payload=payload,
+        db=db,
+        current_actor=current_actor,
+        idempotency_key=uuid4(),
+    )
+
 @pytest.mark.anyio
 async def test_detect_with_user(db_session, unique_email):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
-    response = await detect(
+    response = await _detect_once(
         payload=DetectionRequest(
             text=LONG_TEXT,
             options={
@@ -170,7 +189,7 @@ async def test_detect_with_guest(db_session):
     )
     db_session.flush()
     actor = ActorContext(actor_type="guest", actor_id="guest-test")
-    detection = await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
+    detection = await _detect_once(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
     assert detection.detection_id > 0
     assert detection.input_text == LONG_TEXT
     assert detection.label in {"human", "ai"}
@@ -188,7 +207,7 @@ async def test_detect_with_api_key_actor(db_session, unique_email):
     )
 
     actor = get_current_actor(db=db_session, token=None, api_key_header=api_key_resp.key)
-    detection = await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
+    detection = await _detect_once(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
     assert detection.detection_id > 0
     assert detection.label in {"human", "ai"}
 
@@ -218,7 +237,7 @@ async def test_detect_saves_history(db_session, unique_email):
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
     # Call /detect
-    response = await detect(
+    response = await _detect_once(
         payload=DetectionRequest(
             text=f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}",
             functions=["scan", "polish"],
@@ -274,7 +293,7 @@ async def test_detect_scan_compat_returns_real_scan_only_payload(db_session, uni
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
-    response = await detect_scan(
+    response = await _detect_scan_once(
         payload=DetectRequest(
             text=f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}",
             functions=["scan", "polish", "translation", "citations"],
@@ -318,7 +337,7 @@ async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_e
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
     text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
-    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
     short_probability = 1.0 / (1.0 + exp(-(-1.3862943611198906 - ROBERTA_THRESHOLD)))
     long_probability = 1.0 / (1.0 + exp(-(0.4054651081081642 - ROBERTA_THRESHOLD)))
@@ -352,7 +371,7 @@ async def test_detect_rejects_text_under_minimum_visible_chars(db_session, uniqu
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
     with pytest.raises(HTTPException) as exc_info:
-        await detect(payload=DetectionRequest(text="too short"), db=db_session, current_actor=actor)
+        await _detect_once(payload=DetectionRequest(text="too short"), db=db_session, current_actor=actor)
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["code"] == "TEXT_TOO_SHORT"
@@ -378,7 +397,7 @@ async def test_detect_marks_short_paragraph_without_downstream_call(db_session, 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
     text = f"Short intro\n{LONG_PARAGRAPH_A}"
-    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
     assert calls == [LONG_PARAGRAPH_A]
     assert len(response.result.sentences) == 2
@@ -409,7 +428,7 @@ async def test_detect_merges_line_wrapped_chinese_text_for_detection(db_session,
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
-    response = await detect(payload=DetectionRequest(text=WRAPPED_CHINESE_TEXT), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=WRAPPED_CHINESE_TEXT), db=db_session, current_actor=actor)
 
     assert calls == [WRAPPED_CHINESE_TEXT]
     assert len(response.result.sentences) == 1
@@ -441,7 +460,7 @@ async def test_detect_keeps_two_long_paragraphs_independent(db_session, unique_e
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
     text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
-    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
     assert calls == [LONG_PARAGRAPH_A, LONG_PARAGRAPH_B]
     assert len(response.result.sentences) == 2
@@ -571,7 +590,7 @@ async def test_detect_retries_downstream_input_too_long(db_session, unique_email
     ) * 4
     text = text.strip()
 
-    response = await detect(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
     assert response.detection_id > 0
     assert response.result is not None
@@ -596,7 +615,7 @@ async def test_detect_supports_probability_score_type(db_session, unique_email, 
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
-    response = await detect(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
+    response = await _detect_once(payload=DetectionRequest(text=LONG_TEXT), db=db_session, current_actor=actor)
 
     assert response.label == "ai"
     assert response.score == pytest.approx(0.003)

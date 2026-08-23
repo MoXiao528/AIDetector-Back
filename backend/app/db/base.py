@@ -4,6 +4,7 @@ from app.db.base_class import Base  # noqa
 import app.models.user  # noqa: F401
 import app.models.api_key  # noqa: F401
 import app.models.detection  # noqa: F401
+import app.models.detection_request  # noqa: F401
 import app.models.guest_session  # noqa: F401
 import app.models.quota_usage  # noqa: F401
 import app.models.revoked_access_token  # noqa: F401

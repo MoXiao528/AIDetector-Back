@@ -32,17 +32,39 @@
 
 - `POST /api/v1/detect`
 
-不再作为对外契约的旧路径：
+兼容入口：
 
+- `POST /api/v1/scan/detect`
+- `POST /api/v1/scan`
+- `POST /api/scan/detect`
 - `POST /api/scan`
 
-说明：旧的 `/api/*` 路径不进入当前 OpenAPI active contract。线上前端和新集成都应该只走 `/api/v1/detect`。
+五个入口共享同一套推理、配额和幂等边界。主入口返回 `DetectionResponse`，四个兼容入口继续返回 `AnalysisResponse`；新集成仍应只使用 `/api/v1/detect`。
 
 前端主路径应该继续用：
 
 - `POST /api/v1/detect`
 
 ## 3. 当前请求语义
+
+### `Idempotency-Key`
+
+五个检测入口都强制要求请求头：
+
+```http
+Idempotency-Key: 7b8b9d42-fb91-4e0f-a801-8ec6172eed9a
+```
+
+规则：
+
+- 必须是 UUID；缺失或格式错误返回 `422`
+- 一次用户发起的逻辑检测生成一个新 UUID
+- 同一次逻辑检测遇到超时、断线或客户端重试时，必须复用原 UUID
+- 同一 actor/key 正在处理时返回 `409`，并通过 `Retry-After` 告知等待秒数
+- 同一 actor/key 换了请求内容时返回 `409`，不会启动第二次推理，也不会扣额度
+- 已完成记录无法再回放结果时返回 `410`；复用旧 key 不会重新推理
+
+这是 2.0.0 的硬切协议：服务端不补 key，也不为旧客户端保留无 key 分支。调用方必须和后端一起升级。
 
 ### `DetectRequest`
 

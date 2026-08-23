@@ -7,6 +7,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -164,7 +165,13 @@ def create_detections(session: ApiSession, member_token: str, count: int) -> lis
     for index in range(count):
         text = f"{DEFAULT_DETECT_TEXT}\n\nRequest sequence marker: {index + 1}."
         payload = {"text": text, "functions": ["scan"]}
-        data = session.request("POST", "/api/v1/detect", token=member_token, json=payload)
+        data = session.request(
+            "POST",
+            "/api/v1/detect",
+            token=member_token,
+            headers={"Idempotency-Key": str(uuid4())},
+            json=payload,
+        )
         detection_id = data.get("detection_id", data.get("detectionId"))
         history_id = data.get("history_id", data.get("historyId"))
         if detection_id is None or history_id is None:

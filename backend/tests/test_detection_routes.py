@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 import pytest
@@ -14,6 +15,10 @@ LONG_TEXT = (
     "This route-level detection sample is intentionally long enough to satisfy the non-whitespace minimum. "
     "It exercises the FastAPI route stack, dependency overrides, response serialization, and compatibility endpoints. "
 ) * 2
+
+
+def _idempotency_headers() -> dict[str, str]:
+    return {"Idempotency-Key": str(uuid4())}
 
 
 def _install_route_overrides(db_session):
@@ -58,7 +63,11 @@ def test_detect_route_rejects_reserved_repre_guard_before_inference(db_session, 
 
     try:
         with TestClient(app) as client:
-            response = client.post("/api/v1/detect", json={"text": LONG_TEXT, "options": options})
+            response = client.post(
+                "/api/v1/detect",
+                json={"text": LONG_TEXT, "options": options},
+                headers=_idempotency_headers(),
+            )
 
         assert response.status_code == 422
         assert response.json()["message"] == "Validation Error"
@@ -85,6 +94,7 @@ def test_detect_route_returns_detection_payload(db_session, monkeypatch):
             response = client.post(
                 "/api/v1/detect",
                 json={"text": LONG_TEXT, "functions": ["scan"], "options": {"language": "en"}},
+                headers=_idempotency_headers(),
             )
             assert response.status_code == 200
             payload = response.json()
@@ -110,7 +120,11 @@ def test_scan_root_compat_route_is_available(db_session, monkeypatch):
 
     try:
         with TestClient(app) as client:
-            response = client.post("/api/scan", json={"text": LONG_TEXT, "functions": ["scan"]})
+            response = client.post(
+                "/api/scan",
+                json={"text": LONG_TEXT, "functions": ["scan"]},
+                headers=_idempotency_headers(),
+            )
             assert response.status_code == 200
             payload = response.json()
             assert payload["summary"] == "AI 0% | Mixed 100% | Human 0%"
@@ -124,7 +138,11 @@ def test_detect_route_long_text_uses_business_error(db_session):
 
     try:
         with TestClient(app) as client:
-            response = client.post("/api/v1/detect", json={"text": "x" * 20001})
+            response = client.post(
+                "/api/v1/detect",
+                json={"text": "x" * 20001},
+                headers=_idempotency_headers(),
+            )
             assert response.status_code == 422
             payload = response.json()
             assert payload["code"] == "TEXT_TOO_LONG"
@@ -138,7 +156,7 @@ def test_validation_handler_shape_for_missing_text(db_session):
 
     try:
         with TestClient(app) as client:
-            response = client.post("/api/v1/detect", json={})
+            response = client.post("/api/v1/detect", json={}, headers=_idempotency_headers())
 
         assert response.status_code == 422
         payload = response.json()
@@ -157,11 +175,39 @@ def test_cors_preflight_allows_local_vite_origin(origin):
             headers={
                 "Origin": origin,
                 "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Idempotency-Key",
             },
         )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
+    assert "idempotency-key" in response.headers["access-control-allow-headers"].lower()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/detect",
+        "/api/v1/scan/detect",
+        "/api/v1/scan",
+        "/api/scan/detect",
+        "/api/scan",
+    ],
+)
+@pytest.mark.parametrize("header_value", [None, "not-a-uuid"])
+def test_all_detection_routes_require_uuid_idempotency_key(db_session, path, header_value):
+    _install_route_overrides(db_session)
+    headers = {} if header_value is None else {"Idempotency-Key": header_value}
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(path, json={"text": LONG_TEXT, "functions": ["scan"]}, headers=headers)
+
+        assert response.status_code == 422
+        assert response.json()["message"] == "Validation Error"
+        assert any(item["loc"][-1] == "Idempotency-Key" for item in response.json()["detail"])
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_app_shutdown_closes_shared_repre_guard_client(monkeypatch):

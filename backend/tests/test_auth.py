@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
 import pytest
@@ -766,7 +766,10 @@ def test_guest_recovery_cookie_rotation_preserves_identity_quota_and_history(db_
             detect_response = client.post(
                 "/api/v1/detect",
                 json={"text": LONG_TEXT},
-                headers={"Authorization": f"Bearer {first_token}"},
+                headers={
+                    "Authorization": f"Bearer {first_token}",
+                    "Idempotency-Key": str(uuid4()),
+                },
             )
             assert detect_response.status_code == 200
             detection_id = detect_response.json().get("detectionId") or detect_response.json().get("detection_id")

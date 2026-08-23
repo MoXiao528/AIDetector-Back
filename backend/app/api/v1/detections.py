@@ -1,12 +1,16 @@
 import asyncio
+import hashlib
+import json
 import re
 from datetime import datetime
 from html import escape
 from io import BytesIO
 from math import exp
+from typing import Annotated
+from uuid import UUID
 
 from docx import Document
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile, status
 from pypdf import PdfReader
 
 from app.core.config import get_settings
@@ -17,6 +21,7 @@ from app.db.deps import (
     SessionDep,
     _get_active_guest_session_id,
 )
+from app.models.detection import Detection
 from app.schemas import (
     AnalysisResponse,
     Citation,
@@ -33,7 +38,21 @@ from app.schemas import (
 from app.schemas.detection import DetectionItem
 from app.schemas.history import Analysis, Citation as HistoryCitation, Sentence as HistorySentence, Summary
 from app.services.detection_service import DetectionService
-from app.services.quota_service import QuotaExceededError, consume_quota, get_quota_limit, get_today_bounds, get_used_today
+from app.services.quota_service import (
+    DetectionActorBusyError,
+    DetectionRequestInProgressError,
+    DetectionReservationLostError,
+    IdempotencyKeyConflictError,
+    QuotaExceededError,
+    complete_detection_request,
+    consume_reserved_quota,
+    fail_detection_request,
+    get_effective_used_today,
+    get_quota_limit,
+    get_today_bounds,
+    lock_detection_settlement,
+    reserve_detection_request,
+)
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 from app.services.scan_example_service import ScanExampleService
 from app.services.token_chunker import DETECTABLE_STATUS, TOO_SHORT_STATUS, build_token_aware_segments
@@ -52,6 +71,7 @@ MAX_DETECT_CHARS = 20000
 MAX_SEGMENT_VISIBLE_CHARS = 1500
 SENTENCE_BOUNDARY_PATTERN = re.compile(r".+?(?:[。！？!?]+|[.]{1,3})(?:\s+|$)|.+?$", re.S)
 DISPLAY_MODEL_NAME = "v2.0-roberta"
+DETECTION_LEASE_BUFFER_SECONDS = 30
 
 
 def _quota_exceeded_http_error(*, limit: int, used_today: int, remaining: int) -> HTTPException:
@@ -415,6 +435,90 @@ async def _detect_segments_with_limit(segments: list[dict[str, int | str | bool]
     )
 
 
+def _build_detection_request_hash(payload: DetectionRequest, *, operation: str) -> str:
+    canonical_payload = {
+        "operation": operation,
+        "text": payload.text,
+        "functions": sorted(_normalize_detection_functions(payload.functions)),
+        "options": payload.options,
+        "editor_html": payload.editor_html,
+    }
+    canonical_json = json.dumps(
+        canonical_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def _idempotency_http_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    retry_after: int | None = None,
+) -> HTTPException:
+    headers = {"Retry-After": str(max(1, retry_after))} if retry_after is not None else None
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, "detail": None},
+        headers=headers,
+    )
+
+
+def _replay_detection_response(
+    db: SessionDep,
+    *,
+    detection_id: int | None,
+    actor_type: str,
+    actor_id: str,
+) -> DetectionResponse:
+    detection = db.get(Detection, detection_id) if detection_id is not None else None
+    if detection is None:
+        raise _idempotency_http_error(
+            status_code=status.HTTP_410_GONE,
+            code="IDEMPOTENCY_RESULT_GONE",
+            message="The stored result for this idempotency key is no longer available",
+        )
+
+    meta = detection.meta_json if isinstance(detection.meta_json, dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    repre_guard = options.get("repre_guard") if isinstance(options.get("repre_guard"), dict) else {}
+    analysis_payload = meta.get("analysis")
+    try:
+        analysis = Analysis.model_validate(analysis_payload) if isinstance(analysis_payload, dict) else None
+    except ValueError as exc:
+        raise _idempotency_http_error(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            code="IDEMPOTENCY_RESULT_INVALID",
+            message="The stored detection result cannot be reconstructed",
+        ) from exc
+
+    day_start, day_end = get_today_bounds()
+    used_today = get_effective_used_today(
+        db,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        start_time=day_start,
+        end_time=day_end,
+    )
+    limit = get_quota_limit(actor_type)
+    return DetectionResponse(
+        detection_id=detection.id,
+        label=detection.result_label,
+        score=detection.score,
+        model_name=repre_guard.get("model_name"),
+        raw_score=repre_guard.get("raw_score"),
+        threshold=repre_guard.get("threshold"),
+        currentCredits=max(limit - used_today, 0),
+        history_id=detection.id,
+        input_text=detection.input_text,
+        result=analysis,
+    )
+
+
 def _build_history_analysis(
     text: str,
     paragraph_scores: list[dict[str, float | str | int | bool]],
@@ -559,6 +663,9 @@ async def _detect_impl(
     payload: DetectionRequest,
     db: SessionDep,
     current_actor: CurrentActorDep,
+    idempotency_key: UUID,
+    *,
+    operation: str,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
@@ -594,15 +701,6 @@ async def _detect_impl(
                 },
             },
         )
-    actor_type = current_actor.actor_type
-    actor_id = current_actor.actor_id
-    day_start, day_end = get_today_bounds()
-    used_today = get_used_today(db, actor_type=actor_type, actor_id=actor_id, start_time=day_start, end_time=day_end)
-    limit = get_quota_limit(actor_type)
-
-    if used_today + chars > limit:
-        raise _quota_exceeded_http_error(limit=limit, used_today=used_today, remaining=max(limit - used_today, 0))
-
     try:
         paragraphs = _split_paragraphs(payload.text)
         merged_segments = _merge_short_paragraphs(
@@ -623,9 +721,97 @@ async def _detect_impl(
                 segment["start"] = int(merged_segment["start"])
                 segment["end"] = int(merged_segment["end"])
                 token_segments.append(segment)
-        detectable_segments = [segment for segment in token_segments if segment.get("status") == DETECTABLE_STATUS]
+    except ValueError as exc:
+        if str(exc) != "TEXT_TOO_SHORT":
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "TEXT_TOO_SHORT",
+                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
+                "detail": {
+                    "minimum": MIN_DETECT_VISIBLE_CHARS,
+                    "current": visible_chars,
+                    "remaining": max(MIN_DETECT_VISIBLE_CHARS - visible_chars, 0),
+                },
+            },
+        ) from exc
+
+    actor_type = current_actor.actor_type
+    actor_id = current_actor.actor_id
+    user_id = current_actor.user.id if current_actor.user else None
+    if actor_type == "user" and user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "USER_NOT_FOUND", "message": "User not found"},
+        )
+
+    functions = _normalize_detection_functions(payload.functions)
+    request_hash = _build_detection_request_hash(payload, operation=operation)
+    limit = get_quota_limit(actor_type)
+    lease_seconds = max(int(settings.detect_request_timeout), int(settings.detect_service_timeout))
+    lease_seconds += DETECTION_LEASE_BUFFER_SECONDS
+
+    try:
+        admission = reserve_detection_request(
+            db,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            idempotency_key=str(idempotency_key),
+            request_hash=request_hash,
+            chars=chars,
+            limit=limit,
+            lease_seconds=lease_seconds,
+        )
+        if actor_type == "guest":
+            _get_active_guest_session_id(db, actor_id, lock=True)
+        db.commit()
+    except IdempotencyKeyConflictError as exc:
+        db.commit()
+        raise _idempotency_http_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="IDEMPOTENCY_KEY_CONFLICT",
+            message="This idempotency key was already used with a different request",
+        ) from exc
+    except DetectionRequestInProgressError as exc:
+        db.commit()
+        raise _idempotency_http_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="DETECTION_IN_PROGRESS",
+            message="This detection request is still in progress",
+            retry_after=exc.retry_after,
+        ) from exc
+    except DetectionActorBusyError as exc:
+        db.commit()
+        raise _idempotency_http_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="DETECTION_ACTOR_BUSY",
+            message="Another detection request is already in progress",
+            retry_after=exc.retry_after,
+        ) from exc
+    except QuotaExceededError as exc:
+        db.commit()
+        raise _quota_exceeded_http_error(
+            limit=exc.limit,
+            used_today=exc.used_today,
+            remaining=exc.remaining,
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    if admission.state == "completed":
+        return _replay_detection_response(
+            db,
+            detection_id=admission.detection_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+
+    detectable_segments = [segment for segment in token_segments if segment.get("status") == DETECTABLE_STATUS]
+    try:
         rg_results = await _detect_segments_with_limit(detectable_segments) if detectable_segments else []
-    except TimeoutError as exc:
+    except (TimeoutError, asyncio.TimeoutError) as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail={
@@ -745,7 +931,6 @@ async def _detect_impl(
     label = "AI" if raw_score >= threshold else "HUMAN"
     provider_model_name = model_names[0] if model_names else None
     model_name = DISPLAY_MODEL_NAME
-    functions = _normalize_detection_functions(payload.functions)
 
     analysis = _build_history_analysis(
         text=payload.text,
@@ -782,57 +967,79 @@ async def _detect_impl(
         ],
     }
 
-    user_id = current_actor.user.id if current_actor.user else None
-    if actor_type == "user" and user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "USER_NOT_FOUND", "message": "User not found"},
-        )
-
-    if actor_type == "guest":
-        _get_active_guest_session_id(db, actor_id, lock=True)
-
+    request_record = None
     try:
-        quota_result = consume_quota(
+        request_record, quota_row = lock_detection_settlement(
             db,
+            admission=admission,
+            limit=limit,
+        )
+        if actor_type == "guest":
+            try:
+                _get_active_guest_session_id(db, actor_id, lock=True)
+            except HTTPException:
+                fail_detection_request(request_record)
+                db.commit()
+                raise
+
+        quota_result = consume_reserved_quota(
+            quota_row,
+            chars=admission.reserved_chars,
+            limit=limit,
+        )
+        detection = DetectionService(db).create_detection(
+            user_id=user_id,
+            text=payload.text,
+            editor_html=payload.editor_html,
+            options=options,
+            functions_used=list(functions),
+            label=label.lower(),
+            score=normalized_score,
+            commit=False,
             actor_type=actor_type,
             actor_id=actor_id,
-            chars=chars,
-            start_time=day_start,
-            limit=limit,
-            baseline_used=used_today,
+            chars_used=chars,
+            analysis=analysis.model_dump(),
         )
+        detection_id = detection.id
+        complete_detection_request(request_record, detection_id=detection_id)
+        db.commit()
     except QuotaExceededError as exc:
+        if request_record is not None:
+            fail_detection_request(request_record)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
         raise _quota_exceeded_http_error(
             limit=exc.limit,
             used_today=exc.used_today,
             remaining=exc.remaining,
         ) from exc
-
-    detection = DetectionService(db).create_detection(
-        user_id=user_id,
-        text=payload.text,
-        editor_html=payload.editor_html,
-        options=options,
-        functions_used=list(functions),
-        label=label.lower(),
-        score=normalized_score,
-        commit=True,
-        actor_type=actor_type,
-        actor_id=actor_id,
-        chars_used=chars,
-        analysis=analysis.model_dump(),
-    )
+    except DetectionReservationLostError as exc:
+        db.rollback()
+        raise _idempotency_http_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="DETECTION_RESERVATION_LOST",
+            message="The detection reservation expired or was superseded",
+            retry_after=1,
+        ) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
     return DetectionResponse(
-        detection_id=detection.id,
+        detection_id=detection_id,
         label=label.lower(),
         score=normalized_score,
         model_name=model_name,
         raw_score=raw_score,
         threshold=threshold,
         currentCredits=quota_result.remaining,
-        history_id=detection.id,
+        history_id=detection_id,
         input_text=payload.text,
         result=analysis,
     )
@@ -868,6 +1075,8 @@ def _extension_from_filename(filename: str) -> str:
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        410: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
     },
 )
@@ -875,8 +1084,15 @@ async def detect(
     payload: DetectionRequest,
     db: SessionDep,
     current_actor: DetectActorDep,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> DetectionResponse:
-    return await _detect_impl(payload=payload, db=db, current_actor=current_actor)
+    return await _detect_impl(
+        payload=payload,
+        db=db,
+        current_actor=current_actor,
+        idempotency_key=idempotency_key,
+        operation="detect",
+    )
 
 
 @scan_router.post(
@@ -887,6 +1103,8 @@ async def detect(
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        410: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
     },
 )
@@ -894,6 +1112,7 @@ async def detect_scan(
     payload: DetectRequest,
     db: SessionDep,
     current_actor: DetectActorDep,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> AnalysisResponse:
     functions = _normalize_detection_functions(payload.functions)
 
@@ -901,6 +1120,8 @@ async def detect_scan(
         payload=DetectionRequest(text=payload.text, options=None, functions=list(functions)),
         db=db,
         current_actor=current_actor,
+        idempotency_key=idempotency_key,
+        operation="scan",
     )
 
     return _build_scan_analysis_response(detection_response)
@@ -914,6 +1135,8 @@ async def detect_scan(
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        410: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
     },
 )
@@ -921,8 +1144,14 @@ async def detect_scan_root(
     payload: DetectRequest,
     db: SessionDep,
     current_actor: DetectActorDep,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> AnalysisResponse:
-    return await detect_scan(payload=payload, db=db, current_actor=current_actor)
+    return await detect_scan(
+        payload=payload,
+        db=db,
+        current_actor=current_actor,
+        idempotency_key=idempotency_key,
+    )
 
 
 @detect_router.get(
