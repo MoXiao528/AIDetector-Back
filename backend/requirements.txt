@@ -10,7 +10,7 @@ bcrypt<4
 PyJWT
 pydantic[email]
 pytest
-ruff
+ruff==0.16.4
 httpx
 pypdf
 reportlab
