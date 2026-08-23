@@ -4,18 +4,14 @@ import json
 import re
 from datetime import datetime
 from html import escape
-from io import BytesIO
 from math import exp
 from typing import Annotated
 from uuid import UUID
 
-from docx import Document
-from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile, status
-from pypdf import PdfReader
+from fastapi import APIRouter, Header, HTTPException, Query, status
 
 from app.core.config import get_settings
 from app.db.deps import (
-    ActiveMemberDep,
     CurrentActorDep,
     DetectActorDep,
     SessionDep,
@@ -30,8 +26,6 @@ from app.schemas import (
     DetectionRequest,
     DetectionResponse,
     ErrorResponse,
-    ParseFilesResponse,
-    ParsedFileResult,
     ScanExamplesResponse,
     SentenceAnalysis,
 )
@@ -62,9 +56,6 @@ detect_router = APIRouter(tags=["detections"])
 scan_router = APIRouter(prefix="/scan", tags=["scan"])
 settings = get_settings()
 
-MAX_FILE_COUNT = 5
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
 MIN_DETECT_VISIBLE_CHARS = 200
 MAX_DETECT_CHARS = 20000
@@ -1045,28 +1036,6 @@ async def _detect_impl(
     )
 
 
-def _parse_txt(content: bytes) -> str:
-    return content.decode("utf-8")
-
-
-def _parse_pdf(content: bytes) -> str:
-    reader = PdfReader(BytesIO(content))
-    pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n".join(pages).strip()
-
-
-def _parse_docx(content: bytes) -> str:
-    document = Document(BytesIO(content))
-    paragraphs = [paragraph.text for paragraph in document.paragraphs]
-    return "\n".join(paragraphs).strip()
-
-
-def _extension_from_filename(filename: str) -> str:
-    if not filename or "." not in filename:
-        return ""
-    return "." + filename.split(".")[-1].lower()
-
-
 @detect_router.post(
     "/detect",
     response_model=DetectionResponse,
@@ -1164,68 +1133,6 @@ async def get_scan_examples(
     locale: str = Query("zh-CN", description="Example locale, supports zh-CN / en-US"),
 ) -> ScanExamplesResponse:
     return ScanExampleService(db).list_examples(locale=locale)
-
-
-@router.post(
-    "/parse-files",
-    response_model=ParseFilesResponse,
-    summary="Parse uploaded files",
-    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
-)
-async def parse_files(
-    current_user: ActiveMemberDep,
-    files: list[UploadFile] = File(..., description="Uploaded files"),
-) -> ParseFilesResponse:
-    _ = current_user
-    if len(files) > MAX_FILE_COUNT:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Too many files. Max {MAX_FILE_COUNT}.",
-        )
-
-    results: list[ParsedFileResult] = []
-    for upload in files:
-        filename = upload.filename or "unknown"
-        extension = _extension_from_filename(filename)
-        if extension not in ALLOWED_EXTENSIONS:
-            results.append(
-                ParsedFileResult(
-                    file_name=filename,
-                    content=None,
-                    error=f"Unsupported file type: {extension or 'unknown'}",
-                )
-            )
-            continue
-
-        data = await upload.read()
-        if len(data) > MAX_FILE_SIZE_BYTES:
-            results.append(
-                ParsedFileResult(
-                    file_name=filename,
-                    content=None,
-                    error=f"File too large. Max {MAX_FILE_SIZE_BYTES} bytes.",
-                )
-            )
-            continue
-
-        try:
-            if extension == ".pdf":
-                content = _parse_pdf(data)
-            elif extension == ".docx":
-                content = _parse_docx(data)
-            else:
-                content = _parse_txt(data)
-            results.append(ParsedFileResult(file_name=filename, content=content, error=None))
-        except Exception as exc:  # noqa: BLE001
-            results.append(
-                ParsedFileResult(
-                    file_name=filename,
-                    content=None,
-                    error=f"Failed to parse file: {exc}",
-                )
-            )
-
-    return ParseFilesResponse(results=results)
 
 
 async def _list_detections_impl(

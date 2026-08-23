@@ -2,6 +2,11 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 3.0.0 - 2026-08-23
+- **Breaking hard removal:** removed `POST /api/v1/detections/parse-files` and the `ParseFilesResponse` / `ParsedFileResult` schemas. The removed path has no compatibility endpoint and returns `404`.
+- Raw PDF, DOCX, and TXT files are no longer accepted or parsed by the backend. Browser clients extract document text locally and submit only the resulting text through the existing detection API.
+- Direct API consumers and load-test profiles must remove the legacy multipart request before upgrading. There is no grace period or server-side file parsing fallback.
+
 ## 2.0.0 - 2026-08-23
 - **Breaking hard cut:** all five detection entry points (`/api/v1/detect`, `/api/v1/scan/detect`, `/api/v1/scan`, `/api/scan/detect`, and `/api/scan`) require an `Idempotency-Key` header containing a UUID. Missing or malformed keys return `422`; the server does not generate a fallback key.
 - One logical request owns one key. A transport retry must reuse the original key, while a new user-initiated detection must use a new UUID.

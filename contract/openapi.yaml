@@ -1,8 +1,10 @@
 openapi: 3.0.3
 info:
   title: AIDetector API
-  version: 2.0.0
-  description: V2.0 active contract baseline. Detection requests use a mandatory UUID idempotency key.
+  version: 3.0.0
+  description: >
+    V3.0 active contract baseline. Detection requests require a mandatory UUID idempotency key.
+    Raw document upload and server-side file parsing are not part of the API.
 servers:
   - url: https://api.example.com
     description: Production
@@ -574,50 +576,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScanExamplesResponse'
-  /api/v1/detections/parse-files:
-    post:
-      tags: [detection]
-      summary: Parse uploaded files
-      description: >
-        Member-only legacy parser. This endpoint currently extracts plain text content only.
-        It does not return structure-preserving HTML or block metadata.
-      operationId: parseFiles
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - files
-              properties:
-                files:
-                  type: array
-                  maxItems: 5
-                  items:
-                    type: string
-                    format: binary
-      responses:
-        '200':
-          description: Parsed upload result
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ParseFilesResponse'
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/history:
     get:
       tags: [history]
@@ -1660,30 +1618,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScanUsageExampleItem'
-    ParsedFileResult:
-      type: object
-      required:
-        - fileName
-      properties:
-        fileName:
-          type: string
-        content:
-          type: string
-          nullable: true
-          description: Plain-text extracted content. No structure-preserving HTML is returned.
-        error:
-          type: string
-          nullable: true
-    ParseFilesResponse:
-      type: object
-      description: Legacy plain-text file parsing response.
-      required:
-        - results
-      properties:
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/ParsedFileResult'
     UserProfile:
       type: object
       properties:

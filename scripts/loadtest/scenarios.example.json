@@ -103,21 +103,6 @@
       }
     },
     {
-      "name": "parse_files_txt",
-      "enabled": true,
-      "method": "POST",
-      "path": "/api/v1/detections/parse-files",
-      "auth": "member_bearer",
-      "expected_statuses": [200],
-      "files": [
-        {
-          "field": "files",
-          "path": "./fixtures/parse-sample.txt",
-          "content_type": "text/plain"
-        }
-      ]
-    },
-    {
       "name": "list_detections_member",
       "enabled": true,
       "method": "GET",

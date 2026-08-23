@@ -5,7 +5,6 @@
 - `run_loadtest.py`: burst load test runner.
 - `detect_100_users.py`: quota-aware detect-only load test for the online site.
 - `scenarios.example.json`: example config for the online site.
-- `fixtures/parse-sample.txt`: sample file for `/api/v1/detections/parse-files`.
 
 ## What it outputs
 
