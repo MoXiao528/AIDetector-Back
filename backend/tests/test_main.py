@@ -55,10 +55,12 @@ def test_cors_exposes_retry_after_header() -> None:
 
 
 def test_public_openapi_contracts_do_not_expose_mixed() -> None:
-    runtime_contract = json.dumps(app.openapi(), ensure_ascii=False).casefold()
-    static_contract = (Path(__file__).resolve().parents[2] / "contract" / "openapi.yaml").read_text(
+    runtime_openapi = app.openapi()
+    static_openapi = (Path(__file__).resolve().parents[2] / "contract" / "openapi.yaml").read_text(
         encoding="utf-8"
-    ).casefold()
+    )
 
-    assert "mixed" not in runtime_contract
-    assert "mixed" not in static_contract
+    assert runtime_openapi["info"]["version"] == "4.0.0"
+    assert "version: 4.0.0" in static_openapi
+    assert "mixed" not in json.dumps(runtime_openapi, ensure_ascii=False).casefold()
+    assert "mixed" not in static_openapi.casefold()
