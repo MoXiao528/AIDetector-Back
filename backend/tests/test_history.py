@@ -1,5 +1,7 @@
 """Tests for history API endpoints."""
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -30,6 +32,40 @@ from app.schemas.history import (
 )
 
 
+def test_legacy_mixed_analysis_projects_to_binary_without_mutating_source():
+    legacy = {
+        "summary": {"ai": 55, "mixed": 20, "human": 25},
+        "sentences": [
+            {
+                "id": "sent-legacy",
+                "text": "Legacy borderline sentence.",
+                "raw": "Legacy borderline sentence.",
+                "type": "mixed",
+                "probability": 0.5,
+                "score": 50,
+                "reason": "Legacy reason",
+                "suggestion": "Legacy suggestion",
+            }
+        ],
+        "translation": "",
+        "polish": "",
+        "citations": [],
+        "ai_likely_count": 1,
+        "highlighted_html": "<p>Legacy borderline sentence.</p>",
+    }
+
+    analysis = Analysis.model_validate(legacy)
+    public_payload = analysis.model_dump(mode="json")
+
+    assert analysis.summary.ai == 55
+    assert analysis.summary.human == 45
+    assert analysis.sentences[0].type == "human"
+    assert analysis.ai_likely_count == 0
+    assert "mixed" not in json.dumps(public_payload).casefold()
+    assert legacy["summary"]["mixed"] == 20
+    assert legacy["sentences"][0]["type"] == "mixed"
+
+
 @pytest.mark.anyio
 async def test_create_history(db_session, unique_email):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
@@ -40,7 +76,7 @@ async def test_create_history(db_session, unique_email):
         input_text="The quick brown fox jumps over the lazy dog.",
         editor_html="<p>The quick brown fox jumps over the lazy dog.</p>",
         analysis=Analysis(
-            summary=Summary(ai=45, mixed=25, human=30),
+            summary=Summary(ai=45, human=55),
             sentences=[
                 Sentence(
                     id="sent-1",
@@ -84,7 +120,7 @@ async def test_list_histories(db_session, unique_email):
             input_text=f"Text {index + 1}",
             editor_html=f"<p>Text {index + 1}</p>",
             analysis=Analysis(
-                summary=Summary(ai=30, mixed=20, human=50),
+                summary=Summary(ai=30, human=70),
                 sentences=[],
                 translation="",
                 polish="",
@@ -126,7 +162,7 @@ async def test_list_histories_searches_title_and_input(db_session, unique_email)
             input_text=text,
             editor_html=f"<p>{text}</p>",
             analysis=Analysis(
-                summary=Summary(ai=30, mixed=20, human=50),
+                summary=Summary(ai=30, human=70),
                 sentences=[],
                 translation="",
                 polish="",
@@ -173,7 +209,7 @@ async def test_list_histories_pagination(db_session, unique_email):
             input_text=f"Text {index + 1}",
             editor_html=f"<p>Text {index + 1}</p>",
             analysis=Analysis(
-                summary=Summary(ai=20, mixed=20, human=60),
+                summary=Summary(ai=20, human=80),
                 sentences=[],
                 translation="",
                 polish="",
@@ -205,7 +241,7 @@ async def test_get_history(db_session, unique_email):
         input_text="Test text",
         editor_html="<p>Test text</p>",
         analysis=Analysis(
-            summary=Summary(ai=10, mixed=20, human=70),
+            summary=Summary(ai=10, human=90),
             sentences=[],
             translation="",
             polish="",
@@ -244,7 +280,7 @@ async def test_update_history(db_session, unique_email):
         input_text="Test",
         editor_html="<p>Test</p>",
         analysis=Analysis(
-            summary=Summary(ai=15, mixed=15, human=70),
+            summary=Summary(ai=15, human=85),
             sentences=[],
             translation="",
             polish="",
@@ -277,7 +313,7 @@ async def test_update_history_pin_state_and_list_pinned_first(db_session, unique
             input_text="First text",
             editor_html="<p>First text</p>",
             analysis=Analysis(
-                summary=Summary(ai=15, mixed=15, human=70),
+                summary=Summary(ai=15, human=85),
                 sentences=[],
                 translation="",
                 polish="",
@@ -296,7 +332,7 @@ async def test_update_history_pin_state_and_list_pinned_first(db_session, unique
             input_text="Second text",
             editor_html="<p>Second text</p>",
             analysis=Analysis(
-                summary=Summary(ai=15, mixed=15, human=70),
+                summary=Summary(ai=15, human=85),
                 sentences=[],
                 translation="",
                 polish="",
@@ -361,7 +397,7 @@ async def test_delete_history(db_session, unique_email):
         input_text="Test",
         editor_html="<p>Test</p>",
         analysis=Analysis(
-            summary=Summary(ai=15, mixed=15, human=70),
+            summary=Summary(ai=15, human=85),
             sentences=[],
             translation="",
             polish="",
@@ -391,7 +427,7 @@ async def test_batch_delete(db_session, unique_email):
             input_text=f"Text {index + 1}",
             editor_html=f"<p>Text {index + 1}</p>",
             analysis=Analysis(
-                summary=Summary(ai=30, mixed=20, human=50),
+                summary=Summary(ai=30, human=70),
                 sentences=[],
                 translation="",
                 polish="",
@@ -434,7 +470,7 @@ async def test_clear_all(db_session, unique_email):
             input_text=f"Text {index + 1}",
             editor_html=f"<p>Text {index + 1}</p>",
             analysis=Analysis(
-                summary=Summary(ai=20, mixed=20, human=60),
+                summary=Summary(ai=20, human=80),
                 sentences=[],
                 translation="",
                 polish="",
@@ -470,7 +506,7 @@ async def test_permission_control(db_session, unique_email):
         input_text="User A text",
         editor_html="<p>User A text</p>",
         analysis=Analysis(
-            summary=Summary(ai=20, mixed=20, human=60),
+            summary=Summary(ai=20, human=80),
             sentences=[],
             translation="",
             polish="",
@@ -497,7 +533,7 @@ async def test_limit_enforcement(db_session, unique_email):
             input_text=f"Text {index + 1}",
             editor_html=f"<p>Text {index + 1}</p>",
             analysis=Analysis(
-                summary=Summary(ai=20, mixed=20, human=60),
+                summary=Summary(ai=20, human=80),
                 sentences=[],
                 translation="",
                 polish="",
@@ -533,7 +569,7 @@ async def test_limit_enforcement_preserves_pinned_history(db_session, unique_ema
                 input_text=f"Text {index + 1}",
                 editor_html=f"<p>Text {index + 1}</p>",
                 analysis=Analysis(
-                    summary=Summary(ai=20, mixed=20, human=60),
+                    summary=Summary(ai=20, human=80),
                     sentences=[],
                     translation="",
                     polish="",
@@ -564,7 +600,7 @@ async def test_limit_enforcement_preserves_pinned_history(db_session, unique_ema
                 input_text=f"New text {index + 1}",
                 editor_html=f"<p>New text {index + 1}</p>",
                 analysis=Analysis(
-                    summary=Summary(ai=20, mixed=20, human=60),
+                    summary=Summary(ai=20, human=80),
                     sentences=[],
                     translation="",
                     polish="",

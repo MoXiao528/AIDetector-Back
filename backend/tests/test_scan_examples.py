@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import select
 
 from app.models.scan_example import ScanExample
@@ -14,11 +16,13 @@ def test_list_examples_seeds_defaults_for_zh_cn(db_session):
     assert [item.key for item in response.usage_examples] == ["thesis", "marketing", "technical"]
     assert response.hero_examples[1].label == "人工写作"
     assert response.hero_examples[0].ai == 88
+    assert response.hero_examples[0].human == 12
     assert response.hero_examples[0].snapshot == "高结构化说明"
     assert response.hero_examples[0].structure == "高度规整"
     assert response.hero_examples[0].rhythm == "重复偏高"
     assert response.hero_examples[0].action == "优先复核"
     assert response.usage_examples[0].doc_type == "Academic"
+    assert "mixed" not in json.dumps(response.model_dump(mode="json")).casefold()
 
 
 def test_list_examples_falls_back_to_en_us(db_session):
@@ -29,8 +33,10 @@ def test_list_examples_falls_back_to_en_us(db_session):
     assert response.locale == "en-US"
     assert response.hero_examples[0].label == "ChatGPT"
     assert response.hero_examples[0].ai == 88
+    assert response.hero_examples[0].human == 12
     assert response.hero_examples[0].action == "Review first"
     assert response.usage_examples[1].title == "Brand landing page copy"
+    assert "mixed" not in json.dumps(response.model_dump(mode="json")).casefold()
 
 
 def test_list_examples_refreshes_existing_seed_data(db_session):

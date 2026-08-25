@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 
@@ -194,3 +196,39 @@ async def test_list_get_and_delete_admin_detections(db_session, unique_email):
         order="desc",
     )
     assert after_delete.total == 0
+
+
+@pytest.mark.anyio
+async def test_admin_projects_legacy_mixed_detection_to_human(db_session, unique_email):
+    admin = await _create_user(db_session, unique_email, role=UserRole.SYS_ADMIN)
+    member = await _create_user(db_session, f"member-{unique_email}")
+    detection = _create_detection(db_session, member, label="mixed", score=0.45)
+
+    listed = await list_admin_detections(
+        db=db_session,
+        _=admin,
+        page=1,
+        page_size=20,
+        search=None,
+        user_id=member.id,
+        actor_type="user",
+        label="human",
+        function_name=None,
+        date_from=None,
+        date_to=None,
+        sort="createdAt",
+        order="desc",
+    )
+    detail = await get_admin_detection(detection_id=detection.id, db=db_session, _=admin)
+
+    assert listed.total == 1
+    assert listed.items[0].label == "human"
+    assert detail.label == "human"
+    assert detail.analysis is not None
+    assert detail.analysis.summary.human == 10
+    assert detail.meta_json is not None
+    assert "mixed" not in json.dumps(detail.model_dump(mode="json")).casefold()
+
+    db_session.refresh(detection)
+    assert detection.result_label == "mixed"
+    assert detection.meta_json["analysis"]["summary"]["mixed"] == 5

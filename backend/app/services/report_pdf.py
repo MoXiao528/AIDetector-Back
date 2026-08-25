@@ -185,14 +185,14 @@ def _map_function_label(key: str, copy: ReportCopy) -> str:
 def _map_sentence_type(value: str, copy: ReportCopy) -> str:
     mapping = {
         "ai": copy.ai_label,
-        "mixed": copy.ai_label,
+        "mixed": copy.human_label,
         "human": copy.human_label,
     }
     return mapping.get(value, value)
 
 
 def _get_sentence_palette(value: str) -> tuple[str, colors.Color]:
-    if value in {"ai", "mixed"}:
+    if value == "ai":
         return AI_STROKE, AI_FILL
     return HUMAN_STROKE, HUMAN_FILL
 
@@ -441,7 +441,7 @@ def build_report_pdf(payload: ReportPdfContent, user: User) -> bytes:
     story.append(Paragraph(f"<b>{copy.ai_likely_label}:</b> {payload.analysis.ai_likely_count}", styles["body"]))
     story.append(Spacer(1, 12))
 
-    risk_sentences = [item for item in payload.analysis.sentences if item.type in {"ai", "mixed"}]
+    risk_sentences = [item for item in payload.analysis.sentences if item.type == "ai"]
     story.append(Paragraph(copy.risk_title, styles["section"]))
     if risk_sentences:
         for index, sentence in enumerate(risk_sentences, start=1):

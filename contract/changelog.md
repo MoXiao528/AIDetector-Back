@@ -2,6 +2,11 @@
 
 Tracks breaking OpenAPI changes and compatibility boundaries.
 
+## 4.0.0 - 2026-08-25
+- **Breaking public-contract change:** detection labels and summary percentages now expose only `ai` and `human`; segment types additionally retain `too_short` for non-classified input.
+- Legacy persisted `mixed` labels, sentence types, and summary percentages remain readable and are projected to `human` at response time. Stored history is not migrated or rewritten.
+- Compatibility scan responses and scan examples now return binary AI/Human results. Admin `label=human` filtering includes legacy persisted `mixed` rows.
+
 ## 3.0.0 - 2026-08-23
 - **Breaking hard removal:** removed `POST /api/v1/detections/parse-files` and the `ParseFilesResponse` / `ParsedFileResult` schemas. The removed path has no compatibility endpoint and returns `404`.
 - Raw PDF, DOCX, and TXT files are no longer accepted or parsed by the backend. Browser clients extract document text locally and submit only the resulting text through the existing detection API.

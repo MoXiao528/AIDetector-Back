@@ -127,8 +127,9 @@ def test_scan_root_compat_route_is_available(db_session, monkeypatch):
             )
             assert response.status_code == 200
             payload = response.json()
-            assert payload["summary"] == "AI 0% | Mixed 100% | Human 0%"
+            assert payload["summary"] == "AI 0% | Human 100%"
             assert payload["sentences"]
+            assert payload["sentences"][0]["isAi"] is False
     finally:
         app.dependency_overrides.clear()
 

@@ -11,7 +11,6 @@ class ScanHeroExampleItem(SchemaBase):
     content: str
     description: str | None = None
     ai: int | None = Field(default=None, ge=0, le=100)
-    mixed: int | None = Field(default=None, ge=0, le=100)
     human: int | None = Field(default=None, ge=0, le=100)
     snapshot: str | None = None
     snippet: str | None = None
@@ -27,7 +26,6 @@ class ScanUsageExampleItem(SchemaBase):
     length: str
     description: str
     ai: int = Field(..., ge=0, le=100)
-    mixed: int = Field(..., ge=0, le=100)
     human: int = Field(..., ge=0, le=100)
     snapshot: str
     snippet: str

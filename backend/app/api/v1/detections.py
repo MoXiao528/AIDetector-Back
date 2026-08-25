@@ -380,12 +380,7 @@ def _merge_short_paragraphs(
 
 
 def _resolve_segment_type(score: float, threshold: float, score_type: str) -> str:
-    if score >= threshold:
-        return "ai"
-    display_probability = _score_to_display_probability(score, threshold, score_type)
-    if display_probability >= 0.34:
-        return "mixed"
-    return "human"
+    return "ai" if score >= threshold else "human"
 
 
 def _resolve_highlight_class(score: float) -> str:
@@ -516,17 +511,15 @@ def _build_history_analysis(
     functions: set[str],
 ) -> Analysis:
     total_weight = sum(int(item["weight"]) for item in paragraph_scores if item.get("status") != TOO_SHORT_STATUS)
-    bucket_weights = {"ai": 0, "mixed": 0, "human": 0}
+    bucket_weights = {"ai": 0, "human": 0}
 
     reason_map = {
         "ai": "This segment is highly patterned and is more likely to be machine-generated.",
-        "mixed": "This segment is borderline and should be reviewed manually.",
         "human": "This segment reads more like natural human writing.",
         TOO_SHORT_STATUS: "This segment is too short for a reliable model judgment.",
     }
     suggestion_map = {
         "ai": "Add concrete facts, distinctive examples, and less templated phrasing.",
-        "mixed": "Add more specific detail or domain context to make this segment less formulaic.",
         "human": "This segment already looks relatively natural.",
         TOO_SHORT_STATUS: "No action is needed unless this short section should be merged into surrounding context.",
     }
@@ -589,15 +582,15 @@ def _build_history_analysis(
             largest_bucket = max(summary_values, key=lambda key: summary_values[key])
             summary_values[largest_bucket] = max(0, min(summary_values[largest_bucket] - diff, 100))
     else:
-        summary_values = {"ai": 0, "mixed": 0, "human": 0}
-    summary = Summary(ai=summary_values["ai"], mixed=summary_values["mixed"], human=summary_values["human"])
+        summary_values = {"ai": 0, "human": 0}
+    summary = Summary(ai=summary_values["ai"], human=summary_values["human"])
 
     _ = functions
     translation = ""
     polish = ""
     citations: list[HistoryCitation] = []
 
-    ai_likely_count = sum(1 for item in history_sentences if item.type in {"ai", "mixed"})
+    ai_likely_count = sum(1 for item in history_sentences if item.type == "ai")
     highlighted_html = "".join(html_parts) if html_parts else f"<p>{escape(text)}</p>"
 
     return Analysis(
@@ -626,7 +619,7 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     sentences = [
         SentenceAnalysis(
             text=segment.text,
-            is_ai=segment.type in {"ai", "mixed"},
+            is_ai=segment.type == "ai",
             confidence=segment.probability,
         )
         for segment in analysis.sentences
@@ -637,11 +630,7 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     ] or None
 
     return AnalysisResponse(
-        summary=(
-            f"AI {analysis.summary.ai}% | "
-            f"Mixed {analysis.summary.mixed}% | "
-            f"Human {analysis.summary.human}%"
-        ),
+        summary=f"AI {analysis.summary.ai}% | Human {analysis.summary.human}%",
         sentences=sentences,
         polish=analysis.polish or None,
         translation=analysis.translation or None,

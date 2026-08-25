@@ -216,7 +216,8 @@ class AdminService:
         if actor_type:
             query = query.where(Detection.actor_type == actor_type)
         if label:
-            query = query.where(Detection.result_label == label)
+            labels = ("human", "mixed") if label == "human" else (label,)
+            query = query.where(Detection.result_label.in_(labels))
         if function_name:
             query = query.where(cast(Detection.functions_used, String).like(f'%"{function_name}"%'))
         if date_from is not None:

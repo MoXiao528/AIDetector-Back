@@ -26,7 +26,7 @@ from app.schemas.admin import (
     AdminUserProfile,
     AdminUserUpdateRequest,
 )
-from app.schemas.history import Analysis
+from app.schemas.history import Analysis, PublicDetectionLabel
 from app.services.admin_service import AdminOverviewData, AdminService, DetectionWithUser
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -302,7 +302,7 @@ async def list_admin_detections(
     search: str | None = Query(None),
     user_id: int | None = Query(None, alias="userId"),
     actor_type: str | None = Query(None, alias="actorType"),
-    label: str | None = Query(None),
+    label: PublicDetectionLabel | None = Query(None),
     function_name: str | None = Query(None, alias="function"),
     date_from: datetime | None = Query(None, alias="dateFrom"),
     date_to: datetime | None = Query(None, alias="dateTo"),

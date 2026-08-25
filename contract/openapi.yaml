@@ -1,10 +1,11 @@
 openapi: 3.0.3
 info:
   title: AIDetector API
-  version: 3.0.0
+  version: 4.0.0
   description: >
-    V3.0 active contract baseline. Detection requests require a mandatory UUID idempotency key.
-    Raw document upload and server-side file parsing are not part of the API.
+    V4.0 active contract baseline. Public detection labels and summaries are binary AI/Human.
+    Detection requests require a mandatory UUID idempotency key. Raw document upload and
+    server-side file parsing are not part of the API.
 servers:
   - url: https://api.example.com
     description: Production
@@ -1261,7 +1262,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [ai, mixed, human]
+            enum: [ai, human]
         - name: function
           in: query
           schema:
@@ -1533,11 +1534,6 @@ components:
           minimum: 0
           maximum: 100
           nullable: true
-        mixed:
-          type: integer
-          minimum: 0
-          maximum: 100
-          nullable: true
         human:
           type: integer
           minimum: 0
@@ -1567,7 +1563,6 @@ components:
         - length
         - description
         - ai
-        - mixed
         - human
         - snapshot
         - snippet
@@ -1583,10 +1578,6 @@ components:
         description:
           type: string
         ai:
-          type: integer
-          minimum: 0
-          maximum: 100
-        mixed:
           type: integer
           minimum: 0
           maximum: 100
@@ -1997,7 +1988,7 @@ components:
           type: integer
         label:
           type: string
-          enum: [ai, mixed, human]
+          enum: [ai, human]
         score:
           type: number
           format: float
@@ -2025,14 +2016,9 @@ components:
       type: object
       required:
         - ai
-        - mixed
         - human
       properties:
         ai:
-          type: integer
-          minimum: 0
-          maximum: 100
-        mixed:
           type: integer
           minimum: 0
           maximum: 100
@@ -2068,7 +2054,7 @@ components:
           minimum: 1
         type:
           type: string
-          enum: [ai, mixed, human]
+          enum: [ai, human, too_short]
         probability:
           type: number
           format: float
@@ -2370,7 +2356,7 @@ components:
           type: string
         label:
           type: string
-          enum: [ai, mixed, human]
+          enum: [ai, human]
         score:
           type: number
           format: float
@@ -2473,7 +2459,7 @@ components:
           type: integer
         label:
           type: string
-          enum: [ai, mixed, human]
+          enum: [ai, human]
         score:
           type: number
           format: float
@@ -2564,7 +2550,7 @@ components:
           type: string
         label:
           type: string
-          enum: [ai, mixed, human]
+          enum: [ai, human]
         score:
           type: number
           format: float

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
@@ -51,3 +52,13 @@ def test_cors_exposes_retry_after_header() -> None:
 
     exposed = {value.strip().lower() for value in response.headers["access-control-expose-headers"].split(",")}
     assert "retry-after" in exposed
+
+
+def test_public_openapi_contracts_do_not_expose_mixed() -> None:
+    runtime_contract = json.dumps(app.openapi(), ensure_ascii=False).casefold()
+    static_contract = (Path(__file__).resolve().parents[2] / "contract" / "openapi.yaml").read_text(
+        encoding="utf-8"
+    ).casefold()
+
+    assert "mixed" not in runtime_contract
+    assert "mixed" not in static_contract
