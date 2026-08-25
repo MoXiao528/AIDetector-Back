@@ -1,16 +1,53 @@
 """History record related Pydantic models."""
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field, model_validator
 
 from app.schemas.base import SchemaBase
 
 
+def _normalize_legacy_label(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip().casefold()
+    if normalized == "mixed":
+        return "human"
+    if normalized in {"ai", "human", "too_short"}:
+        return normalized
+    return value
+
+
+PublicDetectionLabel = Annotated[
+    Literal["ai", "human"],
+    BeforeValidator(_normalize_legacy_label),
+]
+PublicSegmentType = Annotated[
+    Literal["ai", "human", "too_short"],
+    BeforeValidator(_normalize_legacy_label),
+]
+
+
 class Summary(SchemaBase):
     ai: int = Field(..., ge=0, le=100, json_schema_extra={"example": 45}, description="AI percentage in [0, 100]")
-    mixed: int = Field(..., ge=0, le=100, json_schema_extra={"example": 25}, description="Mixed percentage in [0, 100]")
-    human: int = Field(..., ge=0, le=100, json_schema_extra={"example": 30}, description="Human percentage in [0, 100]")
+    human: int = Field(..., ge=0, le=100, json_schema_extra={"example": 55}, description="Human percentage in [0, 100]")
+
+    @model_validator(mode="before")
+    @classmethod
+    def fold_legacy_mixed_into_human(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping) or "mixed" not in value:
+            return value
+
+        normalized = dict(value)
+        try:
+            mixed = int(normalized.pop("mixed") or 0)
+            human = int(normalized.get("human", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Legacy summary percentages must be integers") from exc
+        normalized["human"] = human + mixed
+        return normalized
 
 
 class Sentence(SchemaBase):
@@ -29,7 +66,7 @@ class Sentence(SchemaBase):
         json_schema_extra={"example": 4},
         description="1-based end paragraph index covered by this segment",
     )
-    type: str = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/mixed/human/too_short")
+    type: PublicSegmentType = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/human/too_short")
     probability: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.85}, description="AI probability in [0, 1]")
     score: int = Field(..., ge=0, le=100, json_schema_extra={"example": 85}, description="Display score in [0, 100]")
     reason: str = Field(..., json_schema_extra={"example": "Highly structured phrasing"}, description="Explanation")
@@ -53,6 +90,31 @@ class Analysis(SchemaBase):
     citations: list[Citation] = Field(default_factory=list, description="Citation results")
     ai_likely_count: int = Field(..., ge=0, description="Count of segments likely to be AI-generated")
     highlighted_html: str = Field(..., description="Highlighted preview HTML")
+
+    @model_validator(mode="after")
+    def recalculate_ai_likely_count(self) -> "Analysis":
+        self.ai_likely_count = sum(sentence.type == "ai" for sentence in self.sentences)
+        return self
+
+
+def project_public_meta_json(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+
+    public_meta = dict(value)
+    if "analysis" not in public_meta:
+        return public_meta
+
+    analysis = public_meta.get("analysis")
+    if not isinstance(analysis, Mapping):
+        public_meta.pop("analysis", None)
+        return public_meta
+
+    try:
+        public_meta["analysis"] = Analysis.model_validate(analysis).model_dump()
+    except ValueError:
+        public_meta.pop("analysis", None)
+    return public_meta
 
 
 class HistoryRecordCreate(SchemaBase):

@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ConfigDict, Field, field_validator
 
 from app.schemas.base import SchemaBase
-from app.schemas.history import Analysis
+from app.schemas.history import Analysis, PublicDetectionLabel, project_public_meta_json
 
 
 class DetectionRequest(SchemaBase):
@@ -41,7 +41,7 @@ class DetectionRequest(SchemaBase):
 
 class DetectionResponse(SchemaBase):
     detection_id: int = Field(..., json_schema_extra={"example": 1})
-    label: str = Field(..., json_schema_extra={"example": "human"})
+    label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "human"})
     score: float = Field(
         ...,
         ge=0,
@@ -87,7 +87,7 @@ class DetectionResponse(SchemaBase):
 
 class DetectionItem(SchemaBase):
     id: int = Field(..., json_schema_extra={"example": 1})
-    label: str = Field(..., json_schema_extra={"example": "ai"})
+    label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "ai"})
     score: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.42})
     input_text: str = Field(..., json_schema_extra={"example": "Short text"})
     created_at: datetime = Field(..., json_schema_extra={"example": "2024-01-01T00:00:00Z"})
@@ -106,6 +106,11 @@ class DetectionItem(SchemaBase):
             }
         },
     )
+
+    @field_validator("meta_json", mode="before")
+    @classmethod
+    def normalize_public_meta_json(cls, value: Any) -> Any:
+        return project_public_meta_json(value)
 
     @classmethod
     def from_orm_detection(cls, detection):

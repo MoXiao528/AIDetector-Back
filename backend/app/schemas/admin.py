@@ -3,11 +3,11 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.core.roles import UserRole
 from app.schemas.base import SchemaBase
-from app.schemas.history import Analysis
+from app.schemas.history import Analysis, PublicDetectionLabel, project_public_meta_json
 
 
 class AdminOverviewPreset(str, Enum):
@@ -53,7 +53,7 @@ class AdminRecentDetectionItem(SchemaBase):
     user_name: str | None = Field(default=None, json_schema_extra={"example": "alex"})
     actor_type: str = Field(..., json_schema_extra={"example": "user"})
     actor_id: str = Field(..., json_schema_extra={"example": "1"})
-    label: str = Field(..., json_schema_extra={"example": "ai"})
+    label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "ai"})
     score: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.82})
     chars_used: int = Field(..., json_schema_extra={"example": 1200})
     created_at: datetime = Field(..., json_schema_extra={"example": "2026-03-19T10:00:00Z"})
@@ -112,7 +112,7 @@ class AdminUserListResponse(SchemaBase):
 
 class AdminDetectionMini(SchemaBase):
     id: int = Field(..., json_schema_extra={"example": 1})
-    label: str = Field(..., json_schema_extra={"example": "ai"})
+    label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "ai"})
     score: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.85})
     chars_used: int = Field(..., json_schema_extra={"example": 1200})
     created_at: datetime = Field(..., json_schema_extra={"example": "2026-03-19T10:00:00Z"})
@@ -148,7 +148,7 @@ class AdminDetectionListItem(SchemaBase):
     user_name: str | None = Field(default=None, json_schema_extra={"example": "alex"})
     actor_type: str = Field(..., json_schema_extra={"example": "user"})
     actor_id: str = Field(..., json_schema_extra={"example": "1"})
-    label: str = Field(..., json_schema_extra={"example": "ai"})
+    label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "ai"})
     score: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.84})
     chars_used: int = Field(..., json_schema_extra={"example": 1200})
     functions_used: list[str] = Field(default_factory=list, json_schema_extra={"example": ["scan"]})
@@ -168,3 +168,8 @@ class AdminDetectionDetailResponse(AdminDetectionListItem):
     editor_html: str | None = Field(default=None, json_schema_extra={"example": "<p>sample text</p>"})
     meta_json: dict | None = Field(default=None, json_schema_extra={"example": {"repre_guard": {"model_name": "Qwen"}}})
     analysis: Analysis | None = None
+
+    @field_validator("meta_json", mode="before")
+    @classmethod
+    def normalize_public_meta_json(cls, value):
+        return project_public_meta_json(value)

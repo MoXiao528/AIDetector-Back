@@ -60,7 +60,7 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 - 响应结构里保留的 `translation / polish / citations` 只是兼容保留字段
 - 不代表这些能力已经进入 V2.0 正式产品面
 
-## API 3.0.0 检测契约（产品 V2.0）
+## API 4.0.0 检测契约（产品 V2.0）
 
 - `POST /api/v1/detect` 是正式检测入口；`/api/v1/scan/detect`、`/api/v1/scan`、`/api/scan/detect`、`/api/scan` 是兼容入口，五者走同一套检测实现。
 - 五个入口硬切要求 UUID `Idempotency-Key`：新逻辑请求生成新 key，同一次请求重试复用原 key；处理中返回带 `Retry-After` 的 `409`，请求冲突返回 `409`，结果无法回放返回 `410`。
@@ -69,6 +69,7 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 - 后端调用 RepreGuard 的 `/detect`、`/health` 和 readiness probe 时统一携带 `X-RepreGuard-Token`；Token 至少 32 个可打印 ASCII 字符，必须独立生成，不能复用用户 JWT 或后端 `SECRET_KEY`。
 - RepreGuard 响应按实际数据流限制为 128 KiB；401/403 不透传检测端内部信息，统一转换成 `DETECT_SERVICE_AUTH_FAILED`。
 - AI / HUMAN 标签、摘要百分比和段落高亮统一按检测端返回的 `threshold` 解释，不再沿用旧的 `0.34 / 0.67` 概率分档。
+- 公共标签与摘要只返回 AI / Human；旧三分类历史在读取时折叠进 Human，数据库原始记录不会被迁移或改写。
 - 后端分段保留原始空白和缩进，避免代码、JSON、路径类文本在送检前被展示层 normalize。
 - 配额统计优先使用 `quota_usage` ledger；手工历史记录不再隐式消耗 quota。
 
@@ -323,7 +324,7 @@ docker compose exec db psql -U postgres -d AIDetector
 docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
 ```
 
-## API 3.0.0 本地验收清单
+## API 4.0.0 本地验收清单
 
 - `docker compose ps`
 - `/api/v1/health`

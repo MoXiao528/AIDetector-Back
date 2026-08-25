@@ -257,8 +257,9 @@ class ScanExampleService:
                 content=item.content or "",
                 description=item.description,
                 ai=item.ai,
-                mixed=item.mixed,
-                human=item.human,
+                human=(item.human or 0) + (item.mixed or 0)
+                if item.human is not None or item.mixed is not None
+                else None,
                 snapshot=item.snapshot,
                 snippet=item.snippet,
                 structure=self._build_hero_structure(item.locale, item.key),
@@ -276,8 +277,7 @@ class ScanExampleService:
                 length=item.length_label or "",
                 description=item.description or "",
                 ai=item.ai or 0,
-                mixed=item.mixed or 0,
-                human=item.human or 0,
+                human=(item.human or 0) + (item.mixed or 0),
                 snapshot=item.snapshot or "",
                 snippet=item.snippet or "",
                 content=item.content,
