@@ -1114,6 +1114,15 @@ def _pattern_excluded_ranges(
     return _merge_ranges(ranges)
 
 
+def runtime_excluded_fraction(text: str) -> float:
+    """Measure the union before placeholder expansion, in normalized code points."""
+    normalized = normalize_text(text)
+    # Identity offsets reuse the pattern exclusions in this normalized coordinate space.
+    spans = [(index, index + 1) for index in range(len(normalized))]
+    excluded = _pattern_excluded_ranges(normalized, normalized, spans)
+    return sum(end - start for start, end in excluded) / max(1, len(normalized))
+
+
 def _visible_token_spans(
     normalized: str,
     raw_spans: Sequence[tuple[int, int]],

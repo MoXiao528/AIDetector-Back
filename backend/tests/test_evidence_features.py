@@ -110,6 +110,25 @@ def test_patterns_keep_caps_counts_privacy_and_exclusion_barriers():
         assert patterns["sentence_start_templates"] == []
 
 
+@pytest.mark.parametrize(
+    "text,excluded,total",
+    [
+        ("", 0, 0),
+        ("  Plain\t\ttext.\r\n", 0, 11),
+        ("１ ２ ３ ４ a", 4, 9),
+        ("https://doi.org/10.1234/ABC a", 27, 29),
+        ("[1, 2] (Smith 2020) a", 18, 21),
+        ("Body.\n" * 10 + "References\n[1] Smith, 2020.", 27, 87),
+    ],
+)
+def test_runtime_exclusions_count_original_union_not_placeholder_lengths(
+    text, excluded, total
+):
+    assert features.runtime_excluded_fraction(text) == pytest.approx(
+        excluded / max(1, total)
+    )
+
+
 @pytest.mark.parametrize("language", ["en", "zh"])
 def test_empty_features_have_a_reason_for_every_null(language):
     raw = features.extract_document_features("", language)
