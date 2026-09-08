@@ -40,6 +40,7 @@ def _detection_to_history_response(detection) -> HistoryRecordResponse:
         editor_html=detection.editor_html,
         is_pinned=bool(getattr(detection, "is_pinned", False)),
         analysis=analysis_data,
+        evidence=detection.meta_json.get("evidence") if isinstance(detection.meta_json, dict) else None,
     )
 
 

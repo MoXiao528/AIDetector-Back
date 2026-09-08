@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BeforeValidator, Field, model_validator
 
 from app.schemas.base import SchemaBase
+from app.schemas.evidence import EvidenceResponseBase
 
 
 def _normalize_legacy_label(value: Any) -> Any:
@@ -102,6 +103,9 @@ def project_public_meta_json(value: Any) -> Any:
         return value
 
     public_meta = dict(value)
+    # Evidence is only exposed through the validated, mode-controlled response field.
+    public_meta.pop("evidence", None)
+    public_meta.pop("artifactVersion", None)
     if "analysis" not in public_meta:
         return public_meta
 
@@ -145,7 +149,7 @@ class HistoryRecordUpdate(SchemaBase):
     is_pinned: bool | None = Field(None, description="Updated pinned state")
 
 
-class HistoryRecordResponse(SchemaBase):
+class HistoryRecordResponse(EvidenceResponseBase):
     id: int = Field(..., json_schema_extra={"example": 1}, description="History record ID")
     user_id: int = Field(..., json_schema_extra={"example": 123}, description="Owner user ID")
     title: str | None = Field(None, json_schema_extra={"example": "Scan Record · 2026-02-11 13:15:21"}, description="Record title")

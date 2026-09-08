@@ -18,3 +18,5 @@ transformers
 sentencepiece
 protobuf
 nltk
+jieba==0.42.1
+numpy>=2.2,<2.3

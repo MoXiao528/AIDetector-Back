@@ -1,15 +1,17 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import register_user
 from app.api.v1.detections import _build_detection_request_hash, detect
+from app.core.config import get_settings
 from app.db.base_class import Base
 from app.db.deps import ActorContext
 from app.models.detection import Detection
@@ -17,6 +19,7 @@ from app.models.detection_request import DetectionRequest as DetectionRequestRec
 from app.models.quota_usage import QuotaUsage
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
+from app.services.evidence_engine import EvidenceEngine
 from app.services.quota_service import (
     DetectionAdmission,
     DetectionReservationLostError,
@@ -414,12 +417,29 @@ async def test_reservation_commit_failure_never_calls_detector(committed_db_sess
     ) == 0
 
 
+def _failed_evidence_request(monkeypatch):
+    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
+    engine = EvidenceEngine(mode="serve")
+    calls = []
+    original = engine.run
+
+    async def run(text, **kwargs):
+        calls.append(text)
+        return await original(text, **kwargs)
+
+    monkeypatch.setattr(engine, "run", run)
+    return Request({"type": "http", "app": SimpleNamespace(state=SimpleNamespace(evidence_engine=engine))}), calls
+
+
 @pytest.mark.anyio
+@pytest.mark.parametrize("with_evidence", [False, True])
 async def test_final_commit_failure_rolls_back_and_lease_retry_recovers(
     committed_db_session,
     unique_email,
     monkeypatch,
+    with_evidence,
 ):
+    request, evidence_calls = _failed_evidence_request(monkeypatch) if with_evidence else (None, [])
     db_session = committed_db_session
     actor = await _user_actor(db_session, unique_email)
     key = uuid4()
@@ -448,6 +468,7 @@ async def test_final_commit_failure_rolls_back_and_lease_retry_recovers(
             db=db_session,
             current_actor=actor,
             idempotency_key=key,
+            request=request,
         )
 
     monkeypatch.setattr(db_session, "commit", original_commit)
@@ -476,20 +497,31 @@ async def test_final_commit_failure_rolls_back_and_lease_retry_recovers(
         db=db_session,
         current_actor=actor,
         idempotency_key=key,
+        request=request,
     )
 
     assert recovered.detection_id > 0
     assert detector_calls == 2
     assert db_session.scalar(select(func.count(Detection.id))) == 1
     assert db_session.scalar(select(QuotaUsage.used)) == len(LONG_TEXT)
+    stored = db_session.get(Detection, recovered.detection_id)
+    if with_evidence:
+        assert evidence_calls == [LONG_TEXT, LONG_TEXT]
+        assert recovered.evidence.model_dump(mode="json") == stored.meta_json["evidence"]
+        assert stored.meta_json["artifactVersion"] is None
+    else:
+        assert "evidence" not in stored.meta_json
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("with_evidence", [False, True])
 async def test_commit_succeeded_but_response_failed_replays_without_reinference(
     committed_db_session,
     unique_email,
     monkeypatch,
+    with_evidence,
 ):
+    request, evidence_calls = _failed_evidence_request(monkeypatch) if with_evidence else (None, [])
     db_session = committed_db_session
     actor = await _user_actor(db_session, unique_email)
     key = uuid4()
@@ -518,6 +550,7 @@ async def test_commit_succeeded_but_response_failed_replays_without_reinference(
             db=db_session,
             current_actor=actor,
             idempotency_key=key,
+            request=request,
         )
 
     monkeypatch.setattr(db_session, "commit", original_commit)
@@ -526,12 +559,20 @@ async def test_commit_succeeded_but_response_failed_replays_without_reinference(
         db=db_session,
         current_actor=actor,
         idempotency_key=key,
+        request=request,
     )
 
     assert replay.detection_id > 0
     assert detector_calls == 1
     assert db_session.scalar(select(func.count(Detection.id))) == 1
     assert db_session.scalar(select(QuotaUsage.used)) == len(LONG_TEXT)
+    stored = db_session.get(Detection, replay.detection_id)
+    if with_evidence:
+        assert evidence_calls == [LONG_TEXT]
+        assert replay.evidence.model_dump(mode="json") == stored.meta_json["evidence"]
+        assert stored.meta_json["artifactVersion"] is None
+    else:
+        assert "evidence" not in stored.meta_json
 
 
 @pytest.mark.anyio

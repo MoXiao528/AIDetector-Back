@@ -4,11 +4,11 @@ import json
 import re
 from datetime import datetime
 from html import escape
-from math import exp
+from math import ceil, exp
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 
 from app.core.config import get_settings
 from app.db.deps import (
@@ -502,6 +502,7 @@ def _replay_detection_response(
         history_id=detection.id,
         input_text=detection.input_text,
         result=analysis,
+        evidence=meta.get("evidence"),
     )
 
 
@@ -646,6 +647,7 @@ async def _detect_impl(
     idempotency_key: UUID,
     *,
     operation: str,
+    request: Request | None = None,
 ) -> DetectionResponse:
     if not payload.text.strip():
         raise HTTPException(
@@ -731,6 +733,9 @@ async def _detect_impl(
     limit = get_quota_limit(actor_type)
     lease_seconds = max(int(settings.detect_request_timeout), int(settings.detect_service_timeout))
     lease_seconds += DETECTION_LEASE_BUFFER_SECONDS
+    evidence_engine = getattr(request.app.state, "evidence_engine", None) if request else None
+    if evidence_engine is not None and evidence_engine.status == "ready":
+        lease_seconds += ceil(evidence_engine.timeout_seconds)
 
     try:
         admission = reserve_detection_request(
@@ -947,6 +952,10 @@ async def _detect_impl(
         ],
     }
 
+    evidence = None
+    if evidence_engine is not None and evidence_engine.status != "off":
+        evidence = await evidence_engine.run(payload.text, main_label=label, client=repre_guard_client)
+
     request_record = None
     try:
         request_record, quota_row = lock_detection_settlement(
@@ -980,8 +989,10 @@ async def _detect_impl(
             actor_id=actor_id,
             chars_used=chars,
             analysis=analysis.model_dump(),
+            evidence=evidence,
         )
         detection_id = detection.id
+        evidence = detection.meta_json.get("evidence")
         complete_detection_request(request_record, detection_id=detection_id)
         db.commit()
     except QuotaExceededError as exc:
@@ -1022,6 +1033,7 @@ async def _detect_impl(
         history_id=detection_id,
         input_text=payload.text,
         result=analysis,
+        evidence=evidence,
     )
 
 
@@ -1043,6 +1055,7 @@ async def detect(
     db: SessionDep,
     current_actor: DetectActorDep,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+    request: Request = None,
 ) -> DetectionResponse:
     return await _detect_impl(
         payload=payload,
@@ -1050,6 +1063,7 @@ async def detect(
         current_actor=current_actor,
         idempotency_key=idempotency_key,
         operation="detect",
+        request=request,
     )
 
 
@@ -1071,6 +1085,7 @@ async def detect_scan(
     db: SessionDep,
     current_actor: DetectActorDep,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+    request: Request = None,
 ) -> AnalysisResponse:
     functions = _normalize_detection_functions(payload.functions)
 
@@ -1080,6 +1095,7 @@ async def detect_scan(
         current_actor=current_actor,
         idempotency_key=idempotency_key,
         operation="scan",
+        request=request,
     )
 
     return _build_scan_analysis_response(detection_response)
@@ -1103,12 +1119,14 @@ async def detect_scan_root(
     db: SessionDep,
     current_actor: DetectActorDep,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+    request: Request = None,
 ) -> AnalysisResponse:
     return await detect_scan(
         payload=payload,
         db=db,
         current_actor=current_actor,
         idempotency_key=idempotency_key,
+        request=request,
     )
 
 

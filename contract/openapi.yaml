@@ -2012,6 +2012,10 @@ components:
         result:
           $ref: '#/components/schemas/HistoryAnalysis'
           nullable: true
+        evidence:
+          allOf:
+            - $ref: '#/components/schemas/EvidenceResult'
+          description: Server snapshot; omitted outside serve mode, when absent or invalid.
     HistorySummary:
       type: object
       required:
@@ -2185,6 +2189,10 @@ components:
         analysis:
           $ref: '#/components/schemas/HistoryAnalysis'
           nullable: true
+        evidence:
+          allOf:
+            - $ref: '#/components/schemas/EvidenceResult'
+          description: Server snapshot; omitted outside serve mode, when absent or invalid.
     HistoryListResponse:
       type: object
       required:
@@ -2603,3 +2611,346 @@ components:
             analysis:
               $ref: '#/components/schemas/HistoryAnalysis'
               nullable: true
+    EvidenceConfidence:
+      additionalProperties: false
+      properties:
+        language:
+          maximum: 1
+          minimum: 0
+          type: number
+        domain:
+          maximum: 1
+          minimum: 0
+          type: number
+      required:
+      - language
+      - domain
+      type: object
+    EvidenceOffset:
+      additionalProperties: false
+      properties:
+        start:
+          minimum: 0
+          type: integer
+        end:
+          minimum: 0
+          type: integer
+      required:
+      - start
+      - end
+      type: object
+    EvidencePattern:
+      additionalProperties: false
+      properties:
+        count:
+          minimum: 1
+          type: integer
+        offsets:
+          items:
+            $ref: '#/components/schemas/EvidenceOffset'
+          type: array
+      required:
+      - count
+      - offsets
+      type: object
+    EvidencePatterns:
+      additionalProperties: false
+      properties:
+        descriptive_top_tokens:
+          items:
+            $ref: '#/components/schemas/EvidencePattern'
+          type: array
+        repeated_phrases:
+          items:
+            $ref: '#/components/schemas/EvidencePattern'
+          type: array
+        sentence_start_templates:
+          items:
+            $ref: '#/components/schemas/EvidencePattern'
+          type: array
+      required:
+      - descriptive_top_tokens
+      - repeated_phrases
+      - sentence_start_templates
+      type: object
+    EvidenceQuality:
+      additionalProperties: false
+      properties:
+        level:
+          enum:
+          - ready
+          - partial
+          - insufficient
+          - unavailable
+          type: string
+        coverage:
+          maximum: 1
+          minimum: 0
+          type: number
+        reasons:
+          items:
+            enum:
+            - invalid_evidence_config
+            - invalid_evidence_bundle
+            - bundle_unavailable
+            - invalid_router_response
+            - invalid_text
+            - invalid_main_label
+            - feature_extraction_failed
+            - comparison_failed
+            - model_unavailable
+            - model_failure
+            - busy
+            - timeout
+            - language_undetermined
+            - unsupported_language
+            - below_minimum_length
+            - fewer_than_10_sentences
+            - excluded_content_over_40pct
+            - length_out_of_range
+            - reference_cell_unavailable
+            - reference_fallback_language_length
+            - reference_fallback_language
+            - missing_observations
+            - reference_metrics_unavailable
+            - no_comparable_metrics
+            - no_valid_source_groups
+            - fewer_than_10_source_groups
+            - not_applicable_for_language
+            - insufficient_observations
+            type: string
+          type: array
+      required:
+      - level
+      - coverage
+      - reasons
+      type: object
+    EvidenceRanges:
+      additionalProperties: false
+      properties:
+        human:
+          items:
+            type: number
+          maxItems: 2
+          minItems: 2
+          type: array
+        ai:
+          items:
+            type: number
+          maxItems: 2
+          minItems: 2
+          type: array
+      required:
+      - human
+      - ai
+      type: object
+    EvidenceRelation:
+      additionalProperties: false
+      properties:
+        human:
+          enum:
+          - below
+          - within
+          - above
+          type: string
+        ai:
+          enum:
+          - below
+          - within
+          - above
+          type: string
+      required:
+      - human
+      - ai
+      type: object
+    EvidenceRoute:
+      additionalProperties: false
+      properties:
+        language:
+          enum:
+          - ar
+          - de
+          - en
+          - es
+          - fr
+          - pt
+          - ru
+          - zh
+          type: string
+        domain:
+          enum:
+          - academic
+          - news
+          - novel
+          - seo
+          - webtext
+          - wiki
+          type: string
+        confidence:
+          $ref: '#/components/schemas/EvidenceConfidence'
+        lengthBucket:
+          enum:
+          - below_minimum
+          - short
+          - medium
+          - long
+          - above_long
+          type: string
+        fallbackLevel:
+          enum:
+          - exact
+          - language_length
+          - language
+          - unavailable
+          type: string
+      required:
+      - language
+      - domain
+      - confidence
+      - lengthBucket
+      - fallbackLevel
+      type: object
+    EvidenceSignal:
+      additionalProperties: false
+      properties:
+        dimension:
+          enum:
+          - lexical
+          - phrase_template
+          - rhythm
+          - discourse
+          type: string
+        metric:
+          type: string
+        observed:
+          type: number
+          nullable: true
+        humanPercentile:
+          maximum: 100
+          minimum: 0
+          type: number
+          nullable: true
+        aiPercentile:
+          maximum: 100
+          minimum: 0
+          type: number
+          nullable: true
+        referenceRanges:
+          anyOf:
+          - $ref: '#/components/schemas/EvidenceRanges'
+          - type: object
+            nullable: true
+            enum: [null]
+        relation:
+          anyOf:
+          - $ref: '#/components/schemas/EvidenceRelation'
+          - type: object
+            nullable: true
+            enum: [null]
+        notice:
+          enum:
+          - reference_mismatch
+          - outside_both
+          - null
+          type: string
+          nullable: true
+        sampleCount:
+          minimum: 0
+          type: integer
+          nullable: true
+        offsets:
+          items:
+            $ref: '#/components/schemas/EvidenceOffset'
+          type: array
+        reasons:
+          items:
+            enum:
+            - invalid_evidence_config
+            - invalid_evidence_bundle
+            - bundle_unavailable
+            - invalid_router_response
+            - invalid_text
+            - invalid_main_label
+            - feature_extraction_failed
+            - comparison_failed
+            - model_unavailable
+            - model_failure
+            - busy
+            - timeout
+            - language_undetermined
+            - unsupported_language
+            - below_minimum_length
+            - fewer_than_10_sentences
+            - excluded_content_over_40pct
+            - length_out_of_range
+            - reference_cell_unavailable
+            - reference_fallback_language_length
+            - reference_fallback_language
+            - missing_observations
+            - reference_metrics_unavailable
+            - no_comparable_metrics
+            - no_valid_source_groups
+            - fewer_than_10_source_groups
+            - not_applicable_for_language
+            - insufficient_observations
+            type: string
+          type: array
+      required:
+      - dimension
+      - metric
+      - observed
+      - humanPercentile
+      - aiPercentile
+      - referenceRanges
+      - relation
+      - notice
+      - sampleCount
+      - offsets
+      - reasons
+      type: object
+    EvidenceResult:
+      additionalProperties: false
+      properties:
+        status:
+          enum:
+          - ready
+          - partial
+          - insufficient
+          - unsupported
+          - failed
+          type: string
+        artifactVersion:
+          pattern: ^[0-9a-f]{64}$
+          type: string
+          nullable: true
+        featureSchemaVersion:
+          type: integer
+          enum:
+          - 1
+        route:
+          anyOf:
+          - $ref: '#/components/schemas/EvidenceRoute'
+          - type: object
+            nullable: true
+            enum: [null]
+        quality:
+          $ref: '#/components/schemas/EvidenceQuality'
+        signals:
+          items:
+            $ref: '#/components/schemas/EvidenceSignal'
+          type: array
+        patterns:
+          anyOf:
+          - $ref: '#/components/schemas/EvidencePatterns'
+          - type: object
+            nullable: true
+            enum: [null]
+      required:
+      - status
+      - artifactVersion
+      - featureSchemaVersion
+      - route
+      - quality
+      - signals
+      - patterns
+      type: object

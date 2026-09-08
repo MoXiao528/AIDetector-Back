@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     detect_tokenizer_model: str = "WUJUNCHAO/DetectRL-X-XLM-RoBERTa-Detector-All"
     detect_max_input_tokens: int = Field(default=512, ge=16, le=4096)
     detect_short_segment_visible_chars: int = Field(default=40, ge=1, le=200)
+    # Validate optional Evidence configuration inside its engine, never at app startup.
+    detect_evidence_mode: str = "off"
+    detect_evidence_bundle_path: str = ""
+    detect_evidence_bundle_sha256: str = ""
+    detect_evidence_timeout_seconds: str = "12"
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

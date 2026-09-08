@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.detection import Detection
+from app.schemas.evidence import validate_evidence_snapshot
 
 
 @dataclass
@@ -88,6 +89,7 @@ class DetectionService:
         actor_id: str | None = None,
         chars_used: int | None = None,
         analysis: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> Detection:
         # 如果外部没传，用启发式兜底
         if score is None or label is None:
@@ -108,6 +110,17 @@ class DetectionService:
 
         if analysis:
             merged_meta["analysis"] = analysis
+
+        # Only this server-owned argument can create a snapshot; never promote options.
+        snapshot = validate_evidence_snapshot(evidence)
+        if snapshot is not None:
+            try:
+                encoded = snapshot.model_dump(mode="json")
+            except Exception:
+                encoded = None
+            if encoded is not None:
+                merged_meta["evidence"] = encoded
+                merged_meta["artifactVersion"] = encoded["artifactVersion"]
 
         detection = Detection(
             user_id=user_id,
