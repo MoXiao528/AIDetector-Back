@@ -461,6 +461,11 @@ result = engine.analyze(original_text, router_response, main_label="AI")
 
 先同时要求 `eligible_directional=true` 和 `length_band=short/medium/long`；
 即使超长文本的原资格字段为 true，也不能比较。资格不足时保留观察值、描述性 patterns 和原因。
+Runtime 另按 NFKC/空白规范化后、占位符替换前的文本，合并 URL、DOI、引用、数字和参考文献段落的
+排除区间；区间并集长度除以该文本长度，严格大于 40% 时返回 `insufficient / excluded_content_over_40pct`。
+恰好 40% 不触发此门。该判断不使用替换后的长度差，不改变冻结提取器的 37 字段或 22 项观察值；
+内部 `excluded_fraction/eligible_directional` 保留研究 V1 语义，不能单独作为 Runtime 比较许可。
+这次修复不重建历史 Reference/Bundle，也不代表已确认历史研究样本受影响的范围。
 Reference 必须存在合法 exact key，再按 `exact → language_length → language` 选择第一个
 `source_group_count>=10` 的完整 cell；不跨语言，选定后不为缺失指标另找参考组。
 

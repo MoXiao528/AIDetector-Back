@@ -1131,6 +1131,64 @@ def test_analysis_eligibility_blocks_comparison_but_keeps_observations(
     ]
 
 
+@pytest.mark.parametrize("extra_digits", [-1, 0, 1, 100])
+def test_runtime_exclusion_gate_has_strict_40pct_boundary(ready_engine, extra_digits):
+    from app.services import evidence_features
+
+    body = "alpha beta gamma delta epsilon zeta eta theta iota kappa. " * 30
+    text = body + "1" * (len(body) * 2 // 3 + extra_digits)
+    original = ready_engine.extract_features(text, response())["features"]
+    result = ready_engine.analyze(text, response(), main_label="human")
+    reason = "excluded_content_over_40pct"
+    if extra_digits > 0:
+        assert result["status"] == "insufficient"
+        assert result["quality"]["coverage"] == 0
+        assert result["quality"]["reasons"].count(reason) == 1
+        assert all(
+            signal["humanPercentile"] is None
+            and signal["aiPercentile"] is None
+            and signal["referenceRanges"] is None
+            and signal["relation"] is None
+            for signal in result["signals"]
+        )
+    else:
+        assert result["status"] == "partial"
+        assert result["quality"]["coverage"] > 0
+        assert reason not in result["quality"]["reasons"]
+    if extra_digits == 0:
+        assert evidence_features.runtime_excluded_fraction(text) == 0.4
+    assert len(result["signals"]) == 22
+    assert all(
+        signal["observed"] == original[signal["metric"]] for signal in result["signals"]
+    )
+
+
+def test_runtime_blocks_short_number_expansion_with_frozen_features(ready_engine):
+    text = (
+        "This report explains the local school library and the community reading programme. "
+        * 10
+        + "1 " * 2500
+    )
+    original = ready_engine.extract_features(text, response())["features"]
+    assert original["excluded_fraction"] == 0
+    assert original["eligible_directional"] is True
+    result = ready_engine.analyze(text, response(), main_label="AI")
+    assert result["status"] == "insufficient"
+    assert result["quality"] == {
+        "level": "insufficient",
+        "coverage": 0,
+        "reasons": ["excluded_content_over_40pct", "missing_observations"],
+    }
+    assert result["route"]["fallbackLevel"] == "unavailable"
+    assert all(
+        signal["observed"] == original[signal["metric"]]
+        and signal["sampleCount"] is None
+        and signal["relation"] is None
+        and signal["notice"] is None
+        for signal in result["signals"]
+    )
+
+
 def test_analysis_preserves_both_observed_and_reference_missing_reasons(
     ready_engine, comparison_input
 ):

@@ -677,6 +677,14 @@ class EvidenceEngine:
             blocked = []
             if not features["eligible_directional"]:
                 blocked.extend(features["eligibility_reason"].split(";"))
+            from app.services.evidence_features import runtime_excluded_fraction
+
+            # Keep the frozen V1 observations; reject excessive original exclusions.
+            if (
+                runtime_excluded_fraction(text) > 0.4
+                and "excluded_content_over_40pct" not in blocked
+            ):
+                blocked.append("excluded_content_over_40pct")
             if features["length_band"] not in LENGTH_BANDS:
                 blocked.append("length_out_of_range")
             cell = (
