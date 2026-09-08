@@ -297,5 +297,27 @@ class RepreGuardClient:
             ) from exc
         return self._validate_detect_payload(data)
 
+    async def route_evidence(self, text: str) -> bytes:
+        """One bounded response, using the effective detector's origin and prefix."""
+        endpoint = urlparse(self._resolve_detect_url())
+        path = endpoint.path.rstrip("/")
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.hostname
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.query
+            or endpoint.fragment
+            or endpoint.params
+            or not path.endswith("/detect")
+        ):
+            raise RepreGuardError("Evidence endpoint unavailable")
+        url = endpoint._replace(path=path[:-len("/detect")] + "/evidence/route").geturl()
+        resp = await self._request("POST", url, json_payload={"text": text})
+        if resp.status_code != 200:
+            # Do not decode or forward upstream error bodies on this optional path.
+            raise RepreGuardError("Evidence endpoint unavailable")
+        return resp.content
+
 
 repre_guard_client = RepreGuardClient()

@@ -1,6 +1,13 @@
 # Contract Changelog
 
-Tracks breaking OpenAPI changes and compatibility boundaries.
+Tracks OpenAPI changes and compatibility boundaries.
+
+## Unreleased
+- Added optional server-owned `evidence` to canonical detection responses and history records. Evidence never changes the main score, threshold or AI/Human label; compatibility scan responses keep their existing shape.
+- Evidence defaults to off. Shadow stores validated snapshots but omits public `evidence`; serve exposes valid snapshots, including degraded results. Missing or invalid snapshots are omitted rather than returned as `evidence: null`.
+- Detection results, quota and idempotency completion share one transaction with the Evidence snapshot. First responses, history and replay use that snapshot without recomputation or requiring the current Bundle SHA.
+- Corrected `EvidenceSignal.notice` to include `null` in its nullable enum, matching existing runtime responses.
+- These changes are locally verified and have not been released; the current API version remains `4.0.0`.
 
 ## 4.0.0 - 2026-08-25
 - **Breaking public-contract change:** detection labels and summary percentages now expose only `ai` and `human`; segment types additionally retain `too_short` for non-classified input.

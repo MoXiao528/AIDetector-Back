@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import ConfigDict, Field, field_validator
 
 from app.schemas.base import SchemaBase
+from app.schemas.evidence import EvidenceResponseBase
 from app.schemas.history import Analysis, PublicDetectionLabel, project_public_meta_json
 
 
@@ -39,7 +40,7 @@ class DetectionRequest(SchemaBase):
         return value
 
 
-class DetectionResponse(SchemaBase):
+class DetectionResponse(EvidenceResponseBase):
     detection_id: int = Field(..., json_schema_extra={"example": 1})
     label: PublicDetectionLabel = Field(..., json_schema_extra={"example": "human"})
     score: float = Field(

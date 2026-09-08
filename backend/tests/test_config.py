@@ -141,3 +141,27 @@ def test_settings_accept_safe_production_values():
     )
 
     assert settings.environment == "production"
+
+
+def test_evidence_settings_default_to_off():
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+
+    assert settings.detect_evidence_mode == "off"
+    assert settings.detect_evidence_bundle_path == ""
+    assert settings.detect_evidence_bundle_sha256 == ""
+    assert settings.detect_evidence_timeout_seconds == "12"
+
+
+def test_invalid_optional_evidence_config_does_not_block_settings():
+    settings = Settings(
+        _env_file=None,
+        repre_guard_service_token=SERVICE_TOKEN,
+        detect_evidence_mode="invalid-mode",
+        detect_evidence_bundle_path="missing.bundle",
+        detect_evidence_bundle_sha256="invalid-sha",
+        detect_evidence_timeout_seconds="invalid-timeout",
+    )
+
+    assert settings.detect_evidence_mode == "invalid-mode"
+    assert settings.detect_evidence_bundle_sha256 == "invalid-sha"
+    assert settings.detect_evidence_timeout_seconds == "invalid-timeout"

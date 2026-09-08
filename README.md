@@ -75,6 +75,23 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 
 ## 运行结构
 
+Evidence V1 已完成本地计算、模式控制、整文 Router HTTP 调用和失败隔离，以及 EV4-04 的快照持久化。
+默认 `DETECT_EVIDENCE_MODE=off`；应用启动持有一个消费实例，off 不读 Bundle、不执行 Evidence。
+shadow 执行内部分析并保存快照，不公开结果；serve 在标准检测响应、历史和幂等回放中输出有效的服务端 `evidence`。
+没有快照或快照非法时省略该字段，off/shadow 也不会新增 `evidence: null`，已有主检测字段保持原样。
+检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan、PDF、示例保持原合同。
+主检测确定结果后、数据库结算前，对原始整文只路由一次，不重试；复用既有连接池、鉴权和 128 KiB 响应上限。
+`DETECT_EVIDENCE_TIMEOUT_SECONDS=12` 覆盖 HTTP 与本地比较；有效启用时默认 lease 从 150 秒增至 162 秒，off 不变。
+后端每进程最多一个 Evidence 任务、不排队；超时仅降级 Evidence，仍占位至实际计算结束，主分数/阈值/标签不变。
+合法 Evidence 与 `artifactVersion` 存入既有 `meta_json`，和检测结果、配额、幂等完成状态同事务提交；首次响应使用同一份快照。
+历史和幂等回放不重算，旧快照不依赖当前 Bundle；非法快照只省略，实际数据库失败仍按原规则整体回滚。
+加载与响应校验只用标准库；特征提取按需加载 `numpy>=2.2,<2.3`、`jieba==0.42.1`，
+复用冻结的研究算法与八语言 golden，不需要挂载研究源码或加载模型。
+`extract_features` 返回内部特征；`analyze` 保留 22 项观察值、近似百分位、覆盖率及逐项参考差异提示，
+不重新判断 AI/Human。当前 Bundle 的参考数据最多支持 19/22 项比较，因此正常也会是 `partial`。
+本机真实 tokenizer、主模型、Router、Bundle 与隔离 SQLite 的业务链已通过；测试自建临时服务并退出，不需要手动启动后端。
+配置、响应合同与验证命令见 [检测契约第 10 节](docs/detection-contract.md#10-evidence-v1-本地计算与模式输出合同)。
+
 推荐结构：
 
 1. 前端静态文件由 Nginx / Caddy 提供

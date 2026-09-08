@@ -12,6 +12,7 @@ from app.api.v1.detections import scan_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
+from app.services.evidence_engine import EvidenceEngine
 from app.services.repre_guard_client import repre_guard_client
 
 settings = get_settings()
@@ -20,9 +21,23 @@ logger = configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.evidence_engine = None
     try:
+        try:
+            app.state.evidence_engine = EvidenceEngine(
+                mode=settings.detect_evidence_mode,
+                bundle_path=settings.detect_evidence_bundle_path,
+                bundle_sha256=settings.detect_evidence_bundle_sha256,
+                timeout_seconds=settings.detect_evidence_timeout_seconds,
+            )
+        except Exception:
+            logger.warning("Optional Evidence initialization failed")
         yield
     finally:
+        engine = app.state.evidence_engine
+        app.state.evidence_engine = None
+        if engine is not None:
+            await engine.drain()
         await repre_guard_client.aclose()
 
 
