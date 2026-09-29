@@ -10,6 +10,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from app.core.config import get_settings
 from app.schemas.base import SchemaBase
@@ -42,6 +43,7 @@ Reason = Literal[
     "reference_fallback_language",
     "missing_observations",
     "reference_metrics_unavailable",
+    "reference_validation_failed",
     "no_comparable_metrics",
     "no_valid_source_groups",
     "fewer_than_10_source_groups",
@@ -87,7 +89,15 @@ class EvidenceRoute(_EvidenceModel):
     language: Literal["ar", "de", "en", "es", "fr", "pt", "ru", "zh"]
     domain: Literal["academic", "news", "novel", "seo", "webtext", "wiki"]
     confidence: EvidenceConfidence
-    lengthBucket: Literal["below_minimum", "short", "medium", "long", "above_long"]
+    lengthBucket: Literal[
+        "below_minimum",
+        "brief_200_399",
+        "brief_400_599",
+        "short",
+        "medium",
+        "long",
+        "above_long",
+    ]
     fallbackLevel: Literal["exact", "language_length", "language", "unavailable"]
 
 
@@ -108,6 +118,9 @@ class EvidenceSignal(_EvidenceModel):
     humanPercentile: Percentile | None
     aiPercentile: Percentile | None
     referenceRanges: EvidenceRanges | None
+    referenceExtent: (
+        Annotated[list[float], Field(min_length=2, max_length=2)] | SkipJsonSchema[None]
+    ) = Field(default_factory=lambda: None)
     relation: EvidenceRelation | None
     notice: Literal["reference_mismatch", "outside_both"] | None
     sampleCount: Annotated[int, Field(ge=0)] | None
@@ -115,10 +128,30 @@ class EvidenceSignal(_EvidenceModel):
     reasons: list[Reason]
 
     @model_validator(mode="after")
-    def known_metric(self):
+    def valid_metric_and_extent(self):
         if METRICS.get(self.metric) != self.dimension:
             raise ValueError("Invalid Evidence metric")
+        if "referenceExtent" in self.model_fields_set:
+            if self.referenceExtent is None:
+                raise ValueError("Invalid Evidence reference extent")
+            low, high = self.referenceExtent
+            if low > high or (
+                self.referenceRanges is not None
+                and any(
+                    not low <= bounds[0] <= bounds[1] <= high
+                    for bounds in (self.referenceRanges.human, self.referenceRanges.ai)
+                )
+            ):
+                raise ValueError("Invalid Evidence reference extent")
         return self
+
+    @model_serializer(mode="wrap")
+    def omit_absent_extent(self, handler):
+        result = handler(self)
+        # Legacy snapshots keep their exact field set; never add null or backfill.
+        if "referenceExtent" not in self.model_fields_set:
+            result.pop("referenceExtent", None)
+        return result
 
 
 class EvidenceQuality(_EvidenceModel):

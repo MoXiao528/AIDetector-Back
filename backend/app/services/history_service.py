@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from math import ceil
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.detection import Detection
@@ -22,8 +22,20 @@ class HistoryService:
 
     MAX_HISTORY_RECORDS = 100
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, guest_id: str | None = None):
         self.db = db
+        self.guest_id = guest_id
+
+    def _owner_scope(self, user_id: int | None):
+        if self.guest_id:
+            return and_(
+                Detection.actor_type == "guest",
+                Detection.actor_id == self.guest_id,
+                Detection.user_id.is_(None),
+            )
+        if user_id is None:
+            raise ValueError("A history owner is required")
+        return Detection.user_id == user_id
 
     def create_history(
         self,
@@ -105,16 +117,16 @@ class HistoryService:
             self.db.rollback()
             raise
 
-    def get_history(self, user_id: int, history_id: int) -> Detection | None:
+    def get_history(self, user_id: int | None, history_id: int) -> Detection | None:
         stmt = select(Detection).where(
             Detection.id == history_id,
-            Detection.user_id == user_id,
+            self._owner_scope(user_id),
         )
         return self.db.scalar(stmt)
 
     def list_histories(
         self,
-        user_id: int,
+        user_id: int | None,
         page: int = 1,
         per_page: int = 20,
         sort: str = "created_at",
@@ -124,7 +136,7 @@ class HistoryService:
     ) -> tuple[list[Detection], int, int]:
         per_page = min(per_page, 100)
 
-        query = select(Detection).where(Detection.user_id == user_id)
+        query = select(Detection).where(self._owner_scope(user_id))
 
         search = (q or "").strip()
         if search:
@@ -151,7 +163,7 @@ class HistoryService:
 
     def update_history(
         self,
-        user_id: int,
+        user_id: int | None,
         history_id: int,
         title: str | None = None,
         is_pinned: bool | None = None,
@@ -168,7 +180,7 @@ class HistoryService:
         self.db.refresh(detection)
         return detection
 
-    def delete_history(self, user_id: int, history_id: int) -> bool:
+    def delete_history(self, user_id: int | None, history_id: int) -> bool:
         detection = self.get_history(user_id, history_id)
         if not detection:
             return False
@@ -179,23 +191,26 @@ class HistoryService:
 
     def batch_delete_histories(
         self,
-        user_id: int,
+        user_id: int | None,
         ids: list[int],
     ) -> tuple[int, list[int]]:
-        deleted_count = 0
+        deleted_ids = set(self.db.scalars(
+            delete(Detection)
+            .where(self._owner_scope(user_id), Detection.id.in_(ids))
+            .returning(Detection.id)
+        ).all())
         failed_ids = []
-
         for history_id in ids:
-            success = self.delete_history(user_id, history_id)
-            if success:
-                deleted_count += 1
+            if history_id in deleted_ids:
+                deleted_ids.remove(history_id)
             else:
                 failed_ids.append(history_id)
+        # Keep the guest-session lock for the complete batch, including ownership checks.
+        self.db.commit()
+        return len(ids) - len(failed_ids), failed_ids
 
-        return deleted_count, failed_ids
-
-    def clear_all_histories(self, user_id: int) -> int:
-        stmt = delete(Detection).where(Detection.user_id == user_id)
+    def clear_all_histories(self, user_id: int | None) -> int:
+        stmt = delete(Detection).where(self._owner_scope(user_id))
         result = self.db.execute(stmt)
         self.db.commit()
         return result.rowcount or 0

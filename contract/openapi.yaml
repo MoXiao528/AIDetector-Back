@@ -577,6 +577,261 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScanExamplesResponse'
+  /api/v1/guest/history:
+    get:
+      tags:
+      - history
+      summary: List current guest history
+      operationId: listGuestHistory
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: per_page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: sort
+        in: query
+        schema:
+          type: string
+          enum:
+          - created_at
+          default: created_at
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      - name: q
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+        description: Search title or input text
+      - name: pinned
+        in: query
+        schema:
+          type: boolean
+        description: Filter pinned records
+      responses:
+        '200':
+          description: History list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
+    delete:
+      tags:
+      - history
+      summary: Clear all current guest history
+      operationId: clearGuestHistory
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: All history cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearAllResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
+  /api/v1/guest/history/batch-delete:
+    post:
+      tags:
+      - history
+      summary: Batch delete history records
+      operationId: batchDeleteGuestHistory
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
+      responses:
+        '200':
+          description: Batch delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
+  /api/v1/guest/history/{historyId}:
+    get:
+      tags:
+      - history
+      summary: Get history detail
+      operationId: getGuestHistory
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: historyId
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: History detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
+    patch:
+      tags:
+      - history
+      summary: Update current guest history
+      operationId: updateGuestHistory
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: historyId
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HistoryRecordUpdateRequest'
+      responses:
+        '200':
+          description: History detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRecordResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
+    delete:
+      tags:
+      - history
+      summary: Delete current guest history
+      operationId: deleteGuestHistory
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: historyId
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          description: History deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API keys are not supported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Requires an explicit, active guest Bearer token. Only unclaimed records from that session are accessible.
+        User sessions, API keys and cookie-only requests are rejected. Mutations do not change quota or recompute analysis.
   /api/v1/history:
     get:
       tags: [history]
@@ -2169,6 +2424,8 @@ components:
           type: integer
         userId:
           type: integer
+          nullable: true
+          description: Null for an unclaimed guest record.
         title:
           type: string
           nullable: true
@@ -2198,8 +2455,9 @@ components:
       required:
         - items
         - page
-        - pageSize
+        - perPage
         - total
+        - totalPages
       properties:
         items:
           type: array
@@ -2207,9 +2465,11 @@ components:
             $ref: '#/components/schemas/HistoryRecordResponse'
         page:
           type: integer
-        pageSize:
+        perPage:
           type: integer
         total:
+          type: integer
+        totalPages:
           type: integer
     BatchDeleteRequest:
       type: object
@@ -2713,6 +2973,7 @@ components:
             - reference_fallback_language
             - missing_observations
             - reference_metrics_unavailable
+            - reference_validation_failed
             - no_comparable_metrics
             - no_valid_source_groups
             - fewer_than_10_source_groups
@@ -2791,6 +3052,8 @@ components:
         lengthBucket:
           enum:
           - below_minimum
+          - brief_200_399
+          - brief_400_599
           - short
           - medium
           - long
@@ -2841,6 +3104,13 @@ components:
           - type: object
             nullable: true
             enum: [null]
+        referenceExtent:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: number
+          description: Optional finite ordered empirical limits for this metric and language in the snapshot's artifactVersion. Aggregates Q0/Q100 across both sides and all usable domain/length reference groups, including validated Chinese short-text references. Contains both referenceRanges when present; equal limits are valid. Not a Q05-Q95 envelope or theoretical bound. Omitted for legacy snapshots; never backfilled from the current bundle.
         relation:
           anyOf:
           - $ref: '#/components/schemas/EvidenceRelation'
@@ -2888,6 +3158,7 @@ components:
             - reference_fallback_language
             - missing_observations
             - reference_metrics_unavailable
+            - reference_validation_failed
             - no_comparable_metrics
             - no_valid_source_groups
             - fewer_than_10_source_groups

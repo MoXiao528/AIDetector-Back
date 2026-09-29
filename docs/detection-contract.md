@@ -266,8 +266,9 @@ engine = EvidenceEngine(
 加载状态为 `off/ready/failed`，失败原因只为 `invalid_evidence_config/invalid_evidence_bundle`，
 不包含本地路径、JSON 内容或底层异常。这里的 `ready` 仅表示消费实例已加载，不是产品 Evidence ready 或上线批准。
 
-Bundle 读取上限及两成员声明解压总量上限均为 32 MiB；先验证同一份读取 bytes 的外部 SHA，
-再用标准库解析 ZIP，精确只接受 `manifest.json` 与 `reference.json`，不解压到磁盘。
+Bundle 读取上限及成员声明解压总量上限均为 32 MiB；先验证同一份读取 bytes 的外部 SHA，
+再用标准库解析 ZIP，接受原 `manifest.json` 与 `reference.json` 两成员组合，或仅额外包含
+`short_text_reference.json` 的三成员组合，不解压到磁盘。旧两成员 Bundle 保持兼容。
 拒绝重复成员/JSON keys、额外成员、未知 schema、非有限数、路由合同漂移及不合法 Reference cells/metrics。
 只验证消费所需语义，不重做研究 source/cohort 审计、不向 Runtime 扩散其细 SHA。
 
@@ -469,6 +470,52 @@ Runtime 另按 NFKC/空白规范化后、占位符替换前的文本，合并 UR
 Reference 必须存在合法 exact key，再按 `exact → language_length → language` 选择第一个
 `source_group_count>=10` 的完整 cell；不跨语言，选定后不为缺失指标另找参考组。
 
+#### 可选中文短文参考扩展
+
+只有加载经过校验的 `short_text_reference.json` 且本次语言为中文、有效汉字数在 `[200,600)` 时，
+使用短文比较策略；旧两成员 Bundle、非中文、600 汉字以上及其原 V1 结果仍按上述冻结规则执行。
+短文的公开 `route.lengthBucket` 为 `brief_200_399` 或 `brief_400_599`；
+内部冻结提取器的 `length_band/eligible_directional` 和全部 37 字段不变。
+低于 200 汉字仍不比较，短文参考缺失时不回退到另一短文长度桶或 V1 的 600+ 样本。
+
+短文不再用全局 10 句要求挡住所有指标，改为下列逐项观察要求；不满足时保留冻结观察值，
+该项比较字段为 null，原因 `insufficient_observations`：
+
+| 指标 | 最少观察 |
+|---|---|
+| `sentence_start_repeat/sentence_length_iqr/sentence_length_cv/sentence_adjacent_change_median` | 2 句 |
+| `paragraph_length_iqr/paragraph_length_cv/paragraph_adjacent_jaccard/intro_conclusion_jaccard` | 2 段 |
+| `paragraph_nonadjacent_jaccard_q90` | 3 段 |
+| 其他指标 | 原观察值有限且非 null |
+
+短文仍用规范化、占位符替换前的原文排除区间并集计算 `runtime_excluded_fraction`，
+严格 `>0.4` 时整篇不比较；不再叠加冻结旧 `excluded_fraction` 的长度差门。
+这是短文生产和消费共同采用的排除规则，未更改 V1 长文算法、主模型或历史快照。
+
+新增成员有独立 `short_text_reference_schema_version=1`，保留 `feature_schema_version=1`。
+启动时严格检查所有字段、类型、去重、14 个合法中文 cell（6 领域 exact + 1 language_length，各 2 桶）、
+每 cell 的 22 个指标、方法元数据、样本数、验证覆盖率及 101 个有限非降序分位点。
+`source.base_manifest_sha256/base_reference_sha256` 必须匹配同一 ZIP 中两个原成员的字节摘要；
+`base_bundle_sha256/feature_sha256/config_sha256/pair_cache_sha256/runtime_features_sha256`
+仅为格式严格的来源摘要，不在消费时读取其路径或重做语料审计。整 ZIP 仍由外部 SHA 固定，
+原 manifest/reference 字节不改，任一加载校验错误只使 Evidence 降级。
+
+短文参考先按 source-group 的固定 SHA-256 内部留出划分 fit/validation：
+`sha256('short-text-reference-v1:' + source_group_id)` 前 8 字节按大端转整数，模 5 为 0 则 validation，
+其余为 fit；同组不能跨集合。原 `analysis_split` 只用于来源审计，不修改原研究拆分；
+该内部留出不表示外部验证或 Router 认证。每个指标以共同有效的 Human/AI 配对先按 source-group 取中位数，
+至少 100 个 fit 组、50 个 validation 组；两侧 fit Q05–Q95 在 validation 的覆盖率均至少 0.8 才发布。
+公开 `sampleCount` 为实际 fit 组数，JSON 中 `test_sample_count/*_test_coverage` 的字段名保留，
+其集合由 `method.validation_split=validation` 明确指定。未通过样本门或覆盖率验收的指标不发布分位点，
+运行时保留观察值和样本数，比较字段为 null；无有效参考样本为 `no_valid_source_groups`，
+样本量未达到验收门槛为 `reference_metrics_unavailable`，仅任一侧覆盖率低于 0.8 时为
+`reference_validation_failed`。quality 统一保留 `reference_metrics_unavailable`，
+仅实际覆盖率验收失败时额外加入 `reference_validation_failed`，避免把缺样本误报为验证失败。
+
+参考组选择只沿当前桶 `exact → language_length → unavailable`，cell 满足 100/50 组才能被选用；
+选定后单个未通过验收的指标不另行池化。`quality.coverage` 分母仍为 22，
+`ready/partial/insufficient` 与可比项数量严格一致，不生成新的 AI 概率、投票或主结果。
+
 顶层结果固定包含：
 
 | 字段 | 内容 |
@@ -487,7 +534,7 @@ Reference 必须存在合法 exact key，再按 `exact → language_length → l
 三个段落衔接指标没有参考数据；完整观察值也只能得到 `19/22`、`partial`，不能改写为 `19/19`。
 覆盖率只表示数据完整程度，不表示判断正确率或上线资格。
 
-每个 signal 固定包含：
+每个 signal 的字段如下（仅 `referenceExtent` 为可选新增字段，其余保持原合同）：
 
 | 字段 | 内容 |
 |---|---|
@@ -495,11 +542,26 @@ Reference 必须存在合法 exact key，再按 `exact → language_length → l
 | `observed` | 原单位观察值；允许缺失为 `null` |
 | `humanPercentile/aiPercentile` | 两侧 0–100 近似百分位；不可比为 `null` |
 | `referenceRanges` | `{human:[Q05,Q95],ai:[Q05,Q95]}`；不可比为 `null` |
+| `referenceExtent` | 可选 `[minimum,maximum]`，同一 artifactVersion、语言、指标的全部可用参考统计经验极值；新可比项提供，旧快照缺失时省略，不新增 `null` |
 | `relation` | `{human:below/within/above,ai:below/within/above}`；不可比为 `null` |
 | `notice` | `reference_mismatch/outside_both/null`，规则见下 |
 | `sampleCount` | 选定 cell 中该指标的配对共同有效 source-group 数；保留实际 `0` 或 `1–9`，无 cell 为 `null` |
 | `offsets` | 只对重复短语和句首重复指标映射对应 patterns 的原文区间；其余为 `[]` |
 | `reasons` | 无法比较的具体原因，可同时包含观察值缺失与参考数据缺失；可比为 `[]` |
+
+`referenceExtent` 在启动完成 Bundle 校验后聚合一次，按 `(language, metric)` 缓存。
+遍历同一 ZIP 的 V1 Reference 与可选中文短文 Reference 中 cell 和 metric 均为 `ready` 的分组，
+取两侧已有 101 分位点的 Q0 最小值与 Q100 最大值；跨领域、长度档和 exact/pooled 分组，
+但不跨语言、不跨指标、不借用其他 Bundle。失败或未达样本门槛的统计不参与。
+该字段描述已可用组级参考值的整体经验范围，不是当前 Q05–Q95 包络、理论取值界限或全部原始语料范围。
+请求仅复制已缓存的两个端点，不随本次 observed 或选中的参考分组伸缩，不重算研究产物。
+旧双成员 Bundle 同样支持该聚合；三成员 Bundle 会把已通过验证的中文短文统计并入中文标尺，
+但不会改变短文/长文原有的比较分组选择、Q05/Q95、percentile、relation、22 项顺序或 coverage。
+
+有此字段时必须为两个有限数字且下界不大于上界，允许相同端点；若 `referenceRanges` 存在，
+两侧常见区间都必须完整包含于该 extent。非法 extent 按既有快照校验规则省略整个 Evidence，主结果保留。
+历史缺字段合法，首次响应、历史列表/详情与幂等回放保持已存快照字段集合；不从当前 Bundle 回填，
+不重写快照或参考版本。同语言整体标尺不表示新的分类阈值或准确率承诺。
 
 近似百分位只使用已验证的 101 个 `inverted_cdf` 分位点 q：
 `clamp((bisect_left(q,x)+bisect_right(q,x)-1)/2,0,100)`。
@@ -532,6 +594,9 @@ python -B -m pytest -q -p no:cacheprovider backend/tests/test_evidence_http.py b
 该测试只读加载，并锁定当前 Bundle SHA。未配置时只跳过此 smoke，不下载、复制或重建任何研究产物。
 测试覆盖单项缺失、N=9/10 与 cell-atomic fallback、并列/常量/端点、固定分母、逐项差异及失败隔离；
 真实 Bundle smoke 还执行原文特征提取与 19/22 本地比较，不加载 Router 模型。
+短文扩展回归为 `backend/tests/test_short_text_reference.py`，覆盖长度边界、逐指标观察要求、
+验收失败、排除比率、旧 Bundle 兼容及严格成员校验；设置 `EVIDENCE_SHORT_TEST_BUNDLE`
+为新短文 Bundle 的绝对路径可运行固定 SHA 的真实产物 smoke，同样不调用 Router 或主模型。
 `language_undetermined` 已覆盖合法/非法状态组合及无特征依赖时的失败透传，schema 仍为 v1。
 现有模式/合同测试同时读取静态 OpenAPI，确认 `EvidenceSignal.notice` 的 nullable 枚举包含 `null` 和两个合法提示值，防止合同拒绝正常响应。
 D1 真实模型与本机共存、模式公共投影、EV4-02 受控 HTTP 整文单次调用/超时/并发/lease，以及 EV4-04 快照事务、回放和本机真实模型业务链已验收。
@@ -562,3 +627,12 @@ python -B -m pytest -q --tb=short -p no:cacheprovider backend/tests/test_evidenc
 首轮中文样本低于冻结的 600 汉字门，正确返回 insufficient，与脚本 partial 预期不符；仅扩充固定样本后重跑，原失败报告保留，不修改资格规则。
 验收是小样本业务正确性检查，不作 P95 性能结论；启动约 19.31 秒，首个主请求有约 11.48 秒冷启动，启用模式四次总请求约 0.078–0.657 秒。
 资源保留门未触发，服务正常退出、活动计数归零。部署问题按用户决定暂不处理。
+
+
+## 游客历史恢复（2026-09-12，本地修复）
+
+- `GET /api/v1/guest/history` 接受 `page`、`per_page`、`sort`、`order`、`q`、`pinned`，返回 `items/total/page/perPage/totalPages`。每条记录与会员历史相同，游客的 `userId` 为 `null`；包含服务器保存的原文、HTML、分析和按现有模式公开的 Evidence 快照，不重新检测。
+- `GET/PATCH/DELETE /api/v1/guest/history/{id}` 分别读取、修改标题/置顶、删除；`POST /api/v1/guest/history/batch-delete` 接受 `{ids}`；`DELETE /api/v1/guest/history` 清空当前游客历史。没有游客历史创建或隐式认领接口。
+- 必须显式提交活动游客 Bearer，仅访问该会话尚未认领的记录。用户令牌、API key、仅 Cookie、失效/已放弃/已认领游客会话不能访问。会员 `/api/v1/history` 保留原有会员鉴权。
+- 写操作重新验证并锁定游客会话行，直到提交结束；与认领/放弃互斥。批删保持一个事务。历史管理不修改额度账本，不重算检测或 Evidence。
+- 客户端以真实检测 ID 恢复同一会话历史；正文、HTML、分析与 Evidence 不写入浏览器 Web Storage。跨身份响应必须丢弃。会话失效后不会根据 IP 或任意客户端 SID 找回原文。
