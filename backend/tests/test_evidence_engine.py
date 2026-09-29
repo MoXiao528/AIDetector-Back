@@ -350,8 +350,18 @@ def test_off_does_not_read_bundle_or_validate_unused_config(monkeypatch):
 
 @pytest.mark.parametrize("mode", ["shadow", "serve"])
 def test_bundle_loads_once_and_waivers_do_not_become_a_runtime_gate(
-    tmp_path, artifacts, mode
+    tmp_path, artifacts, mode, monkeypatch, comparison_input
 ):
+    import app.services.evidence_engine as module
+
+    build_extents = module._build_reference_extents
+    calls = []
+
+    def counted_extents(*args):
+        calls.append(True)
+        return build_extents(*args)
+
+    monkeypatch.setattr(module, "_build_reference_extents", counted_extents)
     path, digest = write_bundle(tmp_path, artifacts)
     engine = EvidenceEngine(mode=mode, bundle_path=str(path), bundle_sha256=digest)
     assert engine.status == "ready", engine.reason
@@ -361,7 +371,43 @@ def test_bundle_loads_once_and_waivers_do_not_become_a_runtime_gate(
     path.unlink()
     for _ in range(2):
         assert engine.validate_router_response(response()) == response()
+        result = engine.analyze(comparison_input["text"], response(), main_label="AI")
+        assert signal_for(result, "mattr")["referenceExtent"] == [0.0, 2.0]
         assert engine.status == "ready"
+    assert calls == [True]
+
+
+def test_reference_extent_uses_language_wide_extremes_not_current_ranges(
+    tmp_path, artifacts, comparison_input
+):
+    for cell in artifacts[1]["cells"]:
+        metric = next(m for m in cell["metrics"] if m["feature"] == "token_entropy")
+        if cell["language"] == "en":
+            metric["human_quantiles"] = [0.2] + [2.0] * 99 + [4.0]
+            metric["ai_quantiles"] = [0.3] + [3.0] * 99 + [5.0]
+            if cell["domain"] == "news" and cell["length_band"] == "short":
+                metric["human_quantiles"][0] = 0.1
+            if cell["domain"] == "academic" and cell["length_band"] == "long":
+                metric["ai_quantiles"][-1] = 8.0
+        else:
+            metric["human_quantiles"] = [0.0] * 101
+            metric["ai_quantiles"] = [100.0] * 101
+    path, digest = write_bundle(tmp_path, artifacts)
+    engine = EvidenceEngine(mode="serve", bundle_path=str(path), bundle_sha256=digest)
+    assert engine.status == "ready"
+    for domain, band, observed in (("news", "short", 0.5), ("novel", "long", 20.0)):
+        payload = response()
+        payload["route"]["domain"] = domain
+        comparison_input["raw"].update(length_band=band, token_entropy=observed)
+        result = engine.analyze(comparison_input["text"], payload, main_label="AI")
+        signal = signal_for(result, "token_entropy")
+        assert signal["referenceExtent"] == [0.1, 8.0]
+        assert signal["referenceRanges"] == {"human": [2.0, 2.0], "ai": [3.0, 3.0]}
+        assert signal["observed"] == observed
+        assert result["quality"]["coverage"] == 19 / 22
+        assert "referenceExtent" not in signal_for(result, "intro_conclusion_jaccard")
+        signal["referenceExtent"][0] = -999
+        assert engine.reference_extents[("en", "token_entropy")] == (0.1, 8.0)
 
 
 @pytest.mark.parametrize(
@@ -1020,6 +1066,12 @@ def test_analysis_quality_uses_fixed_22_metric_denominator(
             human_quantiles=[0.5] * 101 if ready else None,
             ai_quantiles=[0.5] * 101 if ready else None,
         )
+    # This fixture edits an otherwise immutable loaded reference, including new metrics.
+    from app.services.evidence_engine import _build_reference_extents
+
+    ready_engine.reference_extents = _build_reference_extents(
+        ready_engine.reference, None
+    )
     result = ready_engine.analyze(
         comparison_input["text"], response(), main_label="human"
     )

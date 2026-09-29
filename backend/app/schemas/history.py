@@ -151,7 +151,7 @@ class HistoryRecordUpdate(SchemaBase):
 
 class HistoryRecordResponse(EvidenceResponseBase):
     id: int = Field(..., json_schema_extra={"example": 1}, description="History record ID")
-    user_id: int = Field(..., json_schema_extra={"example": 123}, description="Owner user ID")
+    user_id: int | None = Field(..., json_schema_extra={"example": 123}, description="Owner user ID; null for an unclaimed guest record")
     title: str | None = Field(None, json_schema_extra={"example": "Scan Record · 2026-02-11 13:15:21"}, description="Record title")
     created_at: datetime = Field(..., json_schema_extra={"example": "2026-02-11T13:15:21.000Z"}, description="Creation timestamp")
     functions: list[str] = Field(default_factory=list, json_schema_extra={"example": ["scan"]}, description="Enabled functions")

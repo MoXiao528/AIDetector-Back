@@ -19,6 +19,7 @@ from app.api.v1.admin import router as admin_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.teams import router as teams_router
 from app.api.v1.history import router as history_router
+from app.api.v1.guest_history import router as guest_history_router
 
 api_router = APIRouter()
 
@@ -35,6 +36,7 @@ api_router.include_router(admin_router, prefix="")
 api_router.include_router(teams_router, prefix="")
 api_router.include_router(quota_router, prefix="")
 api_router.include_router(history_router, prefix="")
+api_router.include_router(guest_history_router, prefix="")
 api_router.include_router(reports_router, prefix="")
 
 router = api_router

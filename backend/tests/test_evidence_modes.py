@@ -1,6 +1,7 @@
 """EV4-03 mode/output checks; Router responses and stored snapshots are fixtures."""
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -272,6 +273,37 @@ def test_malformed_snapshot_is_omitted_without_changing_main_result(
     )
 
 
+@pytest.mark.parametrize(
+    "extent",
+    [
+        None, [], [0.0], [0.0, 1.0, 2.0], [2.0, 0.0], [0.2, 2.0],
+        [0.0, 1.0], [float("nan"), 2.0], [0.0, float("inf")], [True, 2.0], ["0", 2.0],
+    ],
+)
+def test_invalid_reference_extent_omits_only_evidence(
+    ready_engine, comparison_input, monkeypatch, extent
+):
+    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
+    result = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
+    result["signals"][0]["referenceExtent"] = extent
+    assert detection_response(result).model_dump() == detection_response().model_dump()
+
+
+def test_reference_extent_allows_a_point_and_revalidates_existing_instances(
+    ready_engine, comparison_input, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
+    result = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
+    result["signals"][0].update(
+        referenceExtent=[0.5, 0.5],
+        referenceRanges={"human": [0.5, 0.5], "ai": [0.5, 0.5]},
+    )
+    parsed = EvidenceResult.model_validate(result)
+    assert detection_response(parsed).model_dump(mode="json")["evidence"] == result
+    parsed.signals[0].referenceExtent[0] = 1.0
+    assert "evidence" not in detection_response(parsed).model_dump()
+
+
 def test_serializing_prebuilt_response_after_switch_off_hides_evidence(
     snapshot, optional_settings, monkeypatch
 ):
@@ -354,8 +386,18 @@ def test_bad_bundle_does_not_break_lifespan_or_main_result(monkeypatch, tmp_path
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", MODES)
 async def test_new_detection_replay_history_and_admin_boundaries(
-    db_session, unique_email, monkeypatch, optional_settings, snapshot, mode
+    db_session, unique_email, monkeypatch, optional_settings,
+    ready_engine, comparison_input, mode
 ):
+    # Stored snapshots have already passed this serializer at creation time.
+    snapshot = EvidenceResult.model_validate(
+        ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
+    ).model_dump(mode="json")
+    for signal in snapshot["signals"]:
+        signal.pop("referenceExtent", None)
+    snapshot_hash = hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True).encode()
+    ).hexdigest()
     actor = await _user_actor(db_session, unique_email)
     monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
     key = uuid4()
@@ -419,6 +461,9 @@ async def test_new_detection_replay_history_and_admin_boundaries(
         assert ("evidence" in public) == (mode == "serve")
         if mode == "serve":
             assert public["evidence"] == snapshot
+            assert hashlib.sha256(
+                json.dumps(public["evidence"], sort_keys=True).encode()
+            ).hexdigest() == snapshot_hash
     assert replay.model_dump(exclude={"evidence"}) == first.model_dump(
         exclude={"evidence"}
     )
@@ -513,15 +558,27 @@ async def test_client_history_cannot_write_server_evidence(
 
 
 def test_modes_do_not_load_artifacts_while_projecting(
-    snapshot, monkeypatch, optional_settings
+    ready_engine, comparison_input, monkeypatch, optional_settings
 ):
+    snapshot = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
+    for signal in snapshot["signals"]:
+        signal.pop("referenceExtent", None)
+    monkeypatch.setattr(get_settings(), "detect_evidence_bundle_sha256", "9" * 64)
+
     def forbidden(*args, **kwargs):
         raise AssertionError("Projection must not load an artifact")
 
     monkeypatch.setattr(Path, "open", forbidden)
     for mode in MODES:
         monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
-        assert (project_public_evidence(snapshot) is not None) == (mode == "serve")
+        projected = project_public_evidence(snapshot)
+        assert (projected is not None) == (mode == "serve")
+        if projected is not None:
+            assert projected.model_dump(mode="json") == snapshot
+            assert (
+                EvidenceResult.model_validate(projected).model_dump(mode="json")
+                == snapshot
+            )
     assert "evidence" not in project_public_meta_json({"evidence": object()})
 
 
@@ -684,3 +741,12 @@ def test_openapi_exposes_evidence_only_on_output_models():
     assert notice["nullable"] is True
     # Nullable does not override enum: normal Engine results contain notice:null.
     assert set(notice["enum"]) == {None, "reference_mismatch", "outside_both"}
+    for signal_schema in (
+        schemas["EvidenceSignal"], contract["components"]["schemas"]["EvidenceSignal"]
+    ):
+        extent = signal_schema["properties"]["referenceExtent"]
+        assert "referenceExtent" not in signal_schema["required"]
+        assert extent["type"] == "array"
+        assert extent["minItems"] == extent["maxItems"] == 2
+        assert extent["items"]["type"] == "number"
+        assert not extent.get("nullable") and "default" not in extent

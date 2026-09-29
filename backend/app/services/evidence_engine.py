@@ -404,6 +404,28 @@ def _reference_position(quantiles: list[float], observed: float) -> str:
     )
 
 
+def _build_reference_extents(
+    reference: dict, short_reference: dict | None
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Cache same-language empirical limits from validated, usable distributions."""
+    extents = {}
+    for source in (reference, short_reference):
+        if source is None:
+            continue
+        for cell in source["cells"]:
+            if cell["status"] != "ready":
+                continue
+            for metric in cell["metrics"]:
+                if metric["status"] != "ready":
+                    continue
+                key = (cell["language"], metric["feature"])
+                low = min(metric["human_quantiles"][0], metric["ai_quantiles"][0])
+                high = max(metric["human_quantiles"][-1], metric["ai_quantiles"][-1])
+                previous = extents.get(key, (low, high))
+                extents[key] = (min(previous[0], low), max(previous[1], high))
+    return extents
+
+
 class EvidenceEngine:
     """Explicitly constructed once by its owner; failures stay local and are cached."""
 
@@ -420,6 +442,8 @@ class EvidenceEngine:
         self.artifact_version: str | None = None
         self.router_artifact_sha256: str | None = None
         self.reference: dict | None = None
+        self.short_reference: dict | None = None
+        self.reference_extents: dict[tuple[str, str], tuple[float, float]] = {}
         self.timeout_seconds = 0.0
         self._task: asyncio.Task | None = None
         if mode == "off":
@@ -446,22 +470,48 @@ class EvidenceEngine:
             # Parse exactly the bytes just hashed; never extract ZIP paths to disk.
             with zipfile.ZipFile(io.BytesIO(encoded)) as archive:
                 members = archive.infolist()
+                names = {m.filename for m in members}
                 _require(
-                    len(members) == 2
-                    and {m.filename for m in members}
-                    == {"manifest.json", "reference.json"}
+                    len(members) == len(names)
+                    and names
+                    in (
+                        {"manifest.json", "reference.json"},
+                        {
+                            "manifest.json",
+                            "reference.json",
+                            "short_text_reference.json",
+                        },
+                    )
                 )
                 _require(sum(m.file_size for m in members) <= MAX_BUNDLE_BYTES)
                 _require(all(not m.is_dir() and not m.flag_bits & 1 for m in members))
-                manifest = _read_json(archive.read("manifest.json"))
-                reference = _read_json(archive.read("reference.json"))
+                manifest_bytes = archive.read("manifest.json")
+                reference_bytes = archive.read("reference.json")
+                manifest = _read_json(manifest_bytes)
+                reference = _read_json(reference_bytes)
+                short_reference = (
+                    _read_json(archive.read("short_text_reference.json"))
+                    if "short_text_reference.json" in names
+                    else None
+                )
             router_sha = _validate_manifest(manifest)
             _validate_reference(reference)
+            if short_reference is not None:
+                from app.services.short_text_reference import validate_reference
+
+                validate_reference(
+                    short_reference,
+                    manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                    reference_sha256=hashlib.sha256(reference_bytes).hexdigest(),
+                )
+            reference_extents = _build_reference_extents(reference, short_reference)
         except Exception:
             # Never surface paths, raw JSON or library exceptions to the main result.
             self.reason = "invalid_evidence_bundle"
             return
         self.reference = reference
+        self.short_reference = short_reference
+        self.reference_extents = reference_extents
         self.router_artifact_sha256 = router_sha
         self.artifact_version = bundle_sha256
         self.timeout_seconds = timeout
@@ -669,14 +719,33 @@ class EvidenceEngine:
                 )
                 return result
             features, patterns = extracted["features"], extracted["patterns"]
+            from app.services import short_text_reference
+
+            brief_band = (
+                short_text_reference.length_band(
+                    extracted["route"]["language"], features["effective_length"]
+                )
+                if self.short_reference is not None
+                else None
+            )
             route = {
                 **extracted["route"],
-                "lengthBucket": features["length_band"],
+                "lengthBucket": brief_band or features["length_band"],
                 "fallbackLevel": "unavailable",
             }
             blocked = []
             if not features["eligible_directional"]:
-                blocked.extend(features["eligibility_reason"].split(";"))
+                blocked.extend(
+                    reason
+                    for reason in features["eligibility_reason"].split(";")
+                    if not brief_band
+                    or reason
+                    not in {
+                        "below_minimum_length",
+                        "fewer_than_10_sentences",
+                        "excluded_content_over_40pct",
+                    }
+                )
             from app.services.evidence_features import runtime_excluded_fraction
 
             # Keep the frozen V1 observations; reject excessive original exclusions.
@@ -685,11 +754,15 @@ class EvidenceEngine:
                 and "excluded_content_over_40pct" not in blocked
             ):
                 blocked.append("excluded_content_over_40pct")
-            if features["length_band"] not in LENGTH_BANDS:
+            if not brief_band and features["length_band"] not in LENGTH_BANDS:
                 blocked.append("length_out_of_range")
             cell = (
                 None
                 if blocked
+                else short_text_reference.select_reference_cell(
+                    self.short_reference, route["domain"], brief_band
+                )
+                if brief_band
                 else _select_reference_cell(
                     self.reference["cells"],
                     route["language"],
@@ -719,9 +792,24 @@ class EvidenceEngine:
                 if observed is None:
                     reasons.append(extracted["missingReasons"][name])
                     quality_reasons.append("missing_observations")
+                elif brief_band and not short_text_reference.has_observations(
+                    name, features
+                ):
+                    reasons.append("insufficient_observations")
+                    quality_reasons.append("missing_observations")
                 if reference is not None and reference["status"] != "ready":
-                    reasons.append(reference["reason"])
+                    reasons.append(
+                        {
+                            "no_data": "no_valid_source_groups",
+                            "insufficient_n": "reference_metrics_unavailable",
+                            "validation_failed": "reference_validation_failed",
+                        }[reference["status"]]
+                        if brief_band
+                        else reference["reason"]
+                    )
                     quality_reasons.append("reference_metrics_unavailable")
+                    if brief_band and reference["status"] == "validation_failed":
+                        quality_reasons.append("reference_validation_failed")
                 category = {
                     "repeat_ngram_coverage": "repeated_phrases",
                     "sentence_start_repeat": "sentence_start_templates",
@@ -771,6 +859,9 @@ class EvidenceEngine:
                         referenceRanges={
                             side: [q[5], q[95]] for side, q in quantiles.items()
                         },
+                        referenceExtent=list(
+                            self.reference_extents[(route["language"], name)]
+                        ),
                         relation=relation,
                         notice=notice,
                     )
