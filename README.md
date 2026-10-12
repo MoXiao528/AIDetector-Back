@@ -1,6 +1,6 @@
-﻿# AIDetector Backend V2.0
+﻿# AIDetector Backend V2.1
 
-`AIDetector-Back` 是 AIDetector V2.0 的后端服务，当前正式对外提供：
+`AIDetector-Back` 是 AIDetector V2.1 的后端服务，当前正式对外提供：
 
 - 用户注册 / 登录 / 游客 token
 - 文本检测
@@ -15,7 +15,7 @@
 
 当前仓库根目录只保留这套文档结构：
 
-- [`README.md`](./README.md)：V2.0 总说明
+- [`README.md`](./README.md)：V2.1 总说明
 - [`contract/openapi.yaml`](./contract/openapi.yaml)：正式契约
 - [`contract/changelog.md`](./contract/changelog.md)：契约版本变更
 - [`docs/detection-contract.md`](./docs/detection-contract.md)：检测语义说明
@@ -33,7 +33,7 @@ docker compose up -d --build
 docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
 ```
 
-## V2.0 边界
+## V2.1 边界
 
 ### 已开放
 
@@ -58,9 +58,9 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 说明：
 
 - 响应结构里保留的 `translation / polish / citations` 只是兼容保留字段
-- 不代表这些能力已经进入 V2.0 正式产品面
+- 不代表这些能力已经进入 V2.1 正式产品面
 
-## API 4.0.0 检测契约（产品 V2.0）
+## API 4.0.0 检测契约（产品 V2.1）
 
 - `POST /api/v1/detect` 是正式检测入口；`/api/v1/scan/detect`、`/api/v1/scan`、`/api/scan/detect`、`/api/scan` 是兼容入口，五者走同一套检测实现。
 - 五个入口硬切要求 UUID `Idempotency-Key`：新逻辑请求生成新 key，同一次请求重试复用原 key；处理中返回带 `Retry-After` 的 `409`，请求冲突返回 `409`，结果无法回放返回 `410`。
@@ -240,7 +240,7 @@ python -m pytest tests -q
 python -m ruff check app tests
 ```
 
-## V2.0 生产部署
+## V2.1 生产部署
 
 ### 1. 准备配置
 
