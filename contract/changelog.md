@@ -2,15 +2,21 @@
 
 Tracks OpenAPI changes and compatibility boundaries.
 
-## Unreleased
+## 产品 v2.1.0 - 2026-10-12（API 4.0.0）
+
+本产品代码版本在已发布的 Evidence V1 基础上新增以下能力；API 独立版本仍为 `4.0.0`。新增短文枚举和可选字段可能需要使用闭合枚举或严格响应校验的客户端同步升级。代码版本发布不代表服务已部署。
+
 - Added optional `EvidenceSignal.referenceExtent`: finite ordered same-language, same-metric empirical Q0/Q100 limits across all usable domain/length groups and both Human/AI sides in the snapshot's Bundle, including its validated short-text supplement. Limits are cached once after Bundle validation and emitted for new comparable signals. Existing snapshots omit the absent field without null insertion, recomputation or current-Bundle backfill; observed values, Q05/Q95 ranges, relations and coverage are unchanged.
 - Added guest-only `/api/v1/guest/history` list/detail/update/delete/batch-delete/clear routes for restoring unclaimed server history within the same active guest session. Guest records expose `userId: null`; member history authorization is unchanged. Corrected the documented history pagination fields to the existing runtime `perPage` / `totalPages`.
 - Added Chinese short-reference length buckets `brief_200_399` / `brief_400_599` and reason `reference_validation_failed`. The optional short-reference bundle enables independently validated per-metric comparisons; existing V1 bundles and stored snapshots remain readable without recomputation.
+
+## Evidence V1 - 2026-09-09（API 4.0.0）
+
 - Added optional server-owned `evidence` to canonical detection responses and history records. Evidence never changes the main score, threshold or AI/Human label; compatibility scan responses keep their existing shape.
 - Evidence defaults to off. Shadow stores validated snapshots but omits public `evidence`; serve exposes valid snapshots, including degraded results. Missing or invalid snapshots are omitted rather than returned as `evidence: null`.
 - Detection results, quota and idempotency completion share one transaction with the Evidence snapshot. First responses, history and replay use that snapshot without recomputation or requiring the current Bundle SHA.
 - Corrected `EvidenceSignal.notice` to include `null` in its nullable enum, matching existing runtime responses.
-- These changes are locally verified and have not been released; the current API version remains `4.0.0`.
+- These changes were released as code tag `evidence-v1.0.0`; the independent API version remains `4.0.0`. Target deployment and certification are outside this code-release record.
 
 ## 4.0.0 - 2026-08-25
 - **Breaking public-contract change:** detection labels and summary percentages now expose only `ai` and `human`; segment types additionally retain `too_short` for non-classified input.
