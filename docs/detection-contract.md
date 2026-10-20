@@ -321,8 +321,9 @@ off 不产生快照；shadow/serve 都保存合法的正常或降级结果，包
 `run` 调用既有 `RepreGuardClient.route_evidence`，再在线程中调用已有同步 `analyze`；主标签仅供本地参考差异展示。
 off、坏配置/Bundle、主检测失败或已完成幂等重放不发起 Router HTTP。
 
-Router URL 由生效的检测 URL 派生，将末尾 `/detect` 换为 `/evidence/route`，保留 origin 和反向代理路径前缀。
-不新增 URL 配置或客户端；PHP、query/fragment、userinfo、非 HTTP(S) 或不以 `/detect` 结束的地址在可选路径降级。
+Router 请求复用生效的检测 URL，JSON 为 `{"text":"用户原始整文","action":"evidence"}`，由检测端 `/detect` 分流；不再派生其他路径，不新增 URL 配置或客户端。
+支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
+HTTPS PHP 固定转发 `/detect` 即可，但必须透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求或仅返回主检测字段会导致 Evidence 降级。
 复用连接池、`X-RepreGuard-Token`、128 KiB 声明/流式响应上限，不重试、不跟随重定向、不解析或透传非 200 错误正文。
 HTTP 200 仍须通过严格 JSON（含重复键/非有限数拒绝）、schema 与已加载 SHA 校验。
 传输失败/非 200 为 `model_unavailable`，超时为 `timeout`，畸形/超大响应或 SHA 不匹配为 `invalid_router_response`；
@@ -341,8 +342,10 @@ shadow/serve 都记录固定状态和耗时，不记录原文、token、路径�
 
 ### D1 响应 schema v1
 
-内部请求为 RepreGuard `POST /evidence/route`，携带既有 `X-RepreGuard-Token`，
-JSON 精确为 `{"text":"用户原始整文"}`；不附主模型结果，不进入主检测分段循环。
+内部请求复用主检测入口：直连为 RepreGuard `POST /detect`，PHP 部署为生效 PHP 地址，均携带既有 `X-RepreGuard-Token`，
+JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；不附主模型结果，不进入主检测分段循环。
+未提供 `action` 或显式 `action="detect"` 时继续主检测；`action="evidence"` 直接复用 Evidence 处理、输入校验与独立容量，不运行主模型。其他 action 返回 422。
+原 `POST /evidence/route` 仍接受精确的 `{"text":"用户原始整文"}`，供旧客户端兼容。先更新检测端再更新后端；新后端遇到旧检测端返回的分数时，按 `invalid_router_response` 降级而不重试。
 请求体上限 128 KiB（含流式计数），text 严格要求非空白字符串、1–20,000 Unicode code points，
 拒绝额外字段和类型转换。认证、体积和输入错误为非 2xx；输入校验响应不回显原文。
 D1 业务结果含 `busy/timeout` 均为 HTTP 200，必须继续检查下面的 status/reason，不能仅看 HTTP 成功。

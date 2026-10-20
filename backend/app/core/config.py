@@ -110,9 +110,6 @@ class Settings(BaseSettings):
             health_url = f"{base_url}/health"
 
         parsed_detect_url = urlparse(detect_url)
-        if parsed_detect_url.path.rstrip("/").lower().endswith(".php"):
-            raise ValueError("Production-like environments cannot use a legacy PHP detect endpoint.")
-
         parsed_urls = [("detect", parsed_detect_url)]
         if health_url:
             parsed_urls.append(("health", urlparse(health_url)))

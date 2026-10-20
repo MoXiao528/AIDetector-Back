@@ -92,7 +92,19 @@ DETECT_SERVICE_HEALTH_URL=https://你的RepreGuard地址/health
 REPRE_GUARD_SERVICE_TOKEN=独立生成的至少32位强随机串
 ```
 
-`REPRE_GUARD_SERVICE_TOKEN` 不能复用用户 JWT、后端 `SECRET_KEY` 或数据库密码，且必须与 RepreGuard 进程配置完全一致。生产 detect / health 端点必须使用 HTTPS、保持同源，不能使用旧 `.php` 地址。
+`REPRE_GUARD_SERVICE_TOKEN` 不能复用用户 JWT、后端 `SECRET_KEY` 或数据库密码，且必须与 RepreGuard 进程配置完全一致。生产 detect / health 端点必须使用 HTTPS、保持同源。
+
+生产通过 PHP 转发时，使用以下地址覆盖上例；无需新增 Evidence URL：
+
+```dotenv
+DETECT_SERVICE_URL=https://umcat.cis.um.edu.mo
+DETECT_SERVICE_DETECT_URL=https://umcat.cis.um.edu.mo/api/aidetect.php
+DETECT_SERVICE_HEALTH_URL=
+```
+
+先更新检测端，使 `/detect` 支持 `{"text":"完整原文","action":"evidence"}`；默认请求仍执行主检测，原 `/evidence/route` 保留兼容。再更新后端，通过同一生效检测地址发送 Evidence 请求。保持当前共享令牌，PHP 必须透传完整 JSON、令牌和上游响应，不需要自行分流。
+
+健康地址留空时 `/api/v1/ready` 会触发一次短文本主检测。上线验收还必须通过 PHP 实测 `action=evidence` 返回完整五字段、`status=routed` 且 SHA 匹配；HTTP 200 或普通检测分数不能作为 Evidence 验收。若转发器丢弃字段，Evidence 应降级，主检测结果仍保留。
 
 ## 6. 准备运维 `.env.ops`
 

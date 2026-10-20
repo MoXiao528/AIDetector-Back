@@ -2,6 +2,12 @@
 
 Tracks OpenAPI changes and compatibility boundaries.
 
+## 未发布 - 2026-10-20（API 4.0.0）
+
+- 后端 Evidence 改为复用主检测地址发送 `{"text":"完整原文","action":"evidence"}`，支持直连和 HTTPS PHP 固定转发；检测端 `/detect` 按 action 分流，原 `/evidence/route` 保留兼容。主检测默认请求与公共 API 字段不变。
+- 生产配置取消按 `.php` 后缀拒绝入口，保留 HTTPS、令牌及其他生产校验。Evidence 响应仍严格校验 Schema、SHA、大小和预算；丢失 action 或返回主检测结果时仅降级 Evidence。
+- 先部署检测端，再部署后端；PHP 完整透传请求和响应是线上验收前提，本地通过不表示生产已部署或转发已验证。
+
 ## 产品 v2.1.0 - 2026-10-12（API 4.0.0）
 
 本产品代码版本在已发布的 Evidence V1 基础上新增以下能力；API 独立版本仍为 `4.0.0`。新增短文枚举和可选字段可能需要使用闭合枚举或严格响应校验的客户端同步升级。代码版本发布不代表服务已部署。
