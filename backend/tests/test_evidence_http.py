@@ -94,6 +94,18 @@ async def test_bad_bundle_does_not_call_router(tmp_path, artifacts):
             "https://router.example/api/aidetect.php",
             "https://router.example/api/aidetect.php",
         ),
+        (
+            "https://router.example/api/AIDETECT.PHP",
+            "https://router.example/api/AIDETECT.PHP",
+        ),
+        (
+            "https://router.example/Proxy/v1/AiDetect.PhP/",
+            "https://router.example/Proxy/v1/AiDetect.PhP",
+        ),
+        ("https://router.example/api/AIDETECT.PHP?key=private", None),
+        ("https://router.example/api/AIDETECT.PHP#fragment", None),
+        ("https://user:password@router.example/api/AIDETECT.PHP", None),
+        ("ftp://router.example/api/AIDETECT.PHP", None),
         ("http://127.0.0.1:9000/detect", "http://127.0.0.1:9000/detect"),
         ("ftp://router.example/detect", None),
         ("https:///detect", None),

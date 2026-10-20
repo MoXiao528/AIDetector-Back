@@ -85,7 +85,7 @@ class RepreGuardClient:
     def _looks_like_direct_detect_url(url: str | None) -> bool:
         if not url:
             return False
-        path = (urlparse(url).path or "").rstrip("/")
+        path = (urlparse(url).path or "").rstrip("/").lower()
         return bool(path) and (path.endswith("/detect") or path.endswith(".php"))
 
     def _resolve_detect_url(self) -> str:
@@ -301,7 +301,7 @@ class RepreGuardClient:
         """Send one bounded Evidence request through the effective detect endpoint."""
         url = self._resolve_detect_url()
         endpoint = urlparse(url)
-        path = endpoint.path.rstrip("/")
+        path = endpoint.path.rstrip("/").lower()
         if (
             endpoint.scheme not in {"http", "https"}
             or not endpoint.hostname

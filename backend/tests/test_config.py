@@ -75,6 +75,8 @@ def test_settings_reject_cross_origin_health_service_in_production():
     [
         "https://umcat.cis.um.edu.mo/api/aidetect.php",
         "https://umcat.cis.um.edu.mo/api/aidetect.php/",
+        "https://umcat.cis.um.edu.mo/api/AIDETECT.PHP",
+        "https://umcat.cis.um.edu.mo/Proxy/v1/AiDetect.PhP/",
     ],
 )
 @pytest.mark.parametrize("url_setting", ["detect_service_url", "detect_service_detect_url"])

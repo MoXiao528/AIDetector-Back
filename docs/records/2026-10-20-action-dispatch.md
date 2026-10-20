@@ -2,6 +2,8 @@
 
 状态：本机验收完成。本记录保存提交前的测试证据；后续代码推送与审查状态以关联 PR 为准，不表示服务已部署或生产 PHP 透传已验收。
 
+最新合并前复核结果：后端 `591 passed, 10 skipped`、定向 `114 passed`；检测端 `75 tests OK`。下文初次验收的 575/98/73 为历史基线，异步审查修复与复验见末节。
+
 ## 变更
 
 - 后端主检测与就绪探针继续发送 `{"text":"文本"}`；Evidence 复用生效检测地址，发送 `{"text":"完整原文","action":"evidence"}`，不再派生 `/evidence/route`，不新增 URL 配置。
@@ -56,3 +58,22 @@
 PHP 必须完整转发 JSON 请求中的 `action`、服务令牌，以及上游完整 JSON 响应与状态码。更新检测端后，经真实 PHP 入口测试 Evidence，检查 `status=routed`、五字段齐全且 SHA 匹配；HTTP 200 或普通检测分数不算通过。
 
 验收阶段未修改 PHP、未触碰服务器或执行部署。Docker Desktop 引擎当时未启动；本机测试通过 Python/ASGI 和隔离 SQLite 完成，没有启动或重建 Docker 服务。代码提交和推送由后续独立操作完成，不改变上述验收边界。
+
+## 合并前异步审查修复与复验
+
+将两 PR 转为正式后，Codex 对初始提交各发现一个有效 P2，已复现并修复：
+
+- 后端：配置认可的 `.PHP`/`.PhP` 地址被 Evidence 大小写检查拒绝，且将同类地址用于 base URL 时可能被追加 `/detect`。共享入口识别与 Evidence 后缀判断统一转小写判断，实际发送 URL 保留大小写。
+- 检测端：顶层数组/标量或错误 Content-Type 的原始字节没有解析成对象，导致请求校验退回默认处理器并回显原文。现在 `/detect` 所有请求模型校验错误均为固定脱敏对象；已识别 Evidence 保留原错误码，其他为 `INVALID_DETECT_REQUEST`。正常主检测、空白文本业务检查、模型错误、认证及容量不变。
+
+检测端新增测试先复现 6 个回显子用例，修复后完整 75 项全通过、零跳过；后端新增 16 项大小写与可信边界覆盖，最终全量 591 通过、10 跳过，定向 114 通过。Ruff、编译、diff 检查及独立只读复核通过。
+
+后端最终全量命令（同样使用工作区专属临时目录）：
+
+```powershell
+& D:/Anaconda/envs/lab/python.exe -m pytest -q -rs --basetemp=D:/Code/.tmp/action-backend-case-full-20261020 -p no:cacheprovider --tb=short -o faulthandler_timeout=60
+```
+
+真实模型再次加载并完成 8 组联调检查：原有直连、模拟固定 PHP、旧接口与就绪探针、主结果不变和异常转发降级均通过；新增混合大小写 PHP 入口和非对象/Content-Type 错误脱敏也通过，非法输入未运行任一模型。原文、SHA、22 项观察和 `partial` 结果保持；实际 URL 大小写未改写。
+
+复验脚本与结果位于 `D:/Code/.tmp/action-split-review-fix-20261020/verify_real_models.py` 和 `real-model-results.json`。这是同一组现有 CUDA/CPU 模型及 Bundle 的本机 ASGI 验证，生产 PHP、目标 Linux 环境和 PostgreSQL 并发专项仍未验收。最终云端 CI 与 Codex 审查状态以 PR #8/#10 的最新 head 为准。

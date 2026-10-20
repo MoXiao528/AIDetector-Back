@@ -322,7 +322,7 @@ off 不产生快照；shadow/serve 都保存合法的正常或降级结果，包
 off、坏配置/Bundle、主检测失败或已完成幂等重放不发起 Router HTTP。
 
 Router 请求复用生效的检测 URL，JSON 为 `{"text":"用户原始整文","action":"evidence"}`，由检测端 `/detect` 分流；不再派生其他路径，不新增 URL 配置或客户端。
-支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
+支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；后缀识别忽略大小写，请求实际 URL 保留配置中的大小写，生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
 HTTPS PHP 固定转发 `/detect` 即可，但必须透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求或仅返回主检测字段会导致 Evidence 降级。
 复用连接池、`X-RepreGuard-Token`、128 KiB 声明/流式响应上限，不重试、不跟随重定向、不解析或透传非 200 错误正文。
 HTTP 200 仍须通过严格 JSON（含重复键/非有限数拒绝）、schema 与已加载 SHA 校验。
