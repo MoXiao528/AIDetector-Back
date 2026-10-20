@@ -75,17 +75,45 @@ def test_settings_reject_cross_origin_health_service_in_production():
     [
         "https://umcat.cis.um.edu.mo/api/aidetect.php",
         "https://umcat.cis.um.edu.mo/api/aidetect.php/",
+        "https://umcat.cis.um.edu.mo/api/AIDETECT.PHP",
+        "https://umcat.cis.um.edu.mo/Proxy/v1/AiDetect.PhP/",
     ],
 )
-def test_settings_reject_legacy_php_detect_service_in_production(detect_url):
+@pytest.mark.parametrize("url_setting", ["detect_service_url", "detect_service_detect_url"])
+def test_settings_accept_https_php_detect_service_in_production(detect_url, url_setting):
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        secret_key="a" * 32,
+        postgres_password="StrongDbPass!23",
+        repre_guard_service_token=SERVICE_TOKEN,
+        **{url_setting: detect_url},
+    )
+
+    assert getattr(settings, url_setting) == detect_url
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"detect_service_detect_url": "http://umcat.cis.um.edu.mo/api/aidetect.php"},
+        {"detect_service_detect_url": "https://localhost/aidetect.php"},
+        {"detect_service_health_url": "https://other.example/health"},
+        {"postgres_password": "postgres"},
+        {"secret_key": "change-me"},
+        {"repre_guard_service_token": "short"},
+    ],
+)
+def test_production_php_keeps_other_safety_requirements(overrides):
+    values = {
+        "environment": "production",
+        "secret_key": "a" * 32,
+        "postgres_password": "StrongDbPass!23",
+        "repre_guard_service_token": SERVICE_TOKEN,
+        "detect_service_detect_url": "https://umcat.cis.um.edu.mo/api/aidetect.php",
+    }
     with pytest.raises(ValidationError):
-        Settings(
-            environment="production",
-            secret_key="a" * 32,
-            postgres_password="StrongDbPass!23",
-            detect_service_detect_url=detect_url,
-            repre_guard_service_token=SERVICE_TOKEN,
-        )
+        Settings(_env_file=None, **{**values, **overrides})
 
 
 @pytest.mark.parametrize("service_token", ["", "too-short", "令牌" * 16])
@@ -104,7 +132,7 @@ def test_settings_accept_local_http_detect_service_in_development():
     assert settings.detect_service_url == "http://host.docker.internal:9000"
 
 
-def test_settings_accept_legacy_php_detect_service_only_in_development():
+def test_settings_accept_php_detect_service_in_development():
     settings = Settings(
         environment="development",
         detect_service_detect_url="https://umcat.cis.um.edu.mo/api/aidetect.php",

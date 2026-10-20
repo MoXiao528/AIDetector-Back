@@ -47,7 +47,12 @@ async def test_detect_uses_explicit_detect_url(monkeypatch):
     calls = []
 
     def responder(method, url, payload):
-        return httpx.Response(200, json=_detect_payload(), request=httpx.Request(method, url, json=payload))
+        return httpx.Response(
+            200,
+            json=_detect_payload(),
+            headers={"content-type": "text/event-stream;charset=UTF-8"},
+            request=httpx.Request(method, url, json=payload),
+        )
 
     _build_async_client(monkeypatch, calls, responder)
 
@@ -98,6 +103,76 @@ async def test_detect_accepts_direct_detect_url_from_legacy_setting(monkeypatch)
 
     assert calls == [
         ("POST", "https://umcat.cis.um.edu.mo/api/aidetect.php", {"text": "compat payload"}, SERVICE_HEADERS),
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "options,expected_url",
+    [
+        ({"base_url": "http://host.docker.internal:9000"}, "http://host.docker.internal:9000/detect"),
+        ({"base_url": "https://umcat.cis.um.edu.mo/api/aidetect.php"}, "https://umcat.cis.um.edu.mo/api/aidetect.php"),
+        (
+            {
+                "base_url": "https://unused.example",
+                "detect_url": "https://umcat.cis.um.edu.mo/api/aidetect.php",
+            },
+            "https://umcat.cis.um.edu.mo/api/aidetect.php",
+        ),
+    ],
+)
+async def test_evidence_uses_effective_detect_url_and_preserves_original_text(
+    monkeypatch, options, expected_url
+):
+    calls = []
+    body = b'{"schemaVersion":1,"status":"failed"}'
+
+    def responder(method, url, payload):
+        return httpx.Response(200, content=body, request=httpx.Request(method, url, json=payload))
+
+    _build_async_client(monkeypatch, calls, responder)
+    client = RepreGuardClient(**options, service_token=SERVICE_TOKEN)
+    text = "  original\r\nfull text 😀  "
+    assert await client.route_evidence(text) == body
+    assert calls == [
+        ("POST", expected_url, {"text": text, "action": "evidence"}, SERVICE_HEADERS),
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("url_setting", ["base_url", "detect_url"])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://gateway.example/api/AIDETECT.PHP",
+        "https://gateway.example/Proxy/v1/AiDetect.PhP/",
+        "https://gateway.example/Proxy/v1/DeTeCt/",
+    ],
+)
+async def test_case_insensitive_endpoint_suffix_preserves_request_url(
+    monkeypatch, url_setting, endpoint
+):
+    calls = []
+    evidence_body = b'{"schemaVersion":1,"status":"failed","reason":"model_unavailable"}'
+
+    def responder(method, url, payload):
+        request = httpx.Request(method, url, json=payload)
+        if payload and payload.get("action") == "evidence":
+            return httpx.Response(200, content=evidence_body, request=request)
+        return httpx.Response(200, json=_detect_payload(), request=request)
+
+    _build_async_client(monkeypatch, calls, responder)
+    client = RepreGuardClient(**{url_setting: endpoint}, service_token=SERVICE_TOKEN)
+    text = "  original\r\nfull text 😀  "
+    expected_url = endpoint.rstrip("/")
+    assert await client.detect(text) == _detect_payload()
+    assert calls[0][1] == expected_url
+    assert await client.health() == {"status": "ok", "mode": "detect_probe"}
+    assert await client.route_evidence(text) == evidence_body
+    assert calls == [
+        ("POST", expected_url, {"text": text}, SERVICE_HEADERS),
+        ("POST", expected_url, {"text": HEALTH_PROBE_TEXT}, SERVICE_HEADERS),
+        ("POST", expected_url, {"text": text, "action": "evidence"}, SERVICE_HEADERS),
     ]
 
 

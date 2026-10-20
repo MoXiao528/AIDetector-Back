@@ -85,12 +85,32 @@ async def test_bad_bundle_does_not_call_router(tmp_path, artifacts):
 @pytest.mark.parametrize(
     "endpoint,expected",
     [
-        ("https://router.example/detect", "https://router.example/evidence/route"),
+        ("https://router.example/detect", "https://router.example/detect"),
         (
             "https://router.example/proxy/v1/detect/",
-            "https://router.example/proxy/v1/evidence/route",
+            "https://router.example/proxy/v1/detect",
         ),
-        ("https://router.example/detect.php", None),
+        (
+            "https://router.example/api/aidetect.php",
+            "https://router.example/api/aidetect.php",
+        ),
+        (
+            "https://router.example/api/AIDETECT.PHP",
+            "https://router.example/api/AIDETECT.PHP",
+        ),
+        (
+            "https://router.example/Proxy/v1/AiDetect.PhP/",
+            "https://router.example/Proxy/v1/AiDetect.PhP",
+        ),
+        ("https://router.example/api/AIDETECT.PHP?key=private", None),
+        ("https://router.example/api/AIDETECT.PHP#fragment", None),
+        ("https://user:password@router.example/api/AIDETECT.PHP", None),
+        ("ftp://router.example/api/AIDETECT.PHP", None),
+        ("http://127.0.0.1:9000/detect", "http://127.0.0.1:9000/detect"),
+        ("ftp://router.example/detect", None),
+        ("https:///detect", None),
+        ("https://router.example/unknown", None),
+        ("https://router.example/detect;parameter", None),
         ("https://router.example/detect?key=private", None),
         ("https://router.example/detect#fragment", None),
         ("https://user:password@router.example/detect", None),
@@ -111,7 +131,7 @@ async def test_effective_endpoint_reuses_token_and_never_guesses(
     if expected:
         assert str(calls[0].url) == expected
         assert calls[0].headers["X-RepreGuard-Token"] == SERVICE_TOKEN
-        assert json.loads(calls[0].content) == {"text": LONG_TEXT}
+        assert json.loads(calls[0].content) == {"text": LONG_TEXT, "action": "evidence"}
     assert result["quality"]["reasons"] == [
         "model_failure" if expected else "model_unavailable"
     ]
@@ -137,6 +157,8 @@ class BrokenStream(httpx.AsyncByteStream):
         ("nan", "invalid_router_response"),
         ("wrong_sha", "invalid_router_response"),
         ("extra_field", "invalid_router_response"),
+        ("discarded_action", "invalid_router_response"),
+        ("cropped_response", "invalid_router_response"),
         ("oversize_header", "invalid_router_response"),
         ("oversize_stream", "invalid_router_response"),
         ("unsupported", "unsupported_language"),
@@ -202,6 +224,10 @@ async def test_http_and_contract_failures_are_isolated(
             payload = response(sha="f" * 64)
         if case == "extra_field":
             payload = {**response(), "text": "private document"}
+        if case == "discarded_action":
+            payload = _fake_result()
+        if case == "cropped_response":
+            payload = {"route": response()["route"]}
         return httpx.Response(200, json=payload)
 
     with caplog.at_level(logging.INFO, logger="app.services.evidence_engine"):
@@ -441,9 +467,9 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
         assert router_calls == (
             [
                 (
-                    "/prefix/evidence/route",
+                    "/prefix/detect",
                     repre_guard_client.service_token,
-                    {"text": text},
+                    {"text": text, "action": "evidence"},
                 )
             ]
             if enabled
@@ -472,6 +498,92 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
             )
             == 1
         )
+        assert db_session.scalar(
+            select(QuotaUsage.used).where(QuotaUsage.actor_id == actor.actor_id)
+        ) == len(text)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "gateway_behavior", ["passthrough", "discard_action", "crop_response"]
+)
+def test_php_action_transport_preserves_main_result_and_settlement(
+    db_session, unique_email, tmp_path, artifacts, monkeypatch, gateway_behavior
+):
+    bundle, sha = write_bundle(tmp_path, artifacts)
+    settings = get_settings()
+    for name, value in {
+        "detect_evidence_mode": "serve",
+        "detect_evidence_bundle_path": str(bundle),
+        "detect_evidence_bundle_sha256": sha,
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    endpoint = "https://umcat.cis.um.edu.mo/api/aidetect.php"
+    calls = []
+
+    def gateway(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        assert str(request.url) == endpoint
+        assert request.headers["X-RepreGuard-Token"] == SERVICE_TOKEN
+        result = _fake_result()
+        if payload.get("action") == "evidence":
+            if gateway_behavior == "passthrough":
+                result = response()
+            elif gateway_behavior == "crop_response":
+                result = {"route": response()["route"]}
+        return httpx.Response(
+            200,
+            json=result,
+            headers={"content-type": "text/event-stream;charset=UTF-8"},
+        )
+
+    monkeypatch.setattr(repre_guard_client, "detect_url", endpoint)
+    monkeypatch.setattr(repre_guard_client, "service_token", SERVICE_TOKEN)
+    monkeypatch.setattr(
+        repre_guard_client,
+        "_client",
+        httpx.AsyncClient(transport=httpx.MockTransport(gateway)),
+    )
+    actor = asyncio.run(_user_actor(db_session, unique_email))
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_actor] = lambda: actor
+    text = ("  😀\r\n" + (LONG_TEXT + "\r\n\r\n") * 70)[:20000]
+    key = {"Idempotency-Key": str(uuid4())}
+    try:
+        with TestClient(app) as client:
+            first = client.post("/api/v1/detect", json={"text": text}, headers=key)
+            assert first.status_code == 200
+            data = first.json()
+            assert (
+                data["score"],
+                data["rawScore"],
+                data["threshold"],
+            ) == pytest.approx((0.72, 0.72, 0.5))
+            assert data["label"] == "ai"
+            evidence = data["evidence"]
+            if gateway_behavior == "passthrough":
+                assert evidence["status"] == "partial"
+            else:
+                assert evidence["status"] == "failed"
+                assert evidence["quality"]["reasons"] == ["invalid_router_response"]
+            count = len(calls)
+            assert count > 2
+            replay = client.post("/api/v1/detect", json={"text": text}, headers=key)
+            assert replay.status_code == 200
+            assert replay.json()["evidence"] == evidence
+            assert len(calls) == count
+        evidence_calls = [payload for payload in calls if "action" in payload]
+        assert evidence_calls == [{"text": text, "action": "evidence"}]
+        assert calls[-1] == evidence_calls[0]
+        assert all(set(payload) == {"text"} for payload in calls[:-1])
+        stored = db_session.scalars(
+            select(Detection).where(Detection.actor_id == actor.actor_id)
+        ).all()
+        assert len(stored) == 1
+        assert stored[0].input_text == text
+        assert stored[0].meta_json["evidence"] == evidence
         assert db_session.scalar(
             select(QuotaUsage.used).where(QuotaUsage.actor_id == actor.actor_id)
         ) == len(text)

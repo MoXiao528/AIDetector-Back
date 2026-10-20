@@ -81,6 +81,7 @@ shadow 执行内部分析并保存快照，不公开结果；serve 在标准检�
 没有快照或快照非法时省略该字段，off/shadow 也不会新增 `evidence: null`，已有主检测字段保持原样。
 检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan、PDF、示例保持原合同。
 主检测确定结果后、数据库结算前，对原始整文只路由一次，不重试；复用既有连接池、鉴权和 128 KiB 响应上限。
+主检测请求为 `{"text":"文本"}`；Evidence 请求使用同一检测地址，发送 `{"text":"完整原文","action":"evidence"}`，由 RepreGuard `/detect` 分流。本机直连和生产 PHP 转发共用此协议，无需独立 Evidence URL。
 `DETECT_EVIDENCE_TIMEOUT_SECONDS=12` 覆盖 HTTP 与本地比较；有效启用时默认 lease 从 150 秒增至 162 秒，off 不变。
 后端每进程最多一个 Evidence 任务、不排队；超时仅降级 Evidence，仍占位至实际计算结束，主分数/阈值/标签不变。
 合法 Evidence 与 `artifactVersion` 存入既有 `meta_json`，和检测结果、配额、幂等完成状态同事务提交；首次响应使用同一份快照。
@@ -268,7 +269,21 @@ DETECT_SERVICE_HEALTH_URL=https://你的RepreGuard地址/health
 REPRE_GUARD_SERVICE_TOKEN=独立生成的至少32位强随机串
 ```
 
-生产环境实际使用的 detect / health 端点必须是 HTTPS 且同源；旧 `.php` 检测地址只保留开发兼容，不能作为生产配置。
+生产环境实际使用的 detect / health 端点必须是 HTTPS 且同源。支持 HTTPS PHP 转发入口；转发器必须保留完整 JSON 请求、`X-RepreGuard-Token`、上游 JSON 响应和 HTTP 状态码。
+
+通过现有 PHP 入口部署时，将上面的三个检测地址改为：
+
+```dotenv
+DETECT_SERVICE_URL=https://umcat.cis.um.edu.mo
+DETECT_SERVICE_DETECT_URL=https://umcat.cis.um.edu.mo/api/aidetect.php
+DETECT_SERVICE_HEALTH_URL=
+```
+
+健康地址留空后，`/api/v1/ready` 会经同一 PHP 入口执行一次短文本主检测探针；`/api/v1/health` 仍只证明后端存活。PHP 不需要按 `action` 选择上游，固定转发到检测端 `/detect` 即可；但必须实测它没有丢弃 `action` 或裁剪响应。
+
+先更新检测端，再更新后端。新检测端保留 `/evidence/route`，兼容旧后端；旧检测端可能忽略 `action` 并返回普通检测结果，新后端会将其判为无效 Evidence 响应并降级，不将分数当作路由。
+
+本次代码、测试与真实模型本机联调结果见 [action 分流本地验收](docs/records/2026-10-20-action-dispatch.md)。该记录不代表生产 PHP 或目标服务器已验收。
 
 `.env.ops`
 
