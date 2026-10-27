@@ -82,6 +82,7 @@ shadow 执行内部分析并保存快照，不公开结果；serve 在标准检�
 检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan、PDF、示例保持原合同。
 主检测确定结果后、数据库结算前，对原始整文只路由一次，不重试；复用既有连接池、鉴权和 128 KiB 响应上限。
 主检测请求为 `{"text":"文本"}`；Evidence 请求使用同一检测地址，发送 `{"text":"完整原文","action":"evidence"}`，由 RepreGuard `/detect` 分流。本机直连和生产 PHP 转发共用此协议，无需独立 Evidence URL。
+演示分支可设置 `DETECT_TEXT_ENVELOPE_ENABLED=true`，主检测的 text 为 `AIDT:1:detect\n原文`，Evidence 的 text 为 `AIDT:1:evidence\n完整原文`，用于仅保留 `text` 的 PHP 转发器；默认关闭，不使用 Base64 或 HMAC，服务 Token 仍必需。两种模式均在发送前校验原文和实际请求体。协议、真实 PHP 验收及回切配置步骤见 [text 封装协议](docs/detection-contract.md#text-封装协议演示分支)。
 `DETECT_EVIDENCE_TIMEOUT_SECONDS=12` 覆盖 HTTP 与本地比较；有效启用时默认 lease 从 150 秒增至 162 秒，off 不变。
 后端每进程最多一个 Evidence 任务、不排队；超时仅降级 Evidence，仍占位至实际计算结束，主分数/阈值/标签不变。
 合法 Evidence 与 `artifactVersion` 存入既有 `meta_json`，和检测结果、配额、幂等完成状态同事务提交；首次响应使用同一份快照。

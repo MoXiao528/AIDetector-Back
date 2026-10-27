@@ -508,8 +508,9 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
 @pytest.mark.parametrize(
     "gateway_behavior", ["passthrough", "discard_action", "crop_response"]
 )
+@pytest.mark.parametrize("text_envelope_enabled", [False, True])
 def test_php_action_transport_preserves_main_result_and_settlement(
-    db_session, unique_email, tmp_path, artifacts, monkeypatch, gateway_behavior
+    db_session, unique_email, tmp_path, artifacts, monkeypatch, gateway_behavior, text_envelope_enabled
 ):
     bundle, sha = write_bundle(tmp_path, artifacts)
     settings = get_settings()
@@ -527,9 +528,14 @@ def test_php_action_transport_preserves_main_result_and_settlement(
         calls.append(payload)
         assert str(request.url) == endpoint
         assert request.headers["X-RepreGuard-Token"] == SERVICE_TOKEN
+        if gateway_behavior == "discard_action":
+            payload = {"text": payload["text"]}
+        if text_envelope_enabled:
+            header, original_text = payload["text"].split("\n", 1)
+            payload = {"text": original_text, "action": header.removeprefix("AIDT:1:")}
         result = _fake_result()
         if payload.get("action") == "evidence":
-            if gateway_behavior == "passthrough":
+            if gateway_behavior != "crop_response":
                 result = response()
             elif gateway_behavior == "crop_response":
                 result = {"route": response()["route"]}
@@ -541,6 +547,7 @@ def test_php_action_transport_preserves_main_result_and_settlement(
 
     monkeypatch.setattr(repre_guard_client, "detect_url", endpoint)
     monkeypatch.setattr(repre_guard_client, "service_token", SERVICE_TOKEN)
+    monkeypatch.setattr(repre_guard_client, "text_envelope_enabled", text_envelope_enabled)
     monkeypatch.setattr(
         repre_guard_client,
         "_client",
@@ -563,7 +570,7 @@ def test_php_action_transport_preserves_main_result_and_settlement(
             ) == pytest.approx((0.72, 0.72, 0.5))
             assert data["label"] == "ai"
             evidence = data["evidence"]
-            if gateway_behavior == "passthrough":
+            if gateway_behavior == "passthrough" or (text_envelope_enabled and gateway_behavior == "discard_action"):
                 assert evidence["status"] == "partial"
             else:
                 assert evidence["status"] == "failed"
@@ -574,8 +581,12 @@ def test_php_action_transport_preserves_main_result_and_settlement(
             assert replay.status_code == 200
             assert replay.json()["evidence"] == evidence
             assert len(calls) == count
-        evidence_calls = [payload for payload in calls if "action" in payload]
-        assert evidence_calls == [{"text": text, "action": "evidence"}]
+        evidence_calls = [
+            payload for payload in calls
+            if "action" in payload or payload["text"].startswith("AIDT:1:evidence\n")
+        ]
+        expected = {"text": f"AIDT:1:evidence\n{text}"} if text_envelope_enabled else {"text": text, "action": "evidence"}
+        assert evidence_calls == [expected]
         assert calls[-1] == evidence_calls[0]
         assert all(set(payload) == {"text"} for payload in calls[:-1])
         stored = db_session.scalars(

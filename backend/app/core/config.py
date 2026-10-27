@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     detect_service_detect_url: str | None = None
     detect_service_health_url: str | None = None
     detect_service_timeout: int = 60
+    detect_text_envelope_enabled: bool = False
     repre_guard_service_token: SecretStr
     detect_segment_concurrency: int = Field(default=4, ge=1, le=16)
     detect_request_timeout: int = Field(default=120, ge=1, le=900)

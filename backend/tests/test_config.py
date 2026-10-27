@@ -180,6 +180,25 @@ def test_evidence_settings_default_to_off():
     assert settings.detect_evidence_timeout_seconds == "12"
 
 
+def test_text_envelope_defaults_to_off(monkeypatch):
+    monkeypatch.delenv("DETECT_TEXT_ENVELOPE_ENABLED", raising=False)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.detect_text_envelope_enabled is False
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False)])
+def test_text_envelope_environment_switch(monkeypatch, value, expected):
+    monkeypatch.setenv("DETECT_TEXT_ENVELOPE_ENABLED", value)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.detect_text_envelope_enabled is expected
+
+
+def test_text_envelope_rejects_invalid_switch(monkeypatch):
+    monkeypatch.setenv("DETECT_TEXT_ENVELOPE_ENABLED", "invalid")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+
+
 def test_invalid_optional_evidence_config_does_not_block_settings():
     settings = Settings(
         _env_file=None,
