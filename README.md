@@ -335,6 +335,32 @@ docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade h
 
 ### 4. 必须记住
 
+#### 临时 HTTP 登录
+
+`ALLOW_INSECURE_HTTP_COOKIES=false` 默认保留现有 Cookie 策略：production 等非开发环境使用 `Secure`，开发环境允许 HTTP。临时同域 HTTP 演示可显式设为 `true`，用户登录 Cookie 和游客恢复 Cookie 的设置、删除均不带 `Secure`；`HttpOnly`、`SameSite=lax`、路径、有效期及凭证撤销保持不变。此开关不按请求协议自动切换，开启时 HTTPS 响应也不带 `Secure`。
+
+保持 `ENVIRONMENT=production`，只开启上述例外，不绕过密钥、数据库密码或下游 HTTPS 检查。浏览器到网站的 HTTP 仍会明文传输密码、会话凭据和检测正文；该开关不提供加密，也不会配置 HTTPS。前端继续同域 `/api` 和 `credentials: include`，无需为此重新构建。
+
+确认包含此配置的新代码已推送后，在后端项目根目录检查分支和本地改动，再更新演示分支：
+
+```bash
+git status --short --branch
+test "$(git branch --show-current)" = demo/text-envelope && git pull --ff-only origin demo/text-envelope
+```
+
+不要覆盖已有本地改动。更新代码后再编辑 `.env`，添加 `ALLOW_INSECURE_HTTP_COOKIES=true`；旧版本 Settings 不认识该字段，提前加入可能导致启动失败。基础 Compose 已通过 `env_file` 加载 `.env`；若服务器自建的 `compose.evidence.yml` 在 `environment` 写了同名变量，须同步修改或移除该覆盖值。沿用服务器实际使用的 Compose 文件重建 API；已使用 Evidence 覆盖文件的部署执行：
+
+```bash
+docker compose -f docker-compose.yml -f compose.evidence.yml up -d --build --no-deps --force-recreate api
+docker compose -f docker-compose.yml -f compose.evidence.yml exec -T api python -c 'from app.api.v1.auth import settings,_is_secure_cookie; print({"environment":settings.environment,"allow_insecure_http_cookies":settings.allow_insecure_http_cookies,"cookie_secure":_is_secure_cookie()})'
+```
+
+HTTP 演示预期输出为 `production`、`True`、`False`。无需数据库迁移，也无需更新检测端。浏览器重新登录后，确认 Cookie 无拒收警告、`GET /api/v1/auth/me` 返回 200、刷新仍登录、退出后无凭据访问返回 401；游客续期须保留同一身份，丢弃会话须清理恢复 Cookie。不能仅凭登录接口 200 验收。
+
+恢复 HTTPS 时先配置并验证 Nginx 的证书、443 和 HTTPS 访问，再将开关设为 `false`（或删除配置）并用上面的命令重建 API；重新登录以补发带 `Secure` 的 Cookie。开关不会自动更新浏览器已保存的 Cookie。切回尚不支持此字段的 `main`/旧版本前，必须从 `.env` 和 Compose 中删除整个配置项，写 `false` 也不能避免旧 Settings 拒绝未知字段；同时按 [text 封装协议](docs/detection-contract.md#text-封装协议演示分支) 处理封装变量并重建旧版本镜像。
+
+#### 部署约束
+
 - 生产目录不要带 `docker-compose.override.yml`
 - 数据库不要暴露宿主机端口
 - 后端不要直接把 `8000/8020` 开给公网

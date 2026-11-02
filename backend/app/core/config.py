@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="AIDetector API")
     environment: str = Field(default="development")
+    allow_insecure_http_cookies: bool = False
     api_host_bind: str = Field(default="127.0.0.1")
     api_host_port: int = Field(default=8020)
     secret_key: str = Field(default="change-me", min_length=8)

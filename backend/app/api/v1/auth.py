@@ -39,6 +39,8 @@ DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 
 def _is_secure_cookie() -> bool:
+    if settings.allow_insecure_http_cookies:
+        return False
     return str(settings.environment or "").strip().lower() not in DEVELOPMENT_ENVIRONMENTS
 
 
