@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from uuid import UUID, uuid4
 
 import jwt
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from starlette.requests import Request
 
+from app.api.v1 import auth as auth_api
 from app.api.v1.auth import login, read_current_user, register_user
 from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
@@ -108,6 +110,98 @@ def _decode_unverified(token: str) -> dict:
 
 def _resign_claims(claims: dict) -> str:
     return jwt.encode(claims, get_settings().secret_key, algorithm="HS256")
+
+
+@pytest.mark.parametrize(
+    "environment,allow_insecure,scheme,secure",
+    [
+        ("production", True, "http", False),
+        ("production", True, "https", False),
+        ("production", False, "https", True),
+        ("production", False, "http", True),
+        ("development", False, "http", False),
+    ],
+)
+def test_login_cookie_transport_and_logout(
+    environment, allow_insecure, scheme, secure, monkeypatch, db_session, unique_email
+):
+    monkeypatch.setattr(auth_api.settings, "environment", environment)
+    monkeypatch.setattr(auth_api.settings, "allow_insecure_http_cookies", allow_insecure)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, base_url=f"{scheme}://testserver") as client:
+            assert client.post(
+                "/api/v1/auth/register", json={"email": unique_email, "password": "StrongPass!23"}
+            ).status_code == 201
+            response = client.post(
+                "/api/v1/auth/login", json={"identifier": unique_email, "password": "StrongPass!23"}
+            )
+            assert response.status_code == 200
+            cookie = SimpleCookie(response.headers["set-cookie"])["aid_access_token"]
+            assert bool(cookie["secure"]) is secure
+            assert cookie["httponly"] and cookie["samesite"] == "lax"
+            assert cookie["path"] == "/" and cookie["domain"] == ""
+            assert int(cookie["max-age"]) == auth_api.settings.access_token_expire_minutes * 60
+            token = _response_value(response.json(), "access_token", "accessToken")
+            if scheme == "http" and secure:
+                assert client.get("/api/v1/auth/me").status_code == 401
+                return
+            for _ in range(2):
+                me = client.get("/api/v1/auth/me")
+                assert "authorization" not in me.request.headers
+                assert me.status_code == 200
+                assert me.json()["email"] == unique_email
+            logout_response = client.post("/api/v1/auth/logout")
+            assert logout_response.status_code == 204
+            cleared = SimpleCookie(logout_response.headers["set-cookie"])["aid_access_token"]
+            assert bool(cleared["secure"]) is secure
+            assert cleared["max-age"] == "0" and cleared["path"] == "/"
+            assert cleared["httponly"] and cleared["samesite"] == "lax"
+            assert client.cookies.get("aid_access_token") is None
+            assert client.get("/api/v1/auth/me").status_code == 401
+            assert client.get(
+                "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+            ).status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "environment,allow_insecure,scheme,secure",
+    [
+        ("production", True, "http", False),
+        ("production", True, "https", False),
+        ("production", False, "https", True),
+        ("development", False, "http", False),
+    ],
+)
+def test_guest_cookie_transport_renewal_and_discard(environment, allow_insecure, scheme, secure, monkeypatch, db_session):
+    monkeypatch.setattr(auth_api.settings, "environment", environment)
+    monkeypatch.setattr(auth_api.settings, "allow_insecure_http_cookies", allow_insecure)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, base_url=f"{scheme}://testserver") as client:
+            guest_id, _, cookie_name, first_cookie = _issue_guest_session(client)
+            renewal = client.post("/api/v1/auth/guest")
+            assert renewal.status_code == 200
+            payload = renewal.json()
+            assert _response_value(payload, "guest_id", "guestId") == guest_id
+            cookie = SimpleCookie(renewal.headers["set-cookie"])[cookie_name]
+            assert cookie.value != first_cookie
+            assert bool(cookie["secure"]) is secure
+            assert cookie["httponly"] and cookie["samesite"] == "lax"
+            assert cookie["path"] == "/api/v1/auth/guest" and cookie["domain"] == ""
+            assert int(cookie["max-age"]) == int(auth_api.GUEST_SESSION_TTL.total_seconds())
+            token = _response_value(payload, "access_token", "accessToken")
+            discarded = client.delete("/api/v1/auth/guest", headers={"Authorization": f"Bearer {token}"})
+            assert discarded.status_code == 204
+            cleared = SimpleCookie(discarded.headers["set-cookie"])[cookie_name]
+            assert bool(cleared["secure"]) is secure
+            assert cleared["max-age"] == "0" and cleared["path"] == "/api/v1/auth/guest"
+            assert cleared["httponly"] and cleared["samesite"] == "lax"
+            assert client.cookies.get(cookie_name) is None
+    finally:
+        app.dependency_overrides.clear()
 
 
 def _add_detection(

@@ -16,6 +16,8 @@ VALID_LABELS = {"AI", "HUMAN"}
 VALID_SCORE_TYPES = {"probability", "raw_logit"}
 SERVICE_TOKEN_HEADER = "X-RepreGuard-Token"
 MAX_DETECT_RESPONSE_BYTES = 128 * 1024
+MAX_DETECT_REQUEST_BYTES = 128 * 1024
+MAX_DETECT_TEXT_CHARS = 20_000
 
 
 class RepreGuardError(Exception):
@@ -44,6 +46,7 @@ class RepreGuardClient:
         detect_url: str | None = None,
         health_url: str | None = None,
         service_token: str | None = None,
+        text_envelope_enabled: bool | None = None,
     ) -> None:
         resolved_base_url = base_url if base_url is not None else settings.detect_service_url
         resolved_detect_url = detect_url if detect_url is not None else (
@@ -57,6 +60,9 @@ class RepreGuardClient:
         self.detect_url = self._normalize_url(resolved_detect_url)
         self.health_url = self._normalize_url(resolved_health_url)
         self.timeout = timeout or settings.detect_service_timeout
+        self.text_envelope_enabled = (
+            settings.detect_text_envelope_enabled if text_envelope_enabled is None else text_envelope_enabled
+        )
         self.service_token = (
             settings.repre_guard_service_token.get_secret_value() if service_token is None else service_token
         )
@@ -110,7 +116,19 @@ class RepreGuardClient:
         json_payload: Dict[str, Any] | None = None,
     ) -> httpx.Response:
         headers = {SERVICE_TOKEN_HEADER: self.service_token}
-        async with self._get_client().stream(method, url, headers=headers, json=json_payload) as resp:
+        client = self._get_client()
+        try:
+            request = client.build_request(method, url, headers=headers, json=json_payload)
+        except (UnicodeError, TypeError, ValueError):
+            raise RepreGuardError(
+                "invalid request for detect service", code="INVALID_DETECT_REQUEST"
+            ) from None
+        if len(request.content) > MAX_DETECT_REQUEST_BYTES:
+            raise RepreGuardError(
+                "detect service request exceeded 128 KiB", code="DETECT_SERVICE_REQUEST_TOO_LARGE"
+            )
+        resp = await client.send(request, stream=True, follow_redirects=False)
+        try:
             declared_size = resp.headers.get("content-length")
             if declared_size:
                 try:
@@ -138,6 +156,15 @@ class RepreGuardClient:
                 request=resp.request,
                 extensions=resp.extensions,
             )
+        finally:
+            await resp.aclose()
+
+    def _build_payload(self, text: str, action: str = "detect") -> Dict[str, Any]:
+        if type(text) is not str or not 1 <= len(text) <= MAX_DETECT_TEXT_CHARS or not text.strip():
+            raise RepreGuardError("invalid text for detect service", code="INVALID_DETECT_REQUEST")
+        if self.text_envelope_enabled:
+            return {"text": f"AIDT:1:{action}\n{text}"}
+        return {"text": text} if action == "detect" else {"text": text, "action": action}
 
     @staticmethod
     def _validate_detect_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -277,7 +304,7 @@ class RepreGuardClient:
         return data
 
     async def detect(self, text: str) -> Dict[str, Any]:
-        payload = {"text": text}
+        payload = self._build_payload(text)
         detect_url = self._resolve_detect_url()
 
         try:
@@ -313,7 +340,7 @@ class RepreGuardClient:
             or not (path.endswith("/detect") or path.endswith(".php"))
         ):
             raise RepreGuardError("Evidence endpoint unavailable")
-        resp = await self._request("POST", url, json_payload={"text": text, "action": "evidence"})
+        resp = await self._request("POST", url, json_payload=self._build_payload(text, "evidence"))
         if resp.status_code != 200:
             # Do not decode or forward upstream error bodies on this optional path.
             raise RepreGuardError("Evidence endpoint unavailable")

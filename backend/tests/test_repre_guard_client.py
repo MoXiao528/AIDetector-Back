@@ -1,10 +1,16 @@
-from contextlib import asynccontextmanager
+import asyncio
+import json
 
 import httpx
 import pytest
 
 import app.services.repre_guard_client as client_module
-from app.services.repre_guard_client import HEALTH_PROBE_TEXT, RepreGuardClient, RepreGuardError
+from app.services.repre_guard_client import (
+    HEALTH_PROBE_TEXT,
+    MAX_DETECT_REQUEST_BYTES,
+    RepreGuardClient,
+    RepreGuardError,
+)
 
 SERVICE_TOKEN = "test-repre-guard-service-token-1234567890"
 SERVICE_HEADERS = {"X-RepreGuard-Token": SERVICE_TOKEN}
@@ -21,25 +27,19 @@ def _detect_payload():
 
 
 def _build_async_client(monkeypatch, calls, responder):
-    class DummyAsyncClient:
-        def __init__(self, *args, **kwargs):
-            self.timeout = kwargs.get("timeout")
+    async_client = httpx.AsyncClient
 
-        async def __aenter__(self):
-            return self
+    def handler(request):
+        payload = json.loads(request.content) if request.content else None
+        headers = {"X-RepreGuard-Token": request.headers["X-RepreGuard-Token"]}
+        calls.append((request.method, str(request.url), payload, headers))
+        return responder(request.method, str(request.url), payload)
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        @asynccontextmanager
-        async def stream(self, method, url, *, headers, json=None):
-            calls.append((method, url, json, headers))
-            yield responder(method, url, json)
-
-        async def aclose(self):
-            return None
-
-    monkeypatch.setattr(client_module.httpx, "AsyncClient", DummyAsyncClient)
+    monkeypatch.setattr(
+        client_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
 
 
 @pytest.mark.anyio
@@ -321,3 +321,165 @@ async def test_detect_rejects_streamed_response_over_128_kib(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.code == "DETECT_SERVICE_RESPONSE_TOO_LARGE"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("action", ["detect", "evidence"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "中",
+        '  中文\r\n\t"引号"\\路径  ',
+        '{"action":"evidence","text":"普通 JSON 正文"}',
+        "AIDT:1:evidence\n正文",
+        "中文" * 10_000,
+        "😀" * 20_000,
+        "\x00" * 20_000,
+    ],
+    ids=["one-char", "unicode-whitespace", "plain-json", "prefix-body", "max-cjk", "max-emoji", "max-controls"],
+)
+async def test_payload_modes_preserve_original_text(enabled, action, text):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=_detect_payload())
+
+    client = RepreGuardClient(
+        detect_url="https://gateway.example/aidetect.php",
+        service_token=SERVICE_TOKEN,
+        text_envelope_enabled=enabled,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
+        client._client = transport
+        await (client.detect(text) if action == "detect" else client.route_evidence(text))
+    expected = {"text": f"AIDT:1:{action}\n{text}"} if enabled else {"text": text}
+    if not enabled and action == "evidence":
+        expected["action"] = "evidence"
+    assert len(calls) == 1
+    assert json.loads(calls[0].content) == expected
+    assert len(calls[0].content) <= MAX_DETECT_REQUEST_BYTES
+    assert calls[0].headers["X-RepreGuard-Token"] == SERVICE_TOKEN
+
+
+@pytest.mark.anyio
+async def test_envelope_covers_readiness_probe():
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=_detect_payload())
+
+    client = RepreGuardClient(
+        detect_url="https://gateway.example/aidetect.php",
+        service_token=SERVICE_TOKEN,
+        text_envelope_enabled=True,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
+        client._client = transport
+        assert await client.health() == {"status": "ok", "mode": "detect_probe"}
+    assert calls == [{"text": f"AIDT:1:detect\n{HEALTH_PROBE_TEXT}"}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("action", ["detect", "evidence"])
+@pytest.mark.parametrize(
+    "text",
+    [None, 12, True, [], {}, "", " \r\n\t", "中" * 20_001, "private\ud800"],
+    ids=["null", "number", "bool", "list", "object", "empty", "blank", "over-limit", "surrogate"],
+)
+async def test_invalid_text_never_reaches_transport(enabled, action, text):
+    def forbidden(request):
+        pytest.fail("Invalid text must be rejected before sending")
+
+    client = RepreGuardClient(
+        detect_url="https://gateway.example/aidetect.php",
+        service_token=SERVICE_TOKEN,
+        text_envelope_enabled=enabled,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as transport:
+        client._client = transport
+        with pytest.raises(RepreGuardError) as caught:
+            await (client.detect(text) if action == "detect" else client.route_evidence(text))
+    assert caught.value.code == "INVALID_DETECT_REQUEST"
+    assert caught.value.detail is None
+    assert "private" not in str(caught.value)
+    assert SERVICE_TOKEN not in str(caught.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+async def test_actual_serialized_request_limit_and_same_request(monkeypatch, extra_bytes):
+    sent, built = [], []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json=_detect_payload())
+
+    client = RepreGuardClient(service_token=SERVICE_TOKEN)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=17) as transport:
+        client._client = transport
+        build_request = transport.build_request
+
+        def observe_build(*args, **kwargs):
+            request = build_request(*args, **kwargs)
+            built.append(request)
+            return request
+
+        monkeypatch.setattr(transport, "build_request", observe_build)
+        payload = {"text": "a" * (MAX_DETECT_REQUEST_BYTES - 11 + extra_bytes)}
+        if extra_bytes:
+            with pytest.raises(RepreGuardError) as caught:
+                await client._request("POST", "https://gateway.example/detect", json_payload=payload)
+            assert caught.value.code == "DETECT_SERVICE_REQUEST_TOO_LARGE"
+            assert not sent
+        else:
+            await client._request("POST", "https://gateway.example/detect", json_payload=payload)
+            assert sent == built and sent[0] is built[0]
+            assert sent[0].extensions["timeout"]["read"] == 17
+        assert len(built[0].content) == MAX_DETECT_REQUEST_BYTES + extra_bytes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["oversize", "cancelled"])
+async def test_stream_is_closed_on_failure(failure):
+    class ResponseStream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            yield b"x" * (128 * 1024 + 1)
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = ResponseStream()
+    client = RepreGuardClient(service_token=SERVICE_TOKEN)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    ) as transport:
+        client._client = transport
+        with pytest.raises(asyncio.CancelledError if failure == "cancelled" else RepreGuardError):
+            await client.detect("text")
+    assert stream.closed
+
+
+@pytest.mark.anyio
+async def test_requests_never_follow_redirects():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(307, headers={"location": "https://other.example/detect"})
+
+    client = RepreGuardClient(service_token=SERVICE_TOKEN)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as transport:
+        client._client = transport
+        with pytest.raises(RepreGuardError):
+            await client.detect("text")
+    assert len(calls) == 1

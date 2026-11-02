@@ -323,7 +323,7 @@ off、坏配置/Bundle、主检测失败或已完成幂等重放不发起 Router
 
 Router 请求复用生效的检测 URL，JSON 为 `{"text":"用户原始整文","action":"evidence"}`，由检测端 `/detect` 分流；不再派生其他路径，不新增 URL 配置或客户端。
 支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；后缀识别忽略大小写，请求实际 URL 保留配置中的大小写，生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
-HTTPS PHP 固定转发 `/detect` 即可，但必须透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求或仅返回主检测字段会导致 Evidence 降级。
+原协议要求 HTTPS PHP 透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求会丢失 action。下述可选 text 封装可适配这种请求转发，响应字段和令牌仍须完整保留。
 复用连接池、`X-RepreGuard-Token`、128 KiB 声明/流式响应上限，不重试、不跟随重定向、不解析或透传非 200 错误正文。
 HTTP 200 仍须通过严格 JSON（含重复键/非有限数拒绝）、schema 与已加载 SHA 校验。
 传输失败/非 200 为 `model_unavailable`，超时为 `timeout`，畸形/超大响应或 SHA 不匹配为 `invalid_router_response`；
@@ -340,10 +340,70 @@ shadow/serve 都记录固定状态和耗时，不记录原文、token、路径�
 原 owner-token 与 lease 校验不放宽：取消请求保留原未知执行状态，过期/被接管的 owner 不能写结果或扣配额。
 超时正常降级后主检测可结算，已完成 key 重放不再推理、扣费或新增记录。
 
+### text 封装协议（演示分支）
+
+`demo/text-envelope` 提供 `DETECT_TEXT_ENVELOPE_ENABLED`，默认 `false`。开启后，主检测、整文 Evidence 和通过主检测执行的 readiness probe 都只发送一个 `text` 字段：
+
+```json
+{"text":"AIDT:1:detect\n用户原文"}
+```
+
+```json
+{"text":"AIDT:1:evidence\n用户完整原文"}
+```
+
+JSON 中的 `\n` 解析后是一个 LF 分隔符。`AIDT:` 为保留命名空间，版本只接受 `1`，action 只接受 `detect/evidence`。检测端只按第一个 LF 分离协议头和正文，不 trim、不解码内层 JSON、不递归解释正文；正文自身的 CRLF、空白、引号、Unicode 和完整协议头都保留。封装请求只允许 `text`，额外 action（包括 null）或其他字段均拒绝；未知版本、错误 action、CRLF 协议头、缺少分隔符等返回固定脱敏 422。
+
+协议不使用 Base64、HMAC、压缩或新密钥，继续要求 `X-RepreGuard-Token`。没有完整性签名，无法发现所有仍然合法的正文截短或改写；PHP 必须保留字符串内容、Token、响应字段和状态码。若 PHP 还有截断、trim 或响应裁剪，本方案不视为解决这些问题。
+
+关闭开关时保持原 JSON 格式，`/evidence/route` 仍保留原请求协议。旧客户端直接向 `/detect` 发送以 `AIDT:` 开头的正文可能被解析或拒绝；这属于保留前缀的兼容例外。开启封装后，用户正文即使是一个完整合法封装，也只在外层解包一次。
+
+| 检查位置 | 规则 |
+|---|---|
+| 公共业务入口 | 保留至少 200 非空白字符、原文最多 20,000 字符 |
+| 后端下游客户端，两种模式 | 原文严格字符串、非空白、1～20,000 Unicode 码点、可编码为 UTF-8；探针和分段不套用业务 200 字下限 |
+| 后端真正发送前 | 检查 HTTP 客户端生成的实际 JSON 字节，最多 128 KiB；发送检查过的同一份请求 |
+| 检测端 ingress | 先鉴权，再检查声明长度和实际流，最多 128 KiB |
+| 检测端请求模型前 | 单次解包，然后按还原原文检查 20,000 字符等原有条件；协议头不占原文字数 |
+
+发送前失败不截断、不发网络请求，错误不包含原文、Token 或底层异常；请求体超限不触发主模型 token 超限拆分重试。主检测原 token 分段、极长单句的 `truncated` 标记和检测端 trim 保持原样；Evidence 仍整文一次，其响应/SHA、预算、失败隔离、结算和历史快照合同不变。
+
+原文 Unicode 字符数与请求体字节数分别检查。后端通过不代表 PHP 重编码后的字节数也通过：例如将大量四字节 Unicode 字符重新序列化成 `\uXXXX` 转义会增加体积，检测端仍按实际 128 KiB 边界拒绝，不放宽限制。
+
+#### 部署、验收和恢复
+
+以下是获得部署授权后执行的操作，不表示目标服务器已验收。先记录实际部署 commit、镜像及受保护的配置备份（`.env`、实际使用的 Compose override、启动环境），保留 Token 与模型/Bundle。先更新兼容新旧协议的检测端并重启，再更新后端演示分支镜像、开启封装并重建 API。数据库无需迁移，不能使用删除卷的回退方式。
+
+在后端仓库根目录，使用服务器原有的生产 Compose 文件组合重建；下面命令适用于原先就用默认 Compose 文件组合的部署：
+
+```bash
+docker compose up -d --no-deps --build --force-recreate api
+```
+
+后端镜像包含验收入口；服务 Token 和已配置的 Bundle/SHA 从运行环境读取，不放进命令参数。实际 PHP 的地址由操作者明确提供：
+
+```bash
+docker compose exec -T api python smoke_text_envelope.py --url https://umcat.cis.um.edu.mo/api/aidetect.php
+```
+
+脚本必须正常退出并通过主检测 probability 合同及 Evidence 五字段、匹配 SHA、`status=routed`、有效 route 和 `reason=null` 检查；仅 HTTP 200 或合法失败响应不是成功。该命令会真实调用模型，应在检测端与后端配置就绪后执行；本地模拟通过不能替代实际 PHP 回执。
+
+展示 Evidence 还需后端 `DETECT_EVIDENCE_MODE=serve`、匹配的现有 Bundle/Router。前端确认 `VITE_EVIDENCE_ENABLED=true` 后重新构建并部署 `dist`；仅修改服务器环境变量不会改变旧静态产物，不覆盖前端已有工作。
+
+回退顺序：先设后端封装为 `false` 并重建 API，再按需恢复检测端。PHP 未修好时同时设 `DETECT_EVIDENCE_MODE=off`，避免恢复已知不能分流的 Evidence 调用。兼容检测端可以暂时保留。
+
+回 `main` 前从实际 `.env` **删除** `DETECT_TEXT_ENVELOPE_ENABLED`（仅设 false 仍是未知字段），清除 shell、Compose、service 的同名覆盖，并恢复部署前保存的生产 Compose 配置；不能把仓库内 Windows 开发 override 当作生产配置。`main` 的 Settings 会拒绝未知 dotenv 字段，不为回退放宽 Settings。对本方案按模板写入的规范大写键，后端仓库根目录可执行：
+
+```bash
+sed -i '/^[[:space:]]*DETECT_TEXT_ENVELOPE_ENABLED[[:space:]]*=/d' .env && unset DETECT_TEXT_ENVELOPE_ENABLED && git switch main && docker compose up -d --no-deps --build --force-recreate api
+```
+
+上述命令不自动恢复其他配置或自定义 Compose 文件组合，须先完成对应恢复；切分支不更新运行中的容器。若检测端也回 main，先停止原服务进程，再切分支并用原进程管理方式重启；仓库便携入口为 `python run_roberta_server.py`，不假设 systemd 单元名。
+
 ### D1 响应 schema v1
 
 内部请求复用主检测入口：直连为 RepreGuard `POST /detect`，PHP 部署为生效 PHP 地址，均携带既有 `X-RepreGuard-Token`，
-JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；不附主模型结果，不进入主检测分段循环。
+默认 JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；启用下述封装时只有 `text` 字段。不附主模型结果，不进入主检测分段循环。
 未提供 `action` 或显式 `action="detect"` 时继续主检测；`action="evidence"` 直接复用 Evidence 处理、输入校验与独立容量，不运行主模型。其他 action 返回 422。
 原 `POST /evidence/route` 仍接受精确的 `{"text":"用户原始整文"}`，供旧客户端兼容。先更新检测端再更新后端；新后端遇到旧检测端返回的分数时，按 `invalid_router_response` 降级而不重试。
 请求体上限 128 KiB（含流式计数），text 严格要求非空白字符串、1–20,000 Unicode code points，
