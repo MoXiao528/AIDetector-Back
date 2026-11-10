@@ -1102,6 +1102,7 @@ paths:
     post:
       tags: [reports]
       summary: Export PDF report
+      description: Exports the authenticated account's saved detection snapshot without rerunning detection. Writing characteristics are included only when requested and available in server serve mode.
       operationId: exportPdfReport
       security:
         - BearerAuth: []
@@ -1114,6 +1115,11 @@ paths:
       responses:
         '200':
           description: PDF report
+          headers:
+            Content-Disposition:
+              description: Attachment filename; exposed to cross-origin browser clients.
+              schema:
+                type: string
           content:
             application/pdf:
               schema:
@@ -1127,6 +1133,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request or unavailable/invalid saved analysis (REPORT_SOURCE_INVALID).
           content:
             application/json:
               schema:
@@ -2138,6 +2150,17 @@ components:
         historyId:
           type: integer
           minimum: 1
+        includeEvidence:
+          type: boolean
+          default: true
+          description: Include available writing characteristics; server Evidence mode must also be serve.
+        timeZone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: UTC
+          example: Asia/Shanghai
+          description: IANA time zone for report timestamps. Unknown zones fall back to UTC.
     DetectRequest:
       type: object
       required:

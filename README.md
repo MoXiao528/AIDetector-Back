@@ -79,7 +79,7 @@ Evidence V1 已完成本地计算、模式控制、整文 Router HTTP 调用和�
 默认 `DETECT_EVIDENCE_MODE=off`；应用启动持有一个消费实例，off 不读 Bundle、不执行 Evidence。
 shadow 执行内部分析并保存快照，不公开结果；serve 在标准检测响应、历史和幂等回放中输出有效的服务端 `evidence`。
 没有快照或快照非法时省略该字段，off/shadow 也不会新增 `evidence: null`，已有主检测字段保持原样。
-检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan、PDF、示例保持原合同。
+检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan 和示例保持原合同。PDF 可通过 `includeEvidence` 包含已保存的写作特点摘要，但仍遵循服务端 `serve` 模式和快照校验，关闭或缺失时不重新计算。报告时间使用可选 `timeZone`（默认 UTC），始终导出账号已有检测记录，不使用当前未送检草稿。
 主检测确定结果后、数据库结算前，对原始整文只路由一次，不重试；复用既有连接池、鉴权和 128 KiB 响应上限。
 主检测请求为 `{"text":"文本"}`；Evidence 请求使用同一检测地址，发送 `{"text":"完整原文","action":"evidence"}`，由 RepreGuard `/detect` 分流。本机直连和生产 PHP 转发共用此协议，无需独立 Evidence URL。
 演示分支可设置 `DETECT_TEXT_ENVELOPE_ENABLED=true`，主检测的 text 为 `AIDT:1:detect\n原文`，Evidence 的 text 为 `AIDT:1:evidence\n完整原文`，用于仅保留 `text` 的 PHP 转发器；默认关闭，不使用 Base64 或 HMAC，服务 Token 仍必需。两种模式均在发送前校验原文和实际请求体。协议、真实 PHP 验收及回切配置步骤见 [text 封装协议](docs/detection-contract.md#text-封装协议演示分支)。

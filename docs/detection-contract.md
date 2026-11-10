@@ -295,7 +295,7 @@ Router 身份由 Bundle 的 `router.artifact_sha256` 绑定。冻结的 `serve_e
 
 off/shadow 只省略 Evidence 字段，不全局排除 null，因此已有 null 字段保留。
 检测列表和管理员详情共用 `project_public_meta_json`，所有模式均移除原始根级 `evidence/artifactVersion`，防止绕过专用输出字段；
-其他已有元数据语义保持不变。旧 scan 兼容接口、PDF 和示例维持原白名单输出，不增加 Evidence 展示。
+其他已有元数据语义保持不变。旧 scan 兼容接口和示例维持原白名单输出。PDF 支持通过可选 `includeEvidence`（默认 `true`）导出已有写作特点摘要，但仍须服务端处于 `serve` 且快照有效；关闭或快照缺失/非法时不重新计算，不影响主检测报告。报告时间按可选 `timeZone`（默认 UTC；未知时区回退 UTC）显示，数据始终来自账号已有检测记录。
 
 EV4-03 通过固定 Router 响应和预置快照验证投影；EV4-02 另用临时回环 HTTP Router、实际后端路由/客户端/特征计算验证请求链。
 EV4-04 接通快照写入，首次响应、数据库、历史和幂等回放使用同一份已校验结果；公开输出仍由当前 mode 控制。
