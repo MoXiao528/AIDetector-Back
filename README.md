@@ -1,278 +1,125 @@
-﻿# AIDetector Backend V2.1
+# AIDetector Backend
 
-`AIDetector-Back` 是 AIDetector V2.1 的后端服务，当前正式对外提供：
+RepreGuard 文本检测平台的后端 API，负责用户与游客会话、检测编排、配额、历史记录和 PDF 报告。服务使用 FastAPI、SQLAlchemy 和 PostgreSQL，主模型推理由独立的 RepreGuard 检测端完成。
 
-- 用户注册 / 登录 / 游客 token
-- 文本检测
-- 配额管理
-- 历史记录
-- PDF 报告
-- API Key
-- 管理后台接口
-- 团队接口
-- 健康检查与就绪检查
-- RepreGuard RoBERTa v2.0 检测接入
-
-当前仓库根目录只保留这套文档结构：
-
-- [`README.md`](./README.md)：V2.1 总说明
-- [`contract/openapi.yaml`](./contract/openapi.yaml)：正式契约
-- [`contract/changelog.md`](./contract/changelog.md)：契约版本变更
-- [`docs/detection-contract.md`](./docs/detection-contract.md)：检测语义说明
-- [`docs/deploy-cutover-checklist.md`](./docs/deploy-cutover-checklist.md)：上线切换清单
-
-本地调试启动：
-
-```bash
-docker compose up -d --build
-```
-
-数据库迁移：
-
-```bash
-docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
-```
-
-## V2.1 边界
-
-### 已开放
-
-- `scan`
-- `history`
-- `reports`
-- `auth`
-- `quota`
-- `admin`
-- `keys`
-- `teams`
-
-### 未开放
-
-- `polish`
-- `translate`
-- `citation`
-- `billing`
-- `contact`
-- `qa`
-
-说明：
-
-- 响应结构里保留的 `translation / polish / citations` 只是兼容保留字段
-- 不代表这些能力已经进入 V2.1 正式产品面
-
-## API 4.0.0 检测契约（产品 V2.1）
-
-- `POST /api/v1/detect` 是正式检测入口；`/api/v1/scan/detect`、`/api/v1/scan`、`/api/scan/detect`、`/api/scan` 是兼容入口，五者走同一套检测实现。
-- 五个入口硬切要求 UUID `Idempotency-Key`：新逻辑请求生成新 key，同一次请求重试复用原 key；处理中返回带 `Retry-After` 的 `409`，请求冲突返回 `409`，结果无法回放返回 `410`。
-- 后端不再接收或解析 PDF、DOCX、TXT 原始文件；旧 `POST /api/v1/detections/parse-files` 已硬删除并返回 `404`，当前浏览器只提交本地抽取后的文本。
-- 下游 RepreGuard 必须返回 `score_type="probability"`；缺失或非法分数、标签、阈值会转成 `INVALID_DETECT_RESPONSE`。
-- 后端调用 RepreGuard 的 `/detect`、`/health` 和 readiness probe 时统一携带 `X-RepreGuard-Token`；Token 至少 32 个可打印 ASCII 字符，必须独立生成，不能复用用户 JWT 或后端 `SECRET_KEY`。
-- RepreGuard 响应按实际数据流限制为 128 KiB；401/403 不透传检测端内部信息，统一转换成 `DETECT_SERVICE_AUTH_FAILED`。
-- AI / HUMAN 标签、摘要百分比和段落高亮统一按检测端返回的 `threshold` 解释，不再沿用旧的 `0.34 / 0.67` 概率分档。
-- 公共标签与摘要只返回 AI / Human；旧三分类历史在读取时折叠进 Human，数据库原始记录不会被迁移或改写。
-- 后端分段保留原始空白和缩进，避免代码、JSON、路径类文本在送检前被展示层 normalize。
-- 配额统计优先使用 `quota_usage` ledger；手工历史记录不再隐式消耗 quota。
-
-## 运行结构
-
-Evidence V1 已完成本地计算、模式控制、整文 Router HTTP 调用和失败隔离，以及 EV4-04 的快照持久化。
-默认 `DETECT_EVIDENCE_MODE=off`；应用启动持有一个消费实例，off 不读 Bundle、不执行 Evidence。
-shadow 执行内部分析并保存快照，不公开结果；serve 在标准检测响应、历史和幂等回放中输出有效的服务端 `evidence`。
-没有快照或快照非法时省略该字段，off/shadow 也不会新增 `evidence: null`，已有主检测字段保持原样。
-检测列表和管理员原始元数据过滤服务端 Evidence；旧 scan 和示例保持原合同。PDF 可通过 `includeEvidence` 包含已保存的写作特点摘要，但仍遵循服务端 `serve` 模式和快照校验，关闭或缺失时不重新计算。报告时间使用可选 `timeZone`（默认 UTC），始终导出账号已有检测记录，不使用当前未送检草稿。
-主检测确定结果后、数据库结算前，对原始整文只路由一次，不重试；复用既有连接池、鉴权和 128 KiB 响应上限。
-主检测请求为 `{"text":"文本"}`；Evidence 请求使用同一检测地址，发送 `{"text":"完整原文","action":"evidence"}`，由 RepreGuard `/detect` 分流。本机直连和生产 PHP 转发共用此协议，无需独立 Evidence URL。
-演示分支可设置 `DETECT_TEXT_ENVELOPE_ENABLED=true`，主检测的 text 为 `AIDT:1:detect\n原文`，Evidence 的 text 为 `AIDT:1:evidence\n完整原文`，用于仅保留 `text` 的 PHP 转发器；默认关闭，不使用 Base64 或 HMAC，服务 Token 仍必需。两种模式均在发送前校验原文和实际请求体。协议、真实 PHP 验收及回切配置步骤见 [text 封装协议](docs/detection-contract.md#text-封装协议演示分支)。
-`DETECT_EVIDENCE_TIMEOUT_SECONDS=12` 覆盖 HTTP 与本地比较；有效启用时默认 lease 从 150 秒增至 162 秒，off 不变。
-后端每进程最多一个 Evidence 任务、不排队；超时仅降级 Evidence，仍占位至实际计算结束，主分数/阈值/标签不变。
-合法 Evidence 与 `artifactVersion` 存入既有 `meta_json`，和检测结果、配额、幂等完成状态同事务提交；首次响应使用同一份快照。
-历史和幂等回放不重算，旧快照不依赖当前 Bundle；非法快照只省略，实际数据库失败仍按原规则整体回滚。
-加载与响应校验只用标准库；特征提取按需加载 `numpy>=2.2,<2.3`、`jieba==0.42.1`，
-复用冻结的研究算法与八语言 golden，不需要挂载研究源码或加载模型。
-`extract_features` 返回内部特征；`analyze` 保留 22 项观察值、近似百分位、覆盖率及逐项参考差异提示，
-不重新判断 AI/Human。当前 Bundle 的参考数据最多支持 19/22 项比较，因此正常也会是 `partial`。
-本机真实 tokenizer、主模型、Router、Bundle 与隔离 SQLite 的业务链已通过；测试自建临时服务并退出，不需要手动启动后端。
-配置、响应合同与验证命令见 [检测契约第 10 节](docs/detection-contract.md#10-evidence-v1-本地计算与模式输出合同)。
-
-推荐结构：
-
-1. 前端静态文件由 Nginx / Caddy 提供
-2. 后端 API 只监听服务器本机 `127.0.0.1:8020`
-3. 反向代理统一把 `/api/...` 转发到 `127.0.0.1:8020`
-4. 数据库不暴露宿主机端口
-
-正确流量路径：
+- 接收文本，按模型 token 上限分段调用检测端，返回整文结果和段落分析。
+- 用幂等请求管理检测任务，保存结果、历史与配额结算。
+- 提供注册登录、游客访问、API Key 和管理后台接口。
+- 可选启用写作特点分析，将整文路由与参考统计保存为结果快照。
 
 ```text
-Browser -> https://your-domain.example
-Browser -> https://your-domain.example/api/... -> reverse proxy -> 127.0.0.1:8020
-API -> db:5432
+AIDetector-web → AIDetector-Back → RepreGuard
+                       ↓
+                   PostgreSQL
 ```
 
-不要让浏览器直接请求 `localhost:8020`，那是用户自己的电脑，不是你的服务器。
+[前端仓库](https://github.com/MoXiao528/AIDetector-web) · [检测端仓库](https://github.com/MoXiao528/repre_guard_server) · [API 契约](contract/openapi.yaml)
 
-## 环境文件
+## 快速开始
 
-运行时只保留两套模板：
+以下本地步骤使用 PowerShell，在仓库根目录执行。需要 Docker Desktop、Docker Compose v2，以及一个已启动、可从 API 容器访问的 RepreGuard 服务。首次检测还需要下载或预先缓存 `DETECT_TOKENIZER_MODEL` 指定的 tokenizer。
 
-### `.env.example`
+### 1. 获取代码与配置
 
-给 API 容器 / 应用运行时使用。
+```powershell
+git clone -c core.autocrlf=false https://github.com/MoXiao528/AIDetector-Back.git
+cd AIDetector-Back
+Copy-Item .env.example .env
+Copy-Item .env.ops.example .env.ops
+```
 
-核心字段：
+已有工作目录直接编辑现有配置。Windows 下需让 `scripts/docker/init-runtime-user.sh` 保持 LF 换行，上面的克隆命令会为新仓库设置此行为。两份环境文件的用途如下。
 
-```env
+| 文件 | 用途 | 需要填写 |
+| --- | --- | --- |
+| [`.env`](.env.example) | API 运行配置 | `SECRET_KEY`、业务账号 `aidetector_app` 的密码、检测地址、共享服务 Token |
+| [`.env.ops`](.env.ops.example) | 数据库初始化和迁移 | 管理员 `postgres` 的独立密码，数据库名与 `.env` 一致 |
+
+密钥和服务 Token 使用至少 32 位随机值。可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 分别生成密钥和两套数据库密码。`REPRE_GUARD_SERVICE_TOKEN` 使用检测端已配置的同一值。
+
+本地 `.env` 中核对以下配置，并保留模板中的数据库等其他字段。
+
+```dotenv
 ENVIRONMENT=development
-SECRET_KEY=replace-with-a-long-random-secret-at-least-32-chars
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-POSTGRES_USER=aidetector_app
-POSTGRES_PASSWORD=replace-with-a-strong-app-password
-POSTGRES_DB=AIDetector
-BACKEND_CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
+BACKEND_CORS_ORIGINS=http://localhost:5300,http://127.0.0.1:5300
 DETECT_SERVICE_URL=http://host.docker.internal:9000
 DETECT_SERVICE_DETECT_URL=
 DETECT_SERVICE_HEALTH_URL=http://host.docker.internal:9000/health
-DETECT_SERVICE_TIMEOUT=60
-REPRE_GUARD_SERVICE_TOKEN=replace-me
+DETECT_EVIDENCE_MODE=off
 ```
 
-`REPRE_GUARD_SERVICE_TOKEN` 必须与检测端进程使用的值完全一致。缺失、少于 32 字符或包含非 ASCII 字符时，API 会拒绝启动。
-可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一次，然后把结果分别写入后端 `.env` 和 RepreGuard 项目根目录 `.env`；容器或服务管理器显式注入的环境变量仍可覆盖文件值。
+`host.docker.internal` 用于 Docker Desktop 容器访问宿主机。检测端须监听容器可达的接口，例如 `REPRE_GUARD_HOST=0.0.0.0`。检测端在其他主机或使用 Linux Docker Engine 时，改成容器实际可达的地址。
 
-### `.env.ops.example`
+当前 Compose 将数据卷挂在 `/var/lib/postgresql/data`。新建本地数据库时，在 `.env.ops` 添加以下配置，让 PostgreSQL 18 明确使用该挂载目录。已有数据库须先核对实际数据目录和卷挂载，再确定配置。
 
-给数据库初始化脚本和部署脚本使用。
-
-核心字段：
-
-```env
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=replace-with-a-different-strong-admin-password
-POSTGRES_DB=AIDetector
+```dotenv
+PGDATA=/var/lib/postgresql/data
 ```
 
-### 实际使用
-
-```bash
-cp .env.example .env
-cp .env.ops.example .env.ops
-```
-
-## 数据库账号分工
-
-### `postgres`
-
-数据库管理员账号，用于：
-
-- 建库
-- 建用户
-- 改密码
-- 改权限
-- 跑高权限迁移
-- 紧急修数
-
-### `aidetector_app`
-
-业务运行账号，用于：
-
-- API 日常增删改查
-- 线上长期连接数据库
-
-
-## 本地开发
-
-### 准备
-
-```bash
-cp .env.example .env
-cp .env.ops.example .env.ops
-```
-
-如果你需要本机数据库客户端直连 PostgreSQL，保留本地专用：
-
-- `docker-compose.override.yml`
-
-它只应该存在于本地开发环境，不应该进入生产目录。
-
-### 启动
-
-PyCharm / PowerShell 本地调试直接用 Docker Compose：
+### 2. 初始化数据库并启动 API
 
 ```powershell
-docker compose up -d --build
+docker compose -f docker-compose.yml up -d db
+docker compose -f docker-compose.yml exec db pg_isready -h 127.0.0.1 -U postgres -d AIDetector
 ```
 
-如果你想拆成两个 PyCharm 一键配置：
+等待 `pg_isready` 返回 `accepting connections`，再构建镜像、用管理员账号迁移并启动服务。
 
 ```powershell
-docker compose build api
-docker compose up -d db api
+docker compose -f docker-compose.yml build api
+docker compose -f docker-compose.yml run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
+docker compose -f docker-compose.yml up -d api
 ```
 
-数据库迁移单独建一个 PyCharm 一键配置：
+API 开始监听后检查就绪状态。若连接被拒绝，查看启动日志并等待服务启动后重试。
 
 ```powershell
-docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
+Invoke-RestMethod http://127.0.0.1:8020/api/v1/ready
 ```
 
-这条迁移命令会把 `.env.ops` 里的管理员数据库账号注入到一次性 `api` 容器里，避免用 `.env` 里的业务账号跑高权限迁移。
+就绪响应应包含 `status=ok`、`database=ok` 和 `detect_service=ok`。API 默认地址是 `http://127.0.0.1:8020`，交互接口文档位于 `/docs`。排查启动问题可运行 `docker compose -f docker-compose.yml logs --tail=100 api db`。
 
-如果你要完整启动并顺便做环境校验，也可以用：
+全新数据库会自动创建业务账号。
 
-```bash
-./scripts/server-up.sh
+### 3. 完成一次检测
+
+以下 PowerShell 示例先获取游客凭证，再提交一段满足最小长度的英文文本。执行后会创建检测记录并消耗游客额度。
+
+```powershell
+$apiBase = 'http://127.0.0.1:8020'
+$guest = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/auth/guest"
+$headers = @{
+    Authorization = "Bearer $($guest.accessToken)"
+    'Idempotency-Key' = [guid]::NewGuid().ToString()
+}
+$text = 'This is a deployment check for the text detection service. The request goes through the application API, reaches the model server, and stores the returned result. We use a complete paragraph so the example meets the minimum input length and exercises the same path as a normal user submission.'
+$body = @{ text = $text } | ConvertTo-Json
+$result = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detect" -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 180
+$result | Select-Object detectionId, label, score, currentCredits
 ```
 
-常用检查：
+成功时返回 `detectionId`、`label`、`score` 等字段，具体分数由模型计算。输入须包含至少 200 个非空白字符，总长度不超过 20,000 个字符。每次新检测生成新的 UUID `Idempotency-Key`，同一次请求重试时复用原请求头和正文。
 
-```bash
-docker compose ps
-docker compose logs -f db
-docker compose logs -f api
-curl http://127.0.0.1:8020/api/v1/health
-curl http://127.0.0.1:8020/api/v1/ready
-```
+## 生产部署
 
-### 开发检查
+生产使用 Linux、Docker Compose 和 HTTPS 反向代理。在根目录准备好 `.env`、`.env.ops` 后，核对以下项目。
 
-```bash
-cd backend
-python -m pytest tests -q
-python -m ruff check app tests
-```
+| 配置 | 生产要求 |
+| --- | --- |
+| `ENVIRONMENT` | `production` |
+| `SECRET_KEY` | 独立生成的至少 32 位强随机值 |
+| `POSTGRES_USER` | API 使用 `aidetector_app`，管理员账号放在 `.env.ops` |
+| `BACKEND_CORS_ORIGINS` | 前端实际使用的 HTTPS origin |
+| 检测地址 | 实际 detect 和 health 地址使用同源 HTTPS |
+| `REPRE_GUARD_SERVICE_TOKEN` | 与检测端一致的独立服务令牌 |
 
-## V2.1 生产部署
+Compose 默认将 API 发布到 `127.0.0.1:8020`，PostgreSQL 通过 Compose 内网访问。Nginx/Caddy 将同域 `/api/` 原样转发到 API，长检测请求的代理超时须与后端预算、前端 180 秒超时配合。生产目录应移除开发用的 `docker-compose.override.yml`。
 
-### 1. 准备配置
+### 检测端地址
 
-```bash
-cp .env.example .env
-cp .env.ops.example .env.ops
-```
+直接连接检测服务的 HTTPS 入口时，设置 `DETECT_SERVICE_URL`，留空 `DETECT_SERVICE_DETECT_URL`，将 `DETECT_SERVICE_HEALTH_URL` 指向同源 `/health`。
 
-然后至少改成：
-
-`.env`
-
-```env
-ENVIRONMENT=production
-SECRET_KEY=至少32位强随机串
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-POSTGRES_USER=aidetector_app
-POSTGRES_PASSWORD=强业务密码
-POSTGRES_DB=AIDetector
-BACKEND_CORS_ORIGINS=https://你的域名
-DETECT_SERVICE_URL=https://你的RepreGuard地址
-DETECT_SERVICE_DETECT_URL=
-DETECT_SERVICE_HEALTH_URL=https://你的RepreGuard地址/health
-REPRE_GUARD_SERVICE_TOKEN=独立生成的至少32位强随机串
-```
-
-生产环境实际使用的 detect / health 端点必须是 HTTPS 且同源。支持 HTTPS PHP 转发入口；转发器必须保留完整 JSON 请求、`X-RepreGuard-Token`、上游 JSON 响应和 HTTP 状态码。
-
-通过现有 PHP 入口部署时，将上面的三个检测地址改为：
+通过现有 PHP 入口部署时使用以下配置。
 
 ```dotenv
 DETECT_SERVICE_URL=https://umcat.cis.um.edu.mo
@@ -280,154 +127,51 @@ DETECT_SERVICE_DETECT_URL=https://umcat.cis.um.edu.mo/api/aidetect.php
 DETECT_SERVICE_HEALTH_URL=
 ```
 
-健康地址留空后，`/api/v1/ready` 会经同一 PHP 入口执行一次短文本主检测探针；`/api/v1/health` 仍只证明后端存活。PHP 不需要按 `action` 选择上游，固定转发到检测端 `/detect` 即可；但必须实测它没有丢弃 `action` 或裁剪响应。
+PHP 固定转发到检测端 `/detect`，需保留请求、`X-RepreGuard-Token`、响应 JSON 和 HTTP 状态码。健康地址留空后，`/api/v1/ready` 会经 PHP 发起一次短文本主检测。
 
-先更新检测端，再更新后端。新检测端保留 `/evidence/route`，兼容旧后端；旧检测端可能忽略 `action` 并返回普通检测结果，新后端会将其判为无效 Evidence 响应并降级，不将分数当作路由。
+### 启动与更新
 
-本次代码、测试与真实模型本机联调结果见 [action 分流本地验收](docs/records/2026-10-20-action-dispatch.md)。该记录不代表生产 PHP 或目标服务器已验收。
+Linux 脚本会按 Bash 语法读取环境文件。将 `.env` 中的应用名称写成 `APP_NAME='AIDetector API'`，其他包含空格的值也需正确引用。
 
-`.env.ops`
-
-```env
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=强管理员密码
-POSTGRES_DB=AIDetector
-```
-
-### 2. 端口建议
-
-当前推荐端口映射和线上部署保持一致：
-
-```yml
-ports:
-  - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-8020}:8000"
-```
-
-也就是默认只监听宿主机本机 `127.0.0.1:8020`，然后由 Nginx / Caddy 转发 `/api` 到 `127.0.0.1:8020`。
-
-### 3. 启动
-
-本地 / 生产都可以直接用 Docker Compose：
-
-```powershell
-docker compose up -d --build
-```
-
-迁移：
-
-```powershell
-docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
-```
-
-更新代码后：
-
-```powershell
-git pull --ff-only
-docker compose up -d --build
-docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
-```
-
-如果你需要自动检查 `.env`、账号授权、迁移和 `health / ready`，再用脚本：
+新建数据库时，按快速开始中的 `PGDATA` 配置匹配卷目录，先启动数据库并等待 TCP `pg_isready` 检查成功，再运行下列脚本。更新已有生产库前，先备份并确认实际数据目录、卷挂载与所用 PostgreSQL 版本相符。
 
 ```bash
-./scripts/server-update.sh
+bash scripts/server-up.sh
 ```
 
-### 4. 必须记住
+脚本依次启动数据库、设置业务账号权限、构建镜像、执行迁移、启动 API 并检查服务。确认当前分支和本地改动后，执行 `bash scripts/server-update.sh` 拉取跟踪分支并更新。
 
-#### 临时 HTTP 登录
+若服务器使用额外的 Compose 文件，启动、迁移、更新和检查均须指定同一组文件。Linux 脚本可通过进程环境传入，例如 `COMPOSE_FILE=docker-compose.yml:compose.evidence.yml bash scripts/server-up.sh`。此例适用于服务器已有该覆盖文件的情况。
 
-`ALLOW_INSECURE_HTTP_COOKIES=false` 默认保留现有 Cookie 策略：production 等非开发环境使用 `Secure`，开发环境允许 HTTP。临时同域 HTTP 演示可显式设为 `true`，用户登录 Cookie 和游客恢复 Cookie 的设置、删除均不带 `Secure`；`HttpOnly`、`SameSite=lax`、路径、有效期及凭证撤销保持不变。此开关不按请求协议自动切换，开启时 HTTPS 响应也不带 `Secure`。
-
-保持 `ENVIRONMENT=production`，只开启上述例外，不绕过密钥、数据库密码或下游 HTTPS 检查。浏览器到网站的 HTTP 仍会明文传输密码、会话凭据和检测正文；该开关不提供加密，也不会配置 HTTPS。前端继续同域 `/api` 和 `credentials: include`，无需为此重新构建。
-
-确认包含此配置的新代码已推送后，在后端项目根目录检查分支和本地改动，再更新演示分支：
+### 部署验收
 
 ```bash
-git status --short --branch
-test "$(git branch --show-current)" = demo/text-envelope && git pull --ff-only origin demo/text-envelope
+docker compose ps
+curl -fsS http://127.0.0.1:8020/api/v1/health
+curl -fsS http://127.0.0.1:8020/api/v1/ready
+curl -fsS https://your-domain.example/api/v1/ready
 ```
 
-不要覆盖已有本地改动。更新代码后再编辑 `.env`，添加 `ALLOW_INSECURE_HTTP_COOKIES=true`；旧版本 Settings 不认识该字段，提前加入可能导致启动失败。基础 Compose 已通过 `env_file` 加载 `.env`；若服务器自建的 `compose.evidence.yml` 在 `environment` 写了同名变量，须同步修改或移除该覆盖值。沿用服务器实际使用的 Compose 文件重建 API；已使用 Evidence 覆盖文件的部署执行：
+`/health` 验证 API 存活，`/ready` 验证数据库和主检测服务。再通过网页完成游客检测、登录检测、历史查询与 PDF 导出。开启 Evidence 时，还需通过实际 PHP/检测入口验证路由结果和制品 SHA。
+
+### 可选配置
+
+| 功能 | 配置与启用条件 |
+| --- | --- |
+| 写作特点 | 默认 `DETECT_EVIDENCE_MODE=off`。先启用检测端 Router，再挂载匹配的 Bundle，设置 `DETECT_EVIDENCE_BUNDLE_PATH` 和 `DETECT_EVIDENCE_BUNDLE_SHA256`。`shadow` 保存内部快照，`serve` 对外提供有效结果。前端显示还受 `VITE_EVIDENCE_ENABLED` 控制。 |
+| HTTP 演示 | 仅适用于已支持 `ALLOW_INSECURE_HTTP_COOKIES` 的版本，如 `demo/text-envelope` 分支。设为 `true` 后允许同域 HTTP Cookie，仍保留 `ENVIRONMENT=production` 和下游 HTTPS 要求。HTTP 会明文传输凭据与正文。恢复 HTTPS 后关闭开关、重建 API 并重新登录。 |
+
+切回不支持 HTTP 演示配置的版本前，从 `.env`、Compose 和服务环境删除 `ALLOW_INSECURE_HTTP_COOKIES`。
+
+## 开发与测试
+
+本机开发检查使用 Python 3.11，与 CI 和 API 镜像一致。激活 Python 虚拟环境后，从仓库根目录执行以下命令。
 
 ```bash
-docker compose -f docker-compose.yml -f compose.evidence.yml up -d --build --no-deps --force-recreate api
-docker compose -f docker-compose.yml -f compose.evidence.yml exec -T api python -c 'from app.api.v1.auth import settings,_is_secure_cookie; print({"environment":settings.environment,"allow_insecure_http_cookies":settings.allow_insecure_http_cookies,"cookie_secure":_is_secure_cookie()})'
+cd backend
+python -m pip install -r requirements.txt
+python -m ruff check app tests
+python -m pytest tests -q
 ```
 
-HTTP 演示预期输出为 `production`、`True`、`False`。无需数据库迁移，也无需更新检测端。浏览器重新登录后，确认 Cookie 无拒收警告、`GET /api/v1/auth/me` 返回 200、刷新仍登录、退出后无凭据访问返回 401；游客续期须保留同一身份，丢弃会话须清理恢复 Cookie。不能仅凭登录接口 200 验收。
-
-恢复 HTTPS 时先配置并验证 Nginx 的证书、443 和 HTTPS 访问，再将开关设为 `false`（或删除配置）并用上面的命令重建 API；重新登录以补发带 `Secure` 的 Cookie。开关不会自动更新浏览器已保存的 Cookie。切回尚不支持此字段的 `main`/旧版本前，必须从 `.env` 和 Compose 中删除整个配置项，写 `false` 也不能避免旧 Settings 拒绝未知字段；同时按 [text 封装协议](docs/detection-contract.md#text-封装协议演示分支) 处理封装变量并重建旧版本镜像。
-
-#### 部署约束
-
-- 生产目录不要带 `docker-compose.override.yml`
-- 数据库不要暴露宿主机端口
-- 后端不要直接把 `8000/8020` 开给公网
-- 反代层统一处理 `/api`
-- `.env` 只放运行账号
-- `.env.ops` 只放管理员账号
-- 后端与 RepreGuard 使用同一个独立 `REPRE_GUARD_SERVICE_TOKEN`
-
-## 手工维护
-
-### 用管理员账号进库
-
-```bash
-docker compose exec db psql -U postgres -d AIDetector
-```
-
-### 手工跑管理员迁移
-
-```powershell
-docker compose run --rm --no-deps --env-from-file .env.ops api alembic upgrade head
-```
-
-## API 4.0.0 本地验收清单
-
-- `docker compose ps`
-- `/api/v1/health`
-- `/api/v1/ready`
-- `/api/v1/detect`（携带 UUID `Idempotency-Key`）
-- `/api/scan`（携带 UUID `Idempotency-Key`）
-- 旧 `/api/v1/detections/parse-files` 返回 `404`
-- 注册 / 登录
-- 游客检测
-- 登录后检测
-- 历史记录
-- PDF 导出
-- API Key 自测
-- 管理后台权限
-
-上线切换细节看：
-
-- [docs/deploy-cutover-checklist.md](./docs/deploy-cutover-checklist.md)
-
-## 后续优化方向
-
-### 近线优化
-
-- 把认证限流从内存版切到 Redis
-- 明确信任代理 IP，再安全地读取真实用户 IP
-- 把生产反代配置模板收成一份标准 Nginx / Caddy 配置
-- 给 `server-up.sh / server-update.sh` 增加更强的失败回滚和环境校验
-
-### 产品能力
-
-- 句级检测稳定化
-- 润色建议改成 patch / diff 形式
-- 引用核查和证据链
-- 文档版本化工作流
-- 更完整的结构化导入导出
-
-### 工程能力
-
-- 补 E2E 浏览器回归
-- 强化 OpenAPI 驱动的前后端类型同步
-- 收口隐藏接口和遗留占位路径
-
-更细的检测语义说明看：
-
-- [docs/detection-contract.md](./docs/detection-contract.md)
-- [contract/openapi.yaml](./contract/openapi.yaml)
-- [contract/changelog.md](./contract/changelog.md)
+普通测试使用隔离的 SQLite 和模拟依赖，真实模型、PostgreSQL 等专项验收需要按各测试说明显式启用。
