@@ -424,12 +424,46 @@ async def test_login_rate_limit_blocks_excess_attempts(db_session, unique_email)
 
 
 @pytest.mark.anyio
-async def test_register_allows_name_with_at_symbol(db_session, unique_email):
+@pytest.mark.parametrize("name", ["plain-user", "abc@def", "alias@example.net"])
+async def test_registered_username_and_email_both_log_in_to_same_user(db_session, unique_email, name):
     created_user = await register_user(
-        RegisterRequest(email=unique_email, password="StrongPass!23", name="abc@def"),
+        RegisterRequest(email=unique_email, password="StrongPass!23", name=name),
         db_session,
     )
-    assert created_user.name == "abc@def"
+    assert created_user.name == name
+
+    for identifier in (name, unique_email):
+        response = Response()
+        token = await login(LoginRequest(identifier=identifier, password="StrongPass!23"), response, db_session)
+        authenticated_user = get_current_user(db=db_session, token=token.access_token)
+        assert authenticated_user.id == created_user.id
+        assert "aid_access_token=" in response.headers["set-cookie"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("same_password", [False, True])
+async def test_login_email_takes_priority_over_another_users_name(db_session, unique_email, same_password):
+    email_owner = await register_user(
+        RegisterRequest(email=unique_email, name="email-owner", password="EmailPass!23"), db_session
+    )
+    name_password = "EmailPass!23" if same_password else "NamePass!23"
+    name_owner = await register_user(
+        RegisterRequest(email="name-owner@example.com", name=unique_email, password=name_password), db_session
+    )
+
+    token = await login(LoginRequest(identifier=unique_email, password="EmailPass!23"), Response(), db_session)
+    assert get_current_user(db=db_session, token=token.access_token).id == email_owner.id
+
+    if not same_password:
+        response = Response()
+        with pytest.raises(HTTPException) as error:
+            await login(LoginRequest(identifier=unique_email, password=name_password), response, db_session)
+        assert error.value.status_code == 401
+        assert error.value.detail["code"] == "AUTH_INVALID_CREDENTIALS"
+        assert "set-cookie" not in response.headers
+
+    token = await login(LoginRequest(identifier=name_owner.email, password=name_password), Response(), db_session)
+    assert get_current_user(db=db_session, token=token.access_token).id == name_owner.id
 
 
 @pytest.mark.anyio
