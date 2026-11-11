@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from uuid import UUID, uuid4
 
 import jwt
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from starlette.requests import Request
 
+from app.api.v1 import auth as auth_api
 from app.api.v1.auth import login, read_current_user, register_user
 from app.core.config import get_settings
 from app.core.rate_limit import auth_rate_limiter
@@ -22,9 +24,9 @@ from app.schemas.auth import LoginRequest, RegisterRequest
 from app.services.repre_guard_client import repre_guard_client
 
 LONG_TEXT = (
-    "Guest quota continuity check requires enough visible characters to pass the minimum detection threshold "
+    "Guest quota continuity check requires enough input tokens to pass the minimum detection threshold "
     "while still remaining deterministic for quota accounting across repeated guest sessions. "
-) * 3
+) * 11
 LONG_TEXT = LONG_TEXT.strip()
 REQUIRED_ACCESS_TOKEN_CLAIMS = {"iss", "aud", "iat", "jti", "exp"}
 
@@ -108,6 +110,98 @@ def _decode_unverified(token: str) -> dict:
 
 def _resign_claims(claims: dict) -> str:
     return jwt.encode(claims, get_settings().secret_key, algorithm="HS256")
+
+
+@pytest.mark.parametrize(
+    "environment,allow_insecure,scheme,secure",
+    [
+        ("production", True, "http", False),
+        ("production", True, "https", False),
+        ("production", False, "https", True),
+        ("production", False, "http", True),
+        ("development", False, "http", False),
+    ],
+)
+def test_login_cookie_transport_and_logout(
+    environment, allow_insecure, scheme, secure, monkeypatch, db_session, unique_email
+):
+    monkeypatch.setattr(auth_api.settings, "environment", environment)
+    monkeypatch.setattr(auth_api.settings, "allow_insecure_http_cookies", allow_insecure)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, base_url=f"{scheme}://testserver") as client:
+            assert client.post(
+                "/api/v1/auth/register", json={"email": unique_email, "password": "StrongPass!23"}
+            ).status_code == 201
+            response = client.post(
+                "/api/v1/auth/login", json={"identifier": unique_email, "password": "StrongPass!23"}
+            )
+            assert response.status_code == 200
+            cookie = SimpleCookie(response.headers["set-cookie"])["aid_access_token"]
+            assert bool(cookie["secure"]) is secure
+            assert cookie["httponly"] and cookie["samesite"] == "lax"
+            assert cookie["path"] == "/" and cookie["domain"] == ""
+            assert int(cookie["max-age"]) == auth_api.settings.access_token_expire_minutes * 60
+            token = _response_value(response.json(), "access_token", "accessToken")
+            if scheme == "http" and secure:
+                assert client.get("/api/v1/auth/me").status_code == 401
+                return
+            for _ in range(2):
+                me = client.get("/api/v1/auth/me")
+                assert "authorization" not in me.request.headers
+                assert me.status_code == 200
+                assert me.json()["email"] == unique_email
+            logout_response = client.post("/api/v1/auth/logout")
+            assert logout_response.status_code == 204
+            cleared = SimpleCookie(logout_response.headers["set-cookie"])["aid_access_token"]
+            assert bool(cleared["secure"]) is secure
+            assert cleared["max-age"] == "0" and cleared["path"] == "/"
+            assert cleared["httponly"] and cleared["samesite"] == "lax"
+            assert client.cookies.get("aid_access_token") is None
+            assert client.get("/api/v1/auth/me").status_code == 401
+            assert client.get(
+                "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+            ).status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "environment,allow_insecure,scheme,secure",
+    [
+        ("production", True, "http", False),
+        ("production", True, "https", False),
+        ("production", False, "https", True),
+        ("development", False, "http", False),
+    ],
+)
+def test_guest_cookie_transport_renewal_and_discard(environment, allow_insecure, scheme, secure, monkeypatch, db_session):
+    monkeypatch.setattr(auth_api.settings, "environment", environment)
+    monkeypatch.setattr(auth_api.settings, "allow_insecure_http_cookies", allow_insecure)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, base_url=f"{scheme}://testserver") as client:
+            guest_id, _, cookie_name, first_cookie = _issue_guest_session(client)
+            renewal = client.post("/api/v1/auth/guest")
+            assert renewal.status_code == 200
+            payload = renewal.json()
+            assert _response_value(payload, "guest_id", "guestId") == guest_id
+            cookie = SimpleCookie(renewal.headers["set-cookie"])[cookie_name]
+            assert cookie.value != first_cookie
+            assert bool(cookie["secure"]) is secure
+            assert cookie["httponly"] and cookie["samesite"] == "lax"
+            assert cookie["path"] == "/api/v1/auth/guest" and cookie["domain"] == ""
+            assert int(cookie["max-age"]) == int(auth_api.GUEST_SESSION_TTL.total_seconds())
+            token = _response_value(payload, "access_token", "accessToken")
+            discarded = client.delete("/api/v1/auth/guest", headers={"Authorization": f"Bearer {token}"})
+            assert discarded.status_code == 204
+            cleared = SimpleCookie(discarded.headers["set-cookie"])[cookie_name]
+            assert bool(cleared["secure"]) is secure
+            assert cleared["max-age"] == "0" and cleared["path"] == "/api/v1/auth/guest"
+            assert cleared["httponly"] and cleared["samesite"] == "lax"
+            assert client.cookies.get(cookie_name) is None
+    finally:
+        app.dependency_overrides.clear()
 
 
 def _add_detection(
@@ -330,12 +424,46 @@ async def test_login_rate_limit_blocks_excess_attempts(db_session, unique_email)
 
 
 @pytest.mark.anyio
-async def test_register_allows_name_with_at_symbol(db_session, unique_email):
+@pytest.mark.parametrize("name", ["plain-user", "abc@def", "alias@example.net"])
+async def test_registered_username_and_email_both_log_in_to_same_user(db_session, unique_email, name):
     created_user = await register_user(
-        RegisterRequest(email=unique_email, password="StrongPass!23", name="abc@def"),
+        RegisterRequest(email=unique_email, password="StrongPass!23", name=name),
         db_session,
     )
-    assert created_user.name == "abc@def"
+    assert created_user.name == name
+
+    for identifier in (name, unique_email):
+        response = Response()
+        token = await login(LoginRequest(identifier=identifier, password="StrongPass!23"), response, db_session)
+        authenticated_user = get_current_user(db=db_session, token=token.access_token)
+        assert authenticated_user.id == created_user.id
+        assert "aid_access_token=" in response.headers["set-cookie"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("same_password", [False, True])
+async def test_login_email_takes_priority_over_another_users_name(db_session, unique_email, same_password):
+    email_owner = await register_user(
+        RegisterRequest(email=unique_email, name="email-owner", password="EmailPass!23"), db_session
+    )
+    name_password = "EmailPass!23" if same_password else "NamePass!23"
+    name_owner = await register_user(
+        RegisterRequest(email="name-owner@example.com", name=unique_email, password=name_password), db_session
+    )
+
+    token = await login(LoginRequest(identifier=unique_email, password="EmailPass!23"), Response(), db_session)
+    assert get_current_user(db=db_session, token=token.access_token).id == email_owner.id
+
+    if not same_password:
+        response = Response()
+        with pytest.raises(HTTPException) as error:
+            await login(LoginRequest(identifier=unique_email, password=name_password), response, db_session)
+        assert error.value.status_code == 401
+        assert error.value.detail["code"] == "AUTH_INVALID_CREDENTIALS"
+        assert "set-cookie" not in response.headers
+
+    token = await login(LoginRequest(identifier=name_owner.email, password=name_password), Response(), db_session)
+    assert get_current_user(db=db_session, token=token.access_token).id == name_owner.id
 
 
 @pytest.mark.anyio

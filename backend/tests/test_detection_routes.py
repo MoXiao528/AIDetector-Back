@@ -12,9 +12,9 @@ from app.services.repre_guard_client import repre_guard_client
 
 
 LONG_TEXT = (
-    "This route-level detection sample is intentionally long enough to satisfy the non-whitespace minimum. "
+    "This route-level detection sample is intentionally long enough to satisfy the input token minimum. "
     "It exercises the FastAPI route stack, dependency overrides, response serialization, and compatibility endpoints. "
-) * 2
+) * 10
 
 
 def _idempotency_headers() -> dict[str, str]:

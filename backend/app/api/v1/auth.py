@@ -39,6 +39,8 @@ DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 
 def _is_secure_cookie() -> bool:
+    if settings.allow_insecure_http_cookies:
+        return False
     return str(settings.environment or "").strip().lower() not in DEVELOPMENT_ENVIRONMENTS
 
 
@@ -267,9 +269,9 @@ async def register_user(payload: RegisterRequest, db: SessionDep, request: Reque
 async def login(payload: LoginRequest, response: Response, db: SessionDep, request: Request = None) -> Token:
     _enforce_rate_limit(request=request, action="login-ip", limit=10, window_seconds=300)
     _enforce_rate_limit(request=request, action="login-identifier", limit=5, window_seconds=300, identifier=payload.identifier)
-    if "@" in payload.identifier:
-        user = db.scalar(select(User).where(User.email == payload.identifier))
-    else:
+    # Preserve email ownership when another account uses that address as its name.
+    user = db.scalar(select(User).where(User.email == payload.identifier))
+    if user is None:
         user = db.scalar(select(User).where(User.name == payload.identifier))
     if user is None:
         raise _invalid_credentials_error()

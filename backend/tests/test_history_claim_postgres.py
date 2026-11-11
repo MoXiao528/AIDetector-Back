@@ -224,7 +224,7 @@ def test_postgres_claim_waits_for_locked_guest_detection_and_migrates_its_record
                         "This PostgreSQL race test holds the guest session lock until the completed "
                         "detection and its quota usage are committed in the same transaction. "
                     )
-                    * 3
+                    * 11
                 },
                 headers={
                     "Authorization": f"Bearer {case['guest_token']}",
@@ -364,7 +364,7 @@ def test_postgres_claim_prevents_inflight_guest_detection_from_writing_after_rev
                         "This PostgreSQL race test keeps a guest detection in model inference while another "
                         "account atomically claims the same guest history and revokes its session. "
                     )
-                    * 3
+                    * 11
                 },
                 headers={
                     "Authorization": f"Bearer {case['guest_token']}",

@@ -202,8 +202,7 @@ def dedupe_tokens(tokens: list[TokenInfo]) -> list[TokenInfo]:
 
 
 def build_text(target_chars: int, request_id: int) -> str:
-    if target_chars < 200:
-        raise SystemExit("detect API requires at least 200 visible characters; keep --chars >= 200")
+    require_positive("--chars", target_chars)
 
     parts = [f"压测样本编号 {request_id + 1}。"]
     cursor = request_id % len(NORMAL_SENTENCES)

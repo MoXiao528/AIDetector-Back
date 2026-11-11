@@ -45,6 +45,24 @@
 
 - `POST /api/v1/detect`
 
+### 长度预检
+
+`POST /api/v1/detect/preflight` 接收 `{"text":"..."}`，沿用检测身份认证（游客、用户或具有 `detect:write` scope 的 API key），无需 `Idempotency-Key`。
+
+返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `characterCount` | 原文非空白 Unicode 码点数 |
+| `tokenCount` | 与正式检测相同口径的 tokenizer 计数，包含特殊 token |
+| `minimumTokens` | 固定为 256 |
+| `ready` | 是否达到最低 token 数 |
+| `estimatedAdditionalCharacters` | 按当前文本比例估计还需补充的非空白字符数；达标为 0，空文本或无法估算时为 null |
+
+原文上限仍为 20,000 个 Unicode 码点，空文本可预检。预检在同一次同步鉴权回调中查询身份、检查 scope 并关闭数据库 Session，归还连接后才在线程池中进行分词计数；JWT、游客会话、API key、撤销状态与 scope 检查继续复用原逻辑。不调用模型、不创建检测记录、不预留或扣减额度。前端在编辑模式输入停止 500ms 后请求，文本变化立即使旧结果失效，只展示字符数、长度状态与近似补充建议；高亮预览暂停预检。建议值不是固定字数门槛，继续输入后会重新估算。
+
+正式提交会重新执行同一长度校验。不足 256 token 时返回 `422 / TEXT_TOO_SHORT`，`detail` 包含上述字段和 `unit: "tokens"`，且不会启动推理或扣减额度。200 个字符不再作为最低检测条件。
+
 ## 3. 当前请求语义
 
 ### `Idempotency-Key`
@@ -109,18 +127,32 @@ Idempotency-Key: 7b8b9d42-fb91-4e0f-a801-8ec6172eed9a
 
 ### `result.sentences`
 
-这个字段当前不是“自然语言句子数组”。
+新检测结果按原始非空段落返回，每条包含该段原文和用于高亮的聚合分数。历史快照可能包含合并段落范围。
 
-真实语义是：
+主检测先对全文分句，再按原文顺序累加完整句子。拼接后经模型 tokenizer 计数，首次达到或超过 256 token 时在当前句末形成候选块。计数包含特殊 token，短段可与相邻内容共同检测。
 
-- 检测块数组
-- 通常对应 `paragraph / merged paragraph block`
+文末尾块不足 256 token 且前面已有候选块时，将最后两块的原文拼接后重新计数，满足 `DETECT_MAX_INPUT_TOKENS` 硬上限（默认 512）就合并为一次推理，否则分别送检。尾块恰好 256 token 时独立送检，整篇不足 256 token 时在入口拒绝。最终块边界确定后计算模型分数、token 权重和段落覆盖关系。
 
-所以前端虽然能做句级或块级展示，但契约里的核心单位仍然是检测块，不是稳定的 NLP sentence token。
+`DETECT_MAX_INPUT_TOKENS` 是每次推理的硬上限，默认 512。追加一句会超过硬上限时，先提交已有缓冲，再处理该句。单句本身超限时切成满足硬上限的原文连续片段，所有余文继续检测。
+
+全文 `score` 和 `rawScore` 按实际检测块的正文 token 数加权。`result.summary` 按检测块判定后的 AI/HUMAN token 权重计算占比。段落分数按各检测块在该段覆盖的正文 token 权重聚合，再映射为显示分数；`aiLikelyCount` 统计聚合后判为 AI 的显示段落数。分块详情保存在检测记录的 `options.repre_guard.segments`。
+
+### 标题与署名的展示
+
+明确的文档元信息返回 `sentences[].type="metadata"`，保留原文及格式，不单独高亮、展示 AI/Human 判断或计入 `aiLikelyCount`。`probability=0`、`score=0` 仅为兼容字段占位，不能解释为人工写作。旧 `/scan` 兼容响应新增可选 `type` 字段；`metadata` 对应的 `isAi=false`、`confidence=0` 同样不是人工判断。
+
+识别规则仅包括：
+
+- `editorHtml` 中明确的 `h1`～`h6`，且 HTML 全部非空段与 `inputText` 逐位置对应。
+- 文章前两个非空段为“短标题＋独立署名”，且后面还有正文。标题最多 60 个非空白字符、无句末标点；署名最多 80 个非空白字符，匹配 `作者：`、`作者:`、`Author:` 或 `Author：`，名字部分不能含完整句子分隔符。
+
+这些上限只用于上述结构的保守识别，不是普通段落的最低字数。短句、短对白、正文中提到作者都不会因为少于 40 字被过滤。
+
+元信息仍随完整上下文送检，分块、全文 `score/summary` 和 Evidence 不变。历史读取、幂等回放、管理视图和 PDF 共用展示投影，不改写旧数据库快照；旧结果只有在原段位置及文本精确对应时才应用，覆盖正文的旧合并块不会被整体标为元信息。
 
 ### `result.sentences[].startParagraph / endParagraph`
 
-表示这个检测块对应原始段落范围。
+表示该显示结果对应的原始非空段落范围。新结果中两者相等，历史合并块可以覆盖多段。
 
 ## 5. 富文本和高亮
 
@@ -295,7 +327,7 @@ Router 身份由 Bundle 的 `router.artifact_sha256` 绑定。冻结的 `serve_e
 
 off/shadow 只省略 Evidence 字段，不全局排除 null，因此已有 null 字段保留。
 检测列表和管理员详情共用 `project_public_meta_json`，所有模式均移除原始根级 `evidence/artifactVersion`，防止绕过专用输出字段；
-其他已有元数据语义保持不变。旧 scan 兼容接口、PDF 和示例维持原白名单输出，不增加 Evidence 展示。
+其他已有元数据语义保持不变。旧 scan 兼容接口和示例维持原白名单输出。PDF 支持通过可选 `includeEvidence`（默认 `true`）导出已有写作特点摘要，但仍须服务端处于 `serve` 且快照有效；关闭或快照缺失/非法时不重新计算，不影响主检测报告。报告时间按可选 `timeZone`（默认 UTC；未知时区回退 UTC）显示，数据始终来自账号已有检测记录。
 
 EV4-03 通过固定 Router 响应和预置快照验证投影；EV4-02 另用临时回环 HTTP Router、实际后端路由/客户端/特征计算验证请求链。
 EV4-04 接通快照写入，首次响应、数据库、历史和幂等回放使用同一份已校验结果；公开输出仍由当前 mode 控制。
@@ -323,7 +355,7 @@ off、坏配置/Bundle、主检测失败或已完成幂等重放不发起 Router
 
 Router 请求复用生效的检测 URL，JSON 为 `{"text":"用户原始整文","action":"evidence"}`，由检测端 `/detect` 分流；不再派生其他路径，不新增 URL 配置或客户端。
 支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；后缀识别忽略大小写，请求实际 URL 保留配置中的大小写，生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
-HTTPS PHP 固定转发 `/detect` 即可，但必须透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求或仅返回主检测字段会导致 Evidence 降级。
+原协议要求 HTTPS PHP 透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求会丢失 action。下述可选 text 封装可适配这种请求转发，响应字段和令牌仍须完整保留。
 复用连接池、`X-RepreGuard-Token`、128 KiB 声明/流式响应上限，不重试、不跟随重定向、不解析或透传非 200 错误正文。
 HTTP 200 仍须通过严格 JSON（含重复键/非有限数拒绝）、schema 与已加载 SHA 校验。
 传输失败/非 200 为 `model_unavailable`，超时为 `timeout`，畸形/超大响应或 SHA 不匹配为 `invalid_router_response`；
@@ -340,10 +372,70 @@ shadow/serve 都记录固定状态和耗时，不记录原文、token、路径�
 原 owner-token 与 lease 校验不放宽：取消请求保留原未知执行状态，过期/被接管的 owner 不能写结果或扣配额。
 超时正常降级后主检测可结算，已完成 key 重放不再推理、扣费或新增记录。
 
+### text 封装协议（演示分支）
+
+`demo/text-envelope` 提供 `DETECT_TEXT_ENVELOPE_ENABLED`，默认 `false`。开启后，主检测、整文 Evidence 和通过主检测执行的 readiness probe 都只发送一个 `text` 字段：
+
+```json
+{"text":"AIDT:1:detect\n用户原文"}
+```
+
+```json
+{"text":"AIDT:1:evidence\n用户完整原文"}
+```
+
+JSON 中的 `\n` 解析后是一个 LF 分隔符。`AIDT:` 为保留命名空间，版本只接受 `1`，action 只接受 `detect/evidence`。检测端只按第一个 LF 分离协议头和正文，不 trim、不解码内层 JSON、不递归解释正文；正文自身的 CRLF、空白、引号、Unicode 和完整协议头都保留。封装请求只允许 `text`，额外 action（包括 null）或其他字段均拒绝；未知版本、错误 action、CRLF 协议头、缺少分隔符等返回固定脱敏 422。
+
+协议不使用 Base64、HMAC、压缩或新密钥，继续要求 `X-RepreGuard-Token`。没有完整性签名，无法发现所有仍然合法的正文截短或改写；PHP 必须保留字符串内容、Token、响应字段和状态码。若 PHP 还有截断、trim 或响应裁剪，本方案不视为解决这些问题。
+
+关闭开关时保持原 JSON 格式，`/evidence/route` 仍保留原请求协议。旧客户端直接向 `/detect` 发送以 `AIDT:` 开头的正文可能被解析或拒绝；这属于保留前缀的兼容例外。开启封装后，用户正文即使是一个完整合法封装，也只在外层解包一次。
+
+| 检查位置 | 规则 |
+|---|---|
+| 公共业务入口 | 至少 256 token（含特殊 token）、原文最多 20,000 Unicode 码点 |
+| 后端下游客户端，两种模式 | 原文严格字符串、非空白、1～20,000 Unicode 码点、可编码为 UTF-8；探针和分段不套用业务整文 256 token 下限 |
+| 后端真正发送前 | 检查 HTTP 客户端生成的实际 JSON 字节，最多 128 KiB；发送检查过的同一份请求 |
+| 检测端 ingress | 先鉴权，再检查声明长度和实际流，最多 128 KiB |
+| 检测端请求模型前 | 单次解包，然后按还原原文检查 20,000 字符等原有条件；协议头不占原文字数 |
+
+发送前失败不截断、不发网络请求，错误不包含原文、Token 或底层异常；请求体超限不触发主模型 token 超限拆分重试。主检测分块遵循第 4 节，极长单句的全部片段均送检，新结果 `truncated=false`。检测端 trim 和 Evidence 整文一次的响应/SHA、预算、失败隔离、结算与历史快照合同继续适用。
+
+原文 Unicode 字符数与请求体字节数分别检查。后端通过不代表 PHP 重编码后的字节数也通过：例如将大量四字节 Unicode 字符重新序列化成 `\uXXXX` 转义会增加体积，检测端仍按实际 128 KiB 边界拒绝，不放宽限制。
+
+#### 部署、验收和恢复
+
+以下是获得部署授权后执行的操作，不表示目标服务器已验收。先记录实际部署 commit、镜像及受保护的配置备份（`.env`、实际使用的 Compose override、启动环境），保留 Token 与模型/Bundle。先更新兼容新旧协议的检测端并重启，再更新后端演示分支镜像、开启封装并重建 API。数据库无需迁移，不能使用删除卷的回退方式。
+
+在后端仓库根目录，使用服务器原有的生产 Compose 文件组合重建；下面命令适用于原先就用默认 Compose 文件组合的部署：
+
+```bash
+docker compose up -d --no-deps --build --force-recreate api
+```
+
+后端镜像包含验收入口；服务 Token 和已配置的 Bundle/SHA 从运行环境读取，不放进命令参数。实际 PHP 的地址由操作者明确提供：
+
+```bash
+docker compose exec -T api python smoke_text_envelope.py --url https://umcat.cis.um.edu.mo/api/aidetect.php
+```
+
+脚本必须正常退出并通过主检测 probability 合同及 Evidence 五字段、匹配 SHA、`status=routed`、有效 route 和 `reason=null` 检查；仅 HTTP 200 或合法失败响应不是成功。该命令会真实调用模型，应在检测端与后端配置就绪后执行；本地模拟通过不能替代实际 PHP 回执。
+
+展示 Evidence 还需后端 `DETECT_EVIDENCE_MODE=serve`、匹配的现有 Bundle/Router。前端确认 `VITE_EVIDENCE_ENABLED=true` 后重新构建并部署 `dist`；仅修改服务器环境变量不会改变旧静态产物，不覆盖前端已有工作。
+
+回退顺序：先设后端封装为 `false` 并重建 API，再按需恢复检测端。PHP 未修好时同时设 `DETECT_EVIDENCE_MODE=off`，避免恢复已知不能分流的 Evidence 调用。兼容检测端可以暂时保留。
+
+回 `main` 前从实际 `.env` **删除** `DETECT_TEXT_ENVELOPE_ENABLED`（仅设 false 仍是未知字段），清除 shell、Compose、service 的同名覆盖，并恢复部署前保存的生产 Compose 配置；不能把仓库内 Windows 开发 override 当作生产配置。`main` 的 Settings 会拒绝未知 dotenv 字段，不为回退放宽 Settings。对本方案按模板写入的规范大写键，后端仓库根目录可执行：
+
+```bash
+sed -i '/^[[:space:]]*DETECT_TEXT_ENVELOPE_ENABLED[[:space:]]*=/d' .env && unset DETECT_TEXT_ENVELOPE_ENABLED && git switch main && docker compose up -d --no-deps --build --force-recreate api
+```
+
+上述命令不自动恢复其他配置或自定义 Compose 文件组合，须先完成对应恢复；切分支不更新运行中的容器。若检测端也回 main，先停止原服务进程，再切分支并用原进程管理方式重启；仓库便携入口为 `python run_roberta_server.py`，不假设 systemd 单元名。
+
 ### D1 响应 schema v1
 
 内部请求复用主检测入口：直连为 RepreGuard `POST /detect`，PHP 部署为生效 PHP 地址，均携带既有 `X-RepreGuard-Token`，
-JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；不附主模型结果，不进入主检测分段循环。
+默认 JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；启用下述封装时只有 `text` 字段。不附主模型结果，不进入主检测分段循环。
 未提供 `action` 或显式 `action="detect"` 时继续主检测；`action="evidence"` 直接复用 Evidence 处理、输入校验与独立容量，不运行主模型。其他 action 返回 422。
 原 `POST /evidence/route` 仍接受精确的 `{"text":"用户原始整文"}`，供旧客户端兼容。先更新检测端再更新后端；新后端遇到旧检测端返回的分数时，按 `invalid_router_response` 降级而不重试。
 请求体上限 128 KiB（含流式计数），text 严格要求非空白字符串、1–20,000 Unicode code points，

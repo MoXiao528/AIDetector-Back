@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import re
 from datetime import datetime
 from html import escape
 from math import ceil, exp
@@ -9,11 +8,13 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.db.deps import (
     CurrentActorDep,
     DetectActorDep,
+    PreflightAuthorizationDep,
     SessionDep,
     _get_active_guest_session_id,
 )
@@ -29,8 +30,10 @@ from app.schemas import (
     ScanExamplesResponse,
     SentenceAnalysis,
 )
-from app.schemas.detection import DetectionItem
-from app.schemas.history import Analysis, Citation as HistoryCitation, Sentence as HistorySentence, Summary
+from app.schemas.detection import DetectionItem, DetectionPreflightRequest, DetectionPreflightResponse
+from app.schemas.history import Analysis, Citation as HistoryCitation, Sentence as HistorySentence, Summary, project_document_analysis
+from app.services import token_chunker
+from app.services.document_metadata import paragraph_highlight_html
 from app.services.detection_service import DetectionService
 from app.services.quota_service import (
     DetectionActorBusyError,
@@ -49,7 +52,14 @@ from app.services.quota_service import (
 )
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 from app.services.scan_example_service import ScanExampleService
-from app.services.token_chunker import DETECTABLE_STATUS, TOO_SHORT_STATUS, build_token_aware_segments
+from app.services.token_chunker import (
+    DETECTABLE_STATUS,
+    TARGET_INPUT_TOKENS,
+    TOO_SHORT_STATUS,
+    TokenSegment,
+    build_token_aware_segments,
+    count_tokens,
+)
 
 router = APIRouter(tags=["detections"])
 detect_router = APIRouter(tags=["detections"])
@@ -57,10 +67,7 @@ scan_router = APIRouter(prefix="/scan", tags=["scan"])
 settings = get_settings()
 
 SUPPORTED_DETECTION_FUNCTIONS = {"scan"}
-MIN_DETECT_VISIBLE_CHARS = 200
 MAX_DETECT_CHARS = 20000
-MAX_SEGMENT_VISIBLE_CHARS = 1500
-SENTENCE_BOUNDARY_PATTERN = re.compile(r".+?(?:[。！？!?]+|[.]{1,3})(?:\s+|$)|.+?$", re.S)
 DISPLAY_MODEL_NAME = "v2.0-roberta"
 DETECTION_LEASE_BUFFER_SECONDS = 30
 
@@ -131,34 +138,51 @@ def _count_visible_chars(text: str) -> int:
     return len("".join(str(text).split()))
 
 
-def _combine_segment_text(left: str, right: str, *, same_paragraph: bool) -> str:
-    separator = "" if same_paragraph else "\n"
-    return f"{left}{separator}{right}"
+def _measure_detection_text(text: str) -> DetectionPreflightResponse:
+    if len(text) > MAX_DETECT_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "TEXT_TOO_LONG",
+                "message": f"Text exceeds the {MAX_DETECT_CHARS} character limit",
+                "detail": {"maximum": MAX_DETECT_CHARS, "current": len(text)},
+            },
+        )
+
+    character_count = _count_visible_chars(text)
+    token_count = 0
+    estimated_additional_characters = None
+    if character_count:
+        normalized = "\n".join(_split_paragraphs(text)).strip()
+        token_count = count_tokens(normalized, tokenizer_model=settings.detect_tokenizer_model)
+        if token_count >= TARGET_INPUT_TOKENS:
+            estimated_additional_characters = 0
+        else:
+            tokenizer = token_chunker.get_tokenizer(settings.detect_tokenizer_model)
+            content_tokens = token_count - tokenizer.num_special_tokens_to_add(pair=False)
+            if content_tokens > 0:
+                estimated_additional_characters = ceil(
+                    character_count * (TARGET_INPUT_TOKENS - token_count) / content_tokens
+                )
+
+    return DetectionPreflightResponse(
+        character_count=character_count,
+        token_count=token_count,
+        minimum_tokens=TARGET_INPUT_TOKENS,
+        ready=token_count >= TARGET_INPUT_TOKENS,
+        estimated_additional_characters=estimated_additional_characters,
+    )
 
 
-def _hard_split_text(text: str, max_chars: int = MAX_SEGMENT_VISIBLE_CHARS) -> list[str]:
-    chunks: list[str] = []
-    buffer: list[str] = []
-    visible_chars = 0
-
-    for char in text:
-        buffer.append(char)
-        if not char.isspace():
-            visible_chars += 1
-
-        if visible_chars >= max_chars:
-            chunk = "".join(buffer)
-            if chunk.strip():
-                chunks.append(chunk)
-            buffer = []
-            visible_chars = 0
-
-    if buffer:
-        chunk = "".join(buffer)
-        if chunk.strip():
-            chunks.append(chunk)
-
-    return chunks
+def _text_too_short_error(measurement: DetectionPreflightResponse) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "code": "TEXT_TOO_SHORT",
+            "message": f"At least {TARGET_INPUT_TOKENS} model tokens are required",
+            "detail": {**measurement.model_dump(by_alias=True), "unit": "tokens"},
+        },
+    )
 
 
 def _split_text_for_detect_retry(text: str) -> list[str]:
@@ -202,7 +226,7 @@ def _combine_repre_guard_results(parts: list[str], results: list[dict]) -> dict:
                 code="INVALID_DETECT_RESPONSE",
                 detail={"score_types": [str(item.get("score_type")) for item in results]},
             )
-        weight = max(_count_visible_chars(part), 1)
+        weight = max(count_tokens(part.strip(), add_special_tokens=False, tokenizer_model=settings.detect_tokenizer_model), 1)
         score = float(result["score"])
         threshold = float(result["threshold"])
         probability = _score_to_probability(score, threshold, result_score_type)
@@ -241,158 +265,8 @@ async def _detect_text_with_retry(text: str) -> dict:
         return _combine_repre_guard_results(parts, results)
 
 
-def _split_sentence_like_chunks(text: str) -> list[str]:
-    normalized = str(text)
-    if not normalized.strip():
-        return []
-
-    chunks = [
-        match.group(0)
-        for match in SENTENCE_BOUNDARY_PATTERN.finditer(normalized)
-        if match.group(0).strip()
-    ]
-    return chunks or [normalized]
-
-
-def _split_oversized_paragraph(
-    paragraph: str,
-    paragraph_index: int,
-    max_chars: int = MAX_SEGMENT_VISIBLE_CHARS,
-) -> list[dict[str, int | str]]:
-    cleaned = paragraph
-    if not cleaned.strip():
-        return []
-
-    visible_chars = _count_visible_chars(cleaned)
-    if visible_chars <= max_chars:
-        return [
-            {
-                "start": paragraph_index,
-                "end": paragraph_index,
-                "text": cleaned,
-                "visible_chars": visible_chars,
-            }
-        ]
-
-    split_chunks: list[dict[str, int | str]] = []
-    buffer: list[str] = []
-    buffer_visible_chars = 0
-
-    def flush_buffer() -> None:
-        nonlocal buffer, buffer_visible_chars
-        if not buffer:
-            return
-
-        text = "".join(buffer)
-        if text.strip():
-            split_chunks.append(
-                {
-                    "start": paragraph_index,
-                    "end": paragraph_index,
-                    "text": text,
-                    "visible_chars": _count_visible_chars(text),
-                }
-            )
-        buffer = []
-        buffer_visible_chars = 0
-
-    for sentence in _split_sentence_like_chunks(cleaned):
-        sentence_visible_chars = _count_visible_chars(sentence)
-        if sentence_visible_chars > max_chars:
-            flush_buffer()
-            for hard_chunk in _hard_split_text(sentence, max_chars):
-                hard_chunk_visible_chars = _count_visible_chars(hard_chunk)
-                if hard_chunk_visible_chars:
-                    split_chunks.append(
-                        {
-                            "start": paragraph_index,
-                            "end": paragraph_index,
-                            "text": hard_chunk,
-                            "visible_chars": hard_chunk_visible_chars,
-                        }
-                    )
-            continue
-
-        if buffer and buffer_visible_chars + sentence_visible_chars > max_chars:
-            flush_buffer()
-
-        buffer.append(sentence)
-        buffer_visible_chars += sentence_visible_chars
-
-    flush_buffer()
-    return split_chunks
-
-
-def _merge_short_paragraphs(
-    paragraphs: list[str],
-    min_chars: int = MIN_DETECT_VISIBLE_CHARS,
-    max_chars: int = MAX_SEGMENT_VISIBLE_CHARS,
-) -> list[dict[str, int | str]]:
-    seeds: list[dict[str, int | str]] = []
-    for index, paragraph in enumerate(paragraphs):
-        seeds.extend(_split_oversized_paragraph(paragraph, index, max_chars=max_chars))
-
-    if not seeds:
-        return []
-
-    merged: list[dict[str, int | str | bool]] = []
-    buffer: dict[str, int | str | bool] | None = None
-
-    def strip_internal_meta(segment: dict[str, int | str | bool]) -> dict[str, int | str]:
-        return {
-            "start": int(segment["start"]),
-            "end": int(segment["end"]),
-            "text": str(segment["text"]),
-            "visible_chars": int(segment["visible_chars"]),
-        }
-
-    for seed in seeds:
-        seed_visible_chars = int(seed["visible_chars"])
-        seed_buffer: dict[str, int | str | bool] = {
-            **seed,
-            "_all_parts_short": seed_visible_chars < min_chars,
-        }
-        if buffer is None:
-            buffer = seed_buffer
-            continue
-
-        buffer_visible_chars = int(buffer["visible_chars"])
-        can_merge = (
-            bool(buffer.get("_all_parts_short"))
-            and seed_visible_chars < min_chars
-            and (buffer_visible_chars + seed_visible_chars) <= max_chars
-        )
-
-        if can_merge:
-            same_paragraph = int(buffer["end"]) == int(seed["start"]) == int(seed["end"])
-            buffer["text"] = _combine_segment_text(str(buffer["text"]), str(seed["text"]), same_paragraph=same_paragraph)
-            buffer["end"] = int(seed["end"])
-            buffer["visible_chars"] = buffer_visible_chars + seed_visible_chars
-            continue
-
-        merged.append(buffer)
-        buffer = seed_buffer
-
-    if buffer is not None:
-        merged.append(buffer)
-
-    return [strip_internal_meta(segment) for segment in merged]
-
-
 def _resolve_segment_type(score: float, threshold: float, score_type: str) -> str:
     return "ai" if score >= threshold else "human"
-
-
-def _resolve_highlight_class(score: float) -> str:
-    if score >= 0.8:
-        return "bg-rose-100 text-rose-900"
-    if score >= 0.6:
-        return "bg-orange-100 text-orange-900"
-    if score >= 0.4:
-        return "bg-amber-100 text-amber-900"
-    if score >= 0.2:
-        return "bg-lime-100 text-lime-900"
-    return "bg-emerald-100 text-emerald-900"
 
 
 def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
@@ -406,7 +280,7 @@ def _normalize_detection_functions(functions: list[str] | None) -> set[str]:
     return supported
 
 
-async def _detect_segments_with_limit(segments: list[dict[str, int | str | bool]]) -> list[dict]:
+async def _detect_segments_with_limit(segments: list[TokenSegment]) -> list[dict]:
     concurrency = max(1, int(settings.detect_segment_concurrency))
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -474,7 +348,7 @@ def _replay_detection_response(
     repre_guard = options.get("repre_guard") if isinstance(options.get("repre_guard"), dict) else {}
     analysis_payload = meta.get("analysis")
     try:
-        analysis = Analysis.model_validate(analysis_payload) if isinstance(analysis_payload, dict) else None
+        analysis = project_document_analysis(analysis_payload, detection.input_text, detection.editor_html) if isinstance(analysis_payload, dict) else None
     except ValueError as exc:
         raise _idempotency_http_error(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -506,13 +380,61 @@ def _replay_detection_response(
     )
 
 
+def _aggregate_paragraph_scores(
+    paragraphs: list[str],
+    token_segments: list[TokenSegment],
+    segment_scores: list[dict[str, float | str | int | bool]],
+) -> list[dict[str, float | str | int | bool]]:
+    paragraph_scores: list[dict[str, float | str | int | bool]] = [
+        {
+            "text": paragraph,
+            "start": index,
+            "end": index,
+            "raw_score": 0.0,
+            "threshold": 0.0,
+            "probability": 0.0,
+            "weight": 0.0,
+            "visible_chars": _count_visible_chars(paragraph),
+            "token_count": count_tokens(paragraph.strip(), tokenizer_model=settings.detect_tokenizer_model),
+            "score_type": "probability",
+            "status": TOO_SHORT_STATUS,
+            "truncated": False,
+        }
+        for index, paragraph in enumerate(paragraphs)
+    ]
+    for segment, score in zip(token_segments, segment_scores, strict=True):
+        if score["status"] == TOO_SHORT_STATUS:
+            continue
+        for part in segment["paragraph_parts"]:
+            paragraph = paragraph_scores[part["index"]]
+            weight = part["weight"]
+            for field in ("raw_score", "threshold", "probability"):
+                paragraph[field] = float(paragraph[field]) + float(score[field]) * weight
+            paragraph["weight"] = float(paragraph["weight"]) + weight
+            paragraph["score_type"] = score["score_type"]
+            paragraph["status"] = DETECTABLE_STATUS
+    for paragraph in paragraph_scores:
+        weight = float(paragraph["weight"])
+        if weight:
+            for field in ("raw_score", "threshold", "probability"):
+                paragraph[field] = float(paragraph[field]) / weight
+    return paragraph_scores
+
+
 def _build_history_analysis(
     text: str,
     paragraph_scores: list[dict[str, float | str | int | bool]],
+    segment_scores: list[dict[str, float | str | int | bool]],
     functions: set[str],
 ) -> Analysis:
-    total_weight = sum(int(item["weight"]) for item in paragraph_scores if item.get("status") != TOO_SHORT_STATUS)
+    total_weight = sum(int(item["weight"]) for item in segment_scores if item.get("status") != TOO_SHORT_STATUS)
     bucket_weights = {"ai": 0, "human": 0}
+    for segment in segment_scores:
+        if segment.get("status") != TOO_SHORT_STATUS:
+            segment_type = _resolve_segment_type(
+                float(segment["raw_score"]), float(segment["threshold"]), str(segment["score_type"])
+            )
+            bucket_weights[segment_type] += int(segment["weight"])
 
     reason_map = {
         "ai": "This segment is highly patterned and is more likely to be machine-generated.",
@@ -540,7 +462,6 @@ def _build_history_analysis(
             display_probability = _score_to_display_probability(raw_score, threshold, score_type)
             paragraph_type = _resolve_segment_type(raw_score, threshold, score_type)
             paragraph_score = max(0, min(int(round(display_probability * 100)), 100))
-            bucket_weights[paragraph_type] += int(paragraph_result["weight"])
         start_paragraph = int(paragraph_result["start"]) + 1
         end_paragraph = int(paragraph_result["end"]) + 1
         history_sentences.append(
@@ -560,18 +481,7 @@ def _build_history_analysis(
                 is_truncated=bool(paragraph_result.get("truncated")),
             )
         )
-        highlight_class = (
-            "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
-            if paragraph_type == TOO_SHORT_STATUS
-            else _resolve_highlight_class(display_probability)
-        )
-        html_parts.extend(
-            [
-                f'<p><span class="highlight-chip {highlight_class}" data-sentence-id="para-{index}">{escape(line)}</span></p>'
-                for line in paragraph_text.split("\n")
-                if line.strip()
-            ]
-        )
+        html_parts.append(paragraph_highlight_html(paragraph_text, f"para-{index}", paragraph_type, display_probability))
 
     if total_weight > 0:
         summary_values = {
@@ -620,6 +530,7 @@ def _build_scan_analysis_response(detection_response: DetectionResponse) -> Anal
     sentences = [
         SentenceAnalysis(
             text=segment.text,
+            type=segment.type,
             is_ai=segment.type == "ai",
             confidence=segment.probability,
         )
@@ -649,75 +560,18 @@ async def _detect_impl(
     operation: str,
     request: Request | None = None,
 ) -> DetectionResponse:
-    if not payload.text.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Text cannot be empty",
-        )
-
-    visible_chars = _count_visible_chars(payload.text)
-    if visible_chars < MIN_DETECT_VISIBLE_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "code": "TEXT_TOO_SHORT",
-                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
-                "detail": {
-                    "minimum": MIN_DETECT_VISIBLE_CHARS,
-                    "current": visible_chars,
-                    "remaining": MIN_DETECT_VISIBLE_CHARS - visible_chars,
-                },
-            },
-        )
-
+    measurement = await run_in_threadpool(_measure_detection_text, payload.text)
+    if not measurement.ready:
+        raise _text_too_short_error(measurement)
     chars = len(payload.text)
-    if chars > MAX_DETECT_CHARS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "code": "TEXT_TOO_LONG",
-                "message": f"Text exceeds the {MAX_DETECT_CHARS} character limit",
-                "detail": {
-                    "maximum": MAX_DETECT_CHARS,
-                    "current": chars,
-                },
-            },
-        )
-    try:
-        paragraphs = _split_paragraphs(payload.text)
-        merged_segments = _merge_short_paragraphs(
-            paragraphs,
-            min_chars=settings.detect_short_segment_visible_chars,
-            max_chars=MAX_SEGMENT_VISIBLE_CHARS,
-        )
-        token_segments: list[dict[str, int | str | bool]] = []
-        for merged_segment in merged_segments:
-            segment_parts = build_token_aware_segments(
-                [str(merged_segment["text"])],
-                short_visible_chars=settings.detect_short_segment_visible_chars,
-                max_tokens=settings.detect_max_input_tokens,
-                tokenizer_model=settings.detect_tokenizer_model,
-            )
-            for segment_part in segment_parts:
-                segment = segment_part.copy()
-                segment["start"] = int(merged_segment["start"])
-                segment["end"] = int(merged_segment["end"])
-                token_segments.append(segment)
-    except ValueError as exc:
-        if str(exc) != "TEXT_TOO_SHORT":
-            raise
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "code": "TEXT_TOO_SHORT",
-                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
-                "detail": {
-                    "minimum": MIN_DETECT_VISIBLE_CHARS,
-                    "current": visible_chars,
-                    "remaining": max(MIN_DETECT_VISIBLE_CHARS - visible_chars, 0),
-                },
-            },
-        ) from exc
+    paragraphs = _split_paragraphs(payload.text)
+    token_segments = await run_in_threadpool(
+        build_token_aware_segments,
+        paragraphs,
+        short_visible_chars=1,
+        max_tokens=settings.detect_max_input_tokens,
+        tokenizer_model=settings.detect_tokenizer_model,
+    )
 
     actor_type = current_actor.actor_type
     actor_id = current_actor.actor_id
@@ -805,21 +659,6 @@ async def _detect_impl(
                 "detail": {"timeout_seconds": settings.detect_request_timeout},
             },
         ) from exc
-    except ValueError as exc:
-        if str(exc) != "TEXT_TOO_SHORT":
-            raise
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "code": "TEXT_TOO_SHORT",
-                "message": f"At least {MIN_DETECT_VISIBLE_CHARS} non-whitespace characters are required",
-                "detail": {
-                    "minimum": MIN_DETECT_VISIBLE_CHARS,
-                    "current": visible_chars,
-                    "remaining": max(MIN_DETECT_VISIBLE_CHARS - visible_chars, 0),
-                },
-            },
-        ) from exc
     except RepreGuardError as exc:
         if exc.code in {"INPUT_TOO_LONG", "TEXT_TOO_LONG"}:
             raise HTTPException(
@@ -841,7 +680,7 @@ async def _detect_impl(
             },
         ) from exc
 
-    paragraph_scores: list[dict[str, float | str | int | bool]] = []
+    segment_scores: list[dict[str, float | str | int | bool]] = []
     total_weight = 0
     weighted_probability = 0.0
     weighted_raw_score = 0.0
@@ -852,7 +691,7 @@ async def _detect_impl(
     for token_segment in token_segments:
         segment_text = str(token_segment["text"])
         if token_segment.get("status") == TOO_SHORT_STATUS:
-            paragraph_scores.append(
+            segment_scores.append(
                 {
                     "text": segment_text,
                     "start": int(token_segment["start"]),
@@ -876,7 +715,7 @@ async def _detect_impl(
         score_type = str(rg["score_type"])
         probability = _score_to_probability(raw_score, threshold, score_type)
         weight = int(token_segment.get("weight") or token_segment["visible_chars"])
-        paragraph_scores.append(
+        segment_scores.append(
             {
                 "text": segment_text,
                 "start": int(token_segment["start"]),
@@ -919,9 +758,11 @@ async def _detect_impl(
 
     analysis = _build_history_analysis(
         text=payload.text,
-        paragraph_scores=paragraph_scores,
+        paragraph_scores=_aggregate_paragraph_scores(paragraphs, token_segments, segment_scores),
+        segment_scores=segment_scores,
         functions=functions,
     )
+    analysis = project_document_analysis(analysis, payload.text, payload.editor_html)
 
     options = payload.options.copy() if payload.options else {}
     options["repre_guard"] = {
@@ -948,7 +789,7 @@ async def _detect_impl(
                 "status": item.get("status", DETECTABLE_STATUS),
                 "truncated": item.get("truncated", False),
             }
-            for index, item in enumerate(paragraph_scores)
+            for index, item in enumerate(segment_scores)
         ],
     }
 
@@ -1035,6 +876,24 @@ async def _detect_impl(
         result=analysis,
         evidence=evidence,
     )
+
+
+@detect_router.post(
+    "/detect/preflight",
+    response_model=DetectionPreflightResponse,
+    summary="Check input length without running detection",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+def preflight_detection(
+    payload: DetectionPreflightRequest,
+    _: PreflightAuthorizationDep,
+) -> DetectionPreflightResponse:
+    return _measure_detection_text(payload.text)
 
 
 @detect_router.post(

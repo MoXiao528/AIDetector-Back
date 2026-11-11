@@ -213,6 +213,12 @@ def test_off_app_lifespan_does_not_import_feature_module():
 import asyncio, sys
 sys.path.insert(0, sys.argv[1])
 from app.main import app, lifespan, settings
+from app.services import token_chunker
+class FakeTokenizer:
+    def encode(self, text, *, add_special_tokens=True):
+        body = list(range(len(text.split())))
+        return [-1, *body, -2] if add_special_tokens else body
+token_chunker.get_tokenizer = lambda model_name=None: FakeTokenizer()
 settings.detect_evidence_mode = 'off'
 settings.detect_evidence_bundle_path = 'unused-private-path'
 settings.detect_evidence_bundle_sha256 = 'invalid-unused-sha'

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+import re
 from datetime import datetime, timezone
 from html import escape
 from io import BytesIO
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from reportlab.graphics.shapes import Drawing, Rect
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -17,109 +20,48 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from app.models.user import User
 from app.schemas.report import ReportPdfContent
+from app.services.report_evidence import build_evidence_section
 
 FONT_NAME = "NotoSansSC"
-FALLBACK_FONT_NAME = "STSong-Light"
-FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansSC-VF.ttf"
-
-AI_STROKE = "#B42318"
-AI_FILL = colors.HexColor("#FEF3F2")
-HUMAN_STROKE = "#027A48"
-HUMAN_FILL = colors.HexColor("#ECFDF3")
-
-
-@dataclass(frozen=True)
-class ReportCopy:
-    brand: str
-    title: str
-    subtitle: str
-    report_type_label: str
-    generated_at_label: str
-    display_name_label: str
-    account_name_label: str
-    functions_label: str
-    history_id_label: str
-    detection_id_label: str
-    summary_title: str
-    risk_title: str
-    details_title: str
-    original_title: str
-    ai_label: str
-    human_label: str
-    ai_likely_label: str
-    reason_label: str
-    no_data: str
-    no_risk: str
-    page_label: str
-    report_type_scan: str
-    report_type_history: str
-    function_scan: str
-    function_polish: str
-    function_translate: str
-    function_citation: str
+FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansSC-Regular.ttf"
+INK = colors.HexColor("#182230")
+MUTED = colors.HexColor("#526174")
+BLUE = colors.HexColor("#2456C7")
+AI_BLUE = colors.HexColor("#3478F6")
+HUMAN_CYAN = colors.HexColor("#0787A5")
+LINE = colors.HexColor("#DDE5EF")
 
 
-def _get_copy(locale: str) -> ReportCopy:
-    if str(locale or "").startswith("zh"):
-        return ReportCopy(
-            brand="RepreGuard",
-            title="AI \u68c0\u6d4b\u62a5\u544a",
-            subtitle="\u7528\u4e8e\u4eba\u5de5\u590d\u6838\u4e0e\u7559\u6863",
-            report_type_label="\u62a5\u544a\u7c7b\u578b",
-            generated_at_label="\u5bfc\u51fa\u65f6\u95f4",
-            display_name_label="\u7528\u6237\u59d3\u540d",
-            account_name_label="\u7528\u6237\u8d26\u53f7",
-            functions_label="\u529f\u80fd\u7c7b\u578b",
-            history_id_label="\u5386\u53f2\u8bb0\u5f55 ID",
-            detection_id_label="\u68c0\u6d4b ID",
-            summary_title="\u68c0\u6d4b\u6458\u8981",
-            risk_title="\u91cd\u70b9\u590d\u6838\u53e5\u6bb5",
-            details_title="\u53e5\u6bb5\u660e\u7ec6",
-            original_title="\u539f\u6587\u9644\u5f55",
-            ai_label="AI",
-            human_label="\u4eba\u5de5",
-            ai_likely_label="\u6f5c\u5728\u9ad8\u98ce\u9669\u53e5\u6bb5",
-            reason_label="\u5224\u5b9a\u539f\u56e0",
-            no_data="\u6682\u65e0\u6570\u636e",
-            no_risk="\u672c\u6b21\u7ed3\u679c\u4e2d\u6ca1\u6709\u9700\u8981\u4f18\u5148\u590d\u6838\u7684 AI \u9ad8\u98ce\u9669\u53e5\u6bb5\u3002",
-            page_label="\u7b2c {current} \u9875",
-            report_type_scan="\u5373\u65f6\u68c0\u6d4b\u5bfc\u51fa",
-            report_type_history="\u5386\u53f2\u8bb0\u5f55\u5bfc\u51fa",
-            function_scan="AI \u68c0\u6d4b",
-            function_polish="\u6da6\u8272",
-            function_translate="\u7ffb\u8bd1",
-            function_citation="\u5f15\u7528\u6838\u67e5",
-        )
-
-    return ReportCopy(
-        brand="RepreGuard",
-        title="AI Detection Report",
-        subtitle="Prepared for manual review and record keeping",
-        report_type_label="Report Type",
-        generated_at_label="Generated At",
-        display_name_label="Display Name",
-        account_name_label="Account Name",
-        functions_label="Functions",
-        history_id_label="History ID",
-        detection_id_label="Detection ID",
-        summary_title="Detection Summary",
-        risk_title="Priority Review Passages",
-        details_title="Sentence Details",
-        original_title="Original Text Appendix",
-        ai_label="AI",
-        human_label="Human",
-        ai_likely_label="Potential High-Risk Passages",
-        reason_label="Reason",
-        no_data="No data",
-        no_risk="No AI-risk passages require priority review in this report.",
-        page_label="Page {current}",
-        report_type_scan="Live Scan Export",
-        report_type_history="History Export",
-        function_scan="AI Scan",
-        function_polish="Polish",
-        function_translate="Translate",
-        function_citation="Citation Check",
-    )
+def _get_copy(locale: str) -> dict[str, str]:
+    if str(locale).lower().startswith("zh"):
+        return {
+            "title": "AI 文本检测报告", "record": "检测记录", "report_id": "报告编号",
+            "detected": "检测时间", "exported": "导出时间", "characters": "字符数（不含空白）",
+            "account": "账号", "model": "检测模型", "unrecorded": "未记录",
+            "summary": "检测概览", "result": "疑似 AI 生成", "ai": "AI 生成", "human": "人工写作",
+            "original": "原文与段落结果", "likelihood": "AI 生成可能性",
+            "paragraph": "段落", "block": "检测块", "merged": "合并检测",
+            "too_short": "文本过短，未检测", "document_title": "标题", "author": "作者",
+            "truncated": "该检测块仅使用部分文本进行检测。",
+            "unmatched": "该历史记录的段落结果无法完整对应原文，以下保留原文和已保存的检测结果。",
+            "saved_results": "已保存的段落结果", "no_segments": "本次未提供段落结果。",
+            "note": "检测结果仅供参考，请结合原文复核。",
+            "page": "第 {page} 页",
+        }
+    return {
+        "title": "AI Text Detection Report", "record": "Detection record", "report_id": "Report ID",
+        "detected": "Detected at", "exported": "Exported at", "characters": "Characters (excluding whitespace)",
+        "account": "Account", "model": "Detection model", "unrecorded": "Not recorded",
+        "summary": "Detection overview", "result": "detected as AI", "ai": "AI-generated", "human": "Human-written",
+        "original": "Original text and paragraph results", "likelihood": "AI generation likelihood",
+        "paragraph": "Paragraph", "block": "Block", "merged": "Merged",
+        "too_short": "Text too short; not analyzed", "document_title": "Title", "author": "Author",
+        "truncated": "Only part of this block was used for detection.",
+        "unmatched": "The saved paragraph results cannot be fully matched to this original text. Both are preserved below.",
+        "saved_results": "Saved paragraph results", "no_segments": "No paragraph results were provided.",
+        "note": "Detection results are for reference. Review them alongside the original text.",
+        "page": "Page {page}",
+    }
 
 
 def _ensure_report_font() -> str:
@@ -128,290 +70,222 @@ def _ensure_report_font() -> str:
         return FONT_NAME
     except KeyError:
         pass
-
     try:
-        if FONT_PATH.exists():
-            pdfmetrics.registerFont(TTFont(FONT_NAME, str(FONT_PATH)))
-            return FONT_NAME
+        pdfmetrics.registerFont(TTFont(FONT_NAME, str(FONT_PATH)))
+        font_name = FONT_NAME
     except Exception:
-        pass
-
-    try:
-        pdfmetrics.getFont(FALLBACK_FONT_NAME)
-    except KeyError:
-        pdfmetrics.registerFont(UnicodeCIDFont(FALLBACK_FONT_NAME))
-    return FALLBACK_FONT_NAME
+        font_name = "STSong-Light"
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    pdfmetrics.registerFontFamily(font_name, normal=font_name, bold=font_name, italic=font_name, boldItalic=font_name)
+    return font_name
 
 
-def _format_datetime(value: datetime | None) -> str:
+def _format_datetime(value: datetime | None, time_zone: str) -> str:
     if value is None:
-        value = datetime.now(timezone.utc)
-    return value.astimezone().strftime("%Y-%m-%d %H:%M")
+        return ""
+    try:
+        zone = ZoneInfo(time_zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        zone = timezone.utc
+    localized = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(zone)
+    offset = localized.strftime("%z")
+    return f"{localized:%Y-%m-%d %H:%M} UTC{offset[:3]}:{offset[3:]}"
 
 
-def _escape_text(value: str | int | None) -> str:
-    return escape(str(value or "")).replace("\n", "<br/>")
-
-
-def _resolve_display_name(user: User) -> str:
-    full_name = " ".join(part for part in [user.first_name, user.surname] if part).strip()
-    if full_name:
-        return full_name
-    if user.name:
-        return user.name
-    if user.email and "@" in user.email:
-        return user.email.split("@", 1)[0]
-    return "User"
-
-
-def _resolve_account_name(user: User) -> str:
-    if user.name:
-        return user.name
-    if user.email and "@" in user.email:
-        return user.email.split("@", 1)[0]
-    return "user"
-
-
-def _map_function_label(key: str, copy: ReportCopy) -> str:
-    mapping = {
-        "scan": copy.function_scan,
-        "polish": copy.function_polish,
-        "translate": copy.function_translate,
-        "citation": copy.function_citation,
-    }
-    return mapping.get(key, key)
-
-
-def _map_sentence_type(value: str, copy: ReportCopy) -> str:
-    mapping = {
-        "ai": copy.ai_label,
-        "mixed": copy.human_label,
-        "human": copy.human_label,
-    }
-    return mapping.get(value, value)
-
-
-def _get_sentence_palette(value: str) -> tuple[str, colors.Color]:
-    if value == "ai":
-        return AI_STROKE, AI_FILL
-    return HUMAN_STROKE, HUMAN_FILL
-
-
-def _collapse_summary_for_display(summary) -> tuple[int, int]:
-    ai = max(0, min(100, round(float(getattr(summary, "ai", 0) or 0))))
-    human = max(0, 100 - ai)
-    return ai, human
+def _escape_text(value: object) -> str:
+    text = escape(str(value if value is not None else "")).replace("\t", "    ")
+    # Keep indentation while retaining normal word-wrap opportunities in prose.
+    text = re.sub(r" {2,}", lambda match: " " + "&#160;" * (len(match.group()) - 1), text)
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
 
 
 def _build_styles(font_name: str) -> dict[str, ParagraphStyle]:
-    base = getSampleStyleSheet()
+    body = ParagraphStyle("ReportBody", fontName=font_name, fontSize=10, leading=15,
+                          textColor=INK, wordWrap="CJK", splitLongWords=True)
     return {
-        "title": ParagraphStyle(
-            "ReportTitle",
-            parent=base["Title"],
-            fontName=font_name,
-            fontSize=22,
-            leading=28,
-            textColor=colors.HexColor("#101828"),
-            spaceAfter=6,
-            wordWrap="CJK",
-        ),
-        "subtitle": ParagraphStyle(
-            "ReportSubtitle",
-            parent=base["BodyText"],
-            fontName=font_name,
-            fontSize=10.5,
-            leading=15,
-            textColor=colors.HexColor("#667085"),
-            spaceAfter=12,
-            wordWrap="CJK",
-        ),
-        "section": ParagraphStyle(
-            "SectionHeading",
-            parent=base["Heading2"],
-            fontName=font_name,
-            fontSize=14,
-            leading=20,
-            textColor=colors.HexColor("#101828"),
-            spaceBefore=8,
-            spaceAfter=8,
-            wordWrap="CJK",
-        ),
-        "body": ParagraphStyle(
-            "BodyCopy",
-            parent=base["BodyText"],
-            fontName=font_name,
-            fontSize=10.5,
-            leading=16,
-            textColor=colors.HexColor("#101828"),
-            wordWrap="CJK",
-        ),
-        "muted": ParagraphStyle(
-            "MutedCopy",
-            parent=base["BodyText"],
-            fontName=font_name,
-            fontSize=9.5,
-            leading=14,
-            textColor=colors.HexColor("#667085"),
-            wordWrap="CJK",
-        ),
-        "meta_label": ParagraphStyle(
-            "MetaLabel",
-            parent=base["BodyText"],
-            fontName=font_name,
-            fontSize=9.5,
-            leading=14,
-            textColor=colors.HexColor("#667085"),
-            wordWrap="CJK",
-        ),
-        "meta_value": ParagraphStyle(
-            "MetaValue",
-            parent=base["BodyText"],
-            fontName=font_name,
-            fontSize=10.5,
-            leading=15,
-            textColor=colors.HexColor("#101828"),
-            wordWrap="CJK",
-        ),
+        "body": body,
+        "title": ParagraphStyle("ReportTitle", parent=body, fontSize=23, leading=31, spaceAfter=5),
+        "subtitle": ParagraphStyle("ReportSubtitle", parent=body, fontSize=11, leading=16, textColor=MUTED, spaceAfter=12),
+        "section": ParagraphStyle("ReportSection", parent=body, fontSize=13, leading=18, spaceBefore=9,
+                                  spaceAfter=6, keepWithNext=True),
+        "muted": ParagraphStyle("ReportMuted", parent=body, fontSize=8.5, leading=13, textColor=MUTED),
+        "meta_label": ParagraphStyle("ReportMetaLabel", parent=body, fontSize=8, leading=12, textColor=MUTED),
+        "meta_value": ParagraphStyle("ReportMetaValue", parent=body, fontSize=9, leading=14),
+        "block_label": ParagraphStyle("ReportBlockLabel", parent=body, fontSize=9, leading=13,
+                                      textColor=MUTED, spaceBefore=7, spaceAfter=4, keepWithNext=True),
     }
 
 
-def _build_metadata_table(
-    payload: ReportPdfContent,
-    user: User,
-    copy: ReportCopy,
-    styles: dict[str, ParagraphStyle],
-) -> Table:
-    function_labels = ", ".join(_map_function_label(item, copy) for item in payload.functions) or copy.no_data
-    rows = [
-        [
-            Paragraph(copy.report_type_label, styles["meta_label"]),
-            Paragraph(copy.report_type_history if payload.report_type == "history" else copy.report_type_scan, styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.generated_at_label, styles["meta_label"]),
-            Paragraph(_escape_text(_format_datetime(payload.generated_at)), styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.display_name_label, styles["meta_label"]),
-            Paragraph(_escape_text(_resolve_display_name(user)), styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.account_name_label, styles["meta_label"]),
-            Paragraph(_escape_text(_resolve_account_name(user)), styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.functions_label, styles["meta_label"]),
-            Paragraph(_escape_text(function_labels), styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.history_id_label, styles["meta_label"]),
-            Paragraph(_escape_text(payload.history_id if payload.history_id is not None else copy.no_data), styles["meta_value"]),
-        ],
-        [
-            Paragraph(copy.detection_id_label, styles["meta_label"]),
-            Paragraph(_escape_text(payload.detection_id if payload.detection_id is not None else copy.no_data), styles["meta_value"]),
-        ],
-    ]
+def _resolve_account_name(user: User) -> str:
+    return user.name or user.email or "-"
 
-    table = Table(rows, colWidths=[35 * mm, 135 * mm], hAlign="LEFT")
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
-                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
-                ("INNERGRID", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ]
-        )
-    )
+
+def _metadata(payload: ReportPdfContent, user: User, copy: dict, styles: dict, width: float) -> Table:
+    detected = _format_datetime(payload.detected_at, payload.time_zone) or copy["unrecorded"]
+    exported = _format_datetime(payload.generated_at or datetime.now(timezone.utc), payload.time_zone)
+    # chars_used is a quota ledger field, which is zero on some valid old records.
+    characters = sum(not char.isspace() for char in payload.input_text)
+    values = [(copy["detected"], detected), (copy["exported"], exported),
+              (copy["account"], _resolve_account_name(user)), (copy["characters"], f"{characters:,}")]
+    if payload.history_id is not None:
+        values.append((copy["report_id"], f"RG-{payload.history_id}"))
+    model_version = re.search(r"\bv\d+(?:\.\d+)+\b", payload.model_name or "", re.IGNORECASE)
+    if model_version:
+        values.append((copy["model"], model_version.group().upper()))
+    cells = [Paragraph(f"<font color='#526174'>{_escape_text(label)}</font>  {_escape_text(value)}",
+                       styles["meta_value"]) for label, value in values]
+    rows = [cells[index:index + 2] for index in range(0, len(cells), 2)]
+    if len(rows[-1]) == 1:
+        rows[-1].append("")
+    table = Table(rows, colWidths=[width / 2] * 2, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F7FB")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
     return table
 
 
-def _build_summary_table(payload: ReportPdfContent, copy: ReportCopy, styles: dict[str, ParagraphStyle]) -> Table:
-    ai, human = _collapse_summary_for_display(payload.analysis.summary)
-    rows = [[
-        Paragraph(f"<font color='{AI_STROKE}'><b>{copy.ai_label}</b></font><br/><font size='18'>{ai}%</font>", styles["body"]),
-        Paragraph(f"<font color='{HUMAN_STROKE}'><b>{copy.human_label}</b></font><br/><font size='18'>{human}%</font>", styles["body"]),
-    ]]
-    table = Table(rows, colWidths=[85 * mm, 85 * mm], hAlign="LEFT")
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, 0), AI_FILL),
-                ("BACKGROUND", (1, 0), (1, 0), HUMAN_FILL),
-                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
-                ("INNERGRID", (0, 0), (-1, -1), 1, colors.HexColor("#EAECF0")),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 12),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-                ("TOPPADDING", (0, 0), (-1, -1), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-            ]
-        )
-    )
+def _bar(value: int, width: float, color) -> Drawing:
+    drawing = Drawing(width, 7)
+    drawing.add(Rect(0, 0, width, 5, fillColor=colors.HexColor("#E8EDF4"), strokeColor=None))
+    if value:
+        drawing.add(Rect(0, 0, width * value / 100, 5, fillColor=color, strokeColor=None))
+    return drawing
+
+
+def _summary(payload: ReportPdfContent, copy: dict, styles: dict, width: float) -> Table:
+    ai = payload.analysis.summary.ai
+    human = payload.analysis.summary.human
+    result = Paragraph(f"<font size='30' color='#2456C7'>{ai}%</font><br/>{copy['result']}",
+                       ParagraphStyle("Result", parent=styles["body"], leading=23))
+    bars = []
+    for label, value, color in ((copy["ai"], ai, AI_BLUE), (copy["human"], human, HUMAN_CYAN)):
+        bars.extend([Paragraph(f"{label} <b>{value}%</b>", styles["meta_value"]),
+                     Spacer(1, 3), _bar(value, width * 0.57 - 10, color), Spacer(1, 6)])
+    table = Table([[result, bars]], colWidths=[width * 0.43, width * 0.57], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7), ("LINEBELOW", (0, 0), (-1, -1), 0.6, LINE),
+    ]))
     return table
 
 
-def _build_sentence_block(sentence, index: int, copy: ReportCopy, styles: dict[str, ParagraphStyle]) -> Table:
-    stroke, fill = _get_sentence_palette(sentence.type)
-    probability = round(float(sentence.probability or 0) * 100)
-    title = Paragraph(
-        f"<font color='{stroke}'><b>{index}. {_map_sentence_type(sentence.type, copy)} {probability}%</b></font>",
-        styles["body"],
-    )
-    body = Paragraph(_escape_text(sentence.text), styles["body"])
-    content = [title, Spacer(1, 4), body]
-    if sentence.reason:
-        content.extend(
-            [
-                Spacer(1, 4),
-                Paragraph(f"<b>{copy.reason_label}:</b> {_escape_text(sentence.reason)}", styles["muted"]),
-            ]
-        )
-
-    table = Table([[content]], colWidths=[170 * mm], hAlign="LEFT")
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, -1), fill),
-                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor(stroke)),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ]
-        )
-    )
-    return table
+def _display_percentage(probability: float) -> int:
+    # Match the UI's Math.round; this only formats the saved display probability.
+    return math.floor(probability * 100 + 0.5)
 
 
-def _append_original_text(story: list, text: str, styles: dict[str, ParagraphStyle], copy: ReportCopy) -> None:
-    paragraphs = str(text or "").splitlines()
-    if not paragraphs:
-        story.append(Paragraph(copy.no_data, styles["muted"]))
-        return
+def _segment_label(segment, index: int, copy: dict, metadata_paragraphs: set[int]) -> str:
+    start, end = segment.start_paragraph, segment.end_paragraph
+    if start and end and start <= end:
+        start -= sum(paragraph < start for paragraph in metadata_paragraphs)
+        end -= sum(paragraph <= end for paragraph in metadata_paragraphs)
+        if start == end:
+            return f"{copy['paragraph']} {start}"
+        return f"{copy['paragraph']} {start}-{end} · {copy['merged']}"
+    return f"{copy['block']} {index + 1}"
 
-    for paragraph in paragraphs:
+
+def _segment_palette(segment) -> tuple[str, str]:
+    if segment.type == "metadata":
+        return "#FFFFFF", "#182230"
+    if segment.type == "too_short":
+        return "#F1F5F9", "#526174"
+    for minimum, fill, ink in ((0.8, "#FFF1F2", "#9F1239"), (0.6, "#FFF7ED", "#9A3412"),
+                              (0.4, "#FFFBEB", "#92400E"), (0.2, "#F7FEE7", "#3F6212")):
+        if segment.probability >= minimum:
+            return fill, ink
+    return "#ECFDF5", "#065F46"
+
+
+def _segment_heading(segment, index: int, copy: dict, metadata_paragraphs: set[int]) -> str:
+    if segment.type == "metadata":
+        byline = re.fullmatch(r"(?:作者|author)\s*[:：]\s*\S[^\r\n]*", (segment.raw or segment.text).strip(), re.IGNORECASE)
+        return copy["author" if byline else "document_title"]
+    label = _segment_label(segment, index, copy, metadata_paragraphs)
+    if segment.type == "too_short":
+        return f"{label} · {copy['too_short']}"
+    classification = copy["ai"] if segment.type == "ai" else copy["human"]
+    return f"{label} · {classification} · {copy['likelihood']}: {_display_percentage(segment.probability)}%"
+
+
+def _match_segments(text: str, segments: list) -> list[tuple[int, int]] | None:
+    cursor = 0
+    matches = []
+    for segment in segments:
+        raw = (segment.raw or segment.text).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line for line in raw.split("\n") if line.strip()]
+        if not lines:
+            return None
+        # Detection removes empty paragraph separators; retain them from the source in the PDF.
+        pattern = r"\n(?:[ \t]*\n)*".join(re.escape(line) for line in lines)
+        match = re.search(pattern, text[cursor:])
+        if not match:
+            return None
+        start, end = cursor + match.start(), cursor + match.end()
+        matches.append((start, end))
+        cursor = end
+    return matches
+
+
+def _append_plain_text(story: list, text: str, style: ParagraphStyle, width: float) -> None:
+    # Long paragraphs must be splittable flowables, not a single table cell.
+    for paragraph in re.split(r"\n[ \t]*\n", text):
         if paragraph.strip():
-            story.append(Paragraph(_escape_text(paragraph), styles["body"]))
-        else:
-            story.append(Spacer(1, 6))
-        story.append(Spacer(1, 3))
+            body = Paragraph(_escape_text(paragraph), style)
+            body.wrap(width, 0)
+            # Keep headings with the first two lines, not an entire long paragraph.
+            story.extend(body.split(width, style.leading * 2) or [body])
+            story.append(Spacer(1, 5))
+
+
+def _append_original(story: list, payload: ReportPdfContent, copy: dict, styles: dict, width: float) -> None:
+    text = payload.input_text.replace("\r\n", "\n").replace("\r", "\n")
+    segments = payload.analysis.sentences
+    metadata_paragraphs = set()
+    for index, segment in enumerate(segments):
+        if segment.type == "metadata":
+            start = segment.start_paragraph or index + 1
+            end = max(segment.end_paragraph or start, start)
+            metadata_paragraphs.update(range(start, end + 1))
+    headings = []
+    metadata_count = 0
+    for index, segment in enumerate(segments):
+        headings.append(_segment_heading(segment, index - metadata_count, copy, metadata_paragraphs))
+        metadata_count += segment.type == "metadata"
+    matches = _match_segments(text, segments)
+    if matches is None:
+        story.extend([Paragraph(copy["unmatched"], styles["muted"]), Spacer(1, 7)])
+        _append_plain_text(story, text, styles["body"], width)
+        story.append(Paragraph(copy["saved_results"], styles["section"]))
+        for index, segment in enumerate(segments):
+            story.append(Paragraph(_escape_text(headings[index]), styles["body"]))
+            if segment.is_truncated:
+                story.append(Paragraph(copy["truncated"], styles["muted"]))
+        return
+    if not segments:
+        story.extend([Paragraph(copy["no_segments"], styles["muted"]), Spacer(1, 7)])
+    cursor = 0
+    for index, (segment, (start, end)) in enumerate(zip(segments, matches)):
+        _append_plain_text(story, text[cursor:start], styles["body"], width)
+        story.append(Paragraph(_escape_text(headings[index]), styles["block_label"]))
+        fill, ink = _segment_palette(segment)
+        style = ParagraphStyle(f"Segment{index}", parent=styles["body"], backColor=colors.HexColor(fill),
+                               textColor=colors.HexColor(ink), borderPadding=(0, 6))
+        _append_plain_text(story, text[start:end], style, width)
+        if segment.is_truncated:
+            story.append(Paragraph(copy["truncated"], styles["muted"]))
+        cursor = end
+    _append_plain_text(story, text[cursor:], styles["body"], width)
 
 
 def build_report_filename(payload: ReportPdfContent) -> str:
-    timestamp = (payload.generated_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d-%H-%M-%S")
-    if payload.report_type == "history" and payload.history_id is not None:
-        return f"aidetector-report-history-{payload.history_id}-{timestamp}.pdf"
-    if payload.history_id is not None:
-        return f"aidetector-report-scan-{payload.history_id}-{timestamp}.pdf"
-    return f"aidetector-report-{timestamp}.pdf"
+    value = payload.generated_at or datetime.now(timezone.utc)
+    stamp = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    identifier = f"-{payload.history_id}" if payload.history_id is not None else ""
+    return f"repreguard-report{identifier}-{stamp:%Y-%m-%d-%H-%M-%S}Z.pdf"
 
 
 def build_report_pdf(payload: ReportPdfContent, user: User) -> bytes:
@@ -419,65 +293,30 @@ def build_report_pdf(payload: ReportPdfContent, user: User) -> bytes:
     font_name = _ensure_report_font()
     styles = _build_styles(font_name)
     buffer = BytesIO()
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
-        topMargin=24 * mm,
-        bottomMargin=16 * mm,
-    )
-    story: list = []
-
-    story.append(Paragraph(copy.title, styles["title"]))
-    story.append(Paragraph(copy.subtitle, styles["subtitle"]))
-    story.append(_build_metadata_table(payload, user, copy, styles))
-    story.append(Spacer(1, 10))
-
-    story.append(Paragraph(copy.summary_title, styles["section"]))
-    story.append(_build_summary_table(payload, copy, styles))
-    story.append(Spacer(1, 8))
-    story.append(Paragraph(f"<b>{copy.ai_likely_label}:</b> {payload.analysis.ai_likely_count}", styles["body"]))
-    story.append(Spacer(1, 12))
-
-    risk_sentences = [item for item in payload.analysis.sentences if item.type == "ai"]
-    story.append(Paragraph(copy.risk_title, styles["section"]))
-    if risk_sentences:
-        for index, sentence in enumerate(risk_sentences, start=1):
-            story.append(_build_sentence_block(sentence, index, copy, styles))
-            story.append(Spacer(1, 8))
-    else:
-        story.append(Paragraph(copy.no_risk, styles["muted"]))
-        story.append(Spacer(1, 8))
-
-    story.append(Paragraph(copy.details_title, styles["section"]))
-    if payload.analysis.sentences:
-        for index, sentence in enumerate(payload.analysis.sentences, start=1):
-            story.append(_build_sentence_block(sentence, index, copy, styles))
-            story.append(Spacer(1, 8))
-    else:
-        story.append(Paragraph(copy.no_data, styles["muted"]))
-        story.append(Spacer(1, 8))
-
-    story.append(Paragraph(copy.original_title, styles["section"]))
-    _append_original_text(story, payload.input_text, styles, copy)
-
-    generated_at_text = _format_datetime(payload.generated_at)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=19 * mm, rightMargin=19 * mm,
+                            topMargin=22 * mm, bottomMargin=20 * mm, title=copy["title"], author="RepreGuard")
+    width = doc.width - 12
+    story = [Paragraph(copy["title"], styles["title"]),
+             Paragraph(_escape_text(payload.title or copy["record"]), styles["subtitle"]),
+             _metadata(payload, user, copy, styles, width),
+             Paragraph(copy["summary"], styles["section"]), _summary(payload, copy, styles, width),
+             Paragraph(copy["original"], styles["section"])]
+    _append_original(story, payload, copy, styles, width)
+    if payload.include_evidence:
+        story.extend(build_evidence_section(payload.evidence, locale=payload.locale, styles=styles, width=width))
 
     def draw_page(canvas, document):
         canvas.saveState()
-        canvas.setFont(font_name, 9)
-        canvas.setFillColor(colors.HexColor("#667085"))
-        canvas.drawString(document.leftMargin, A4[1] - 12 * mm, copy.brand)
-        canvas.drawRightString(A4[0] - document.rightMargin, A4[1] - 12 * mm, generated_at_text)
-        canvas.setStrokeColor(colors.HexColor("#EAECF0"))
-        canvas.line(document.leftMargin, A4[1] - 14 * mm, A4[0] - document.rightMargin, A4[1] - 14 * mm)
-        canvas.drawRightString(
-            A4[0] - document.rightMargin,
-            8 * mm,
-            copy.page_label.format(current=canvas.getPageNumber()),
-        )
+        canvas.setFont(font_name, 10)
+        canvas.setFillColor(BLUE)
+        canvas.drawString(document.leftMargin + 6, A4[1] - 13 * mm, "RepreGuard")
+        canvas.setStrokeColor(LINE)
+        canvas.line(document.leftMargin + 6, A4[1] - 16 * mm, A4[0] - document.rightMargin - 6, A4[1] - 16 * mm)
+        canvas.setFont(font_name, 7)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(document.leftMargin + 6, 10 * mm, copy["note"])
+        canvas.drawRightString(A4[0] - document.rightMargin - 6, 10 * mm,
+                               copy["page"].format(page=canvas.getPageNumber()))
         canvas.restoreState()
 
     doc.build(story, onFirstPage=draw_page, onLaterPages=draw_page)

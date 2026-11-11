@@ -2,6 +2,13 @@
 
 Tracks OpenAPI changes and compatibility boundaries.
 
+## 未发布 - 2026-11-09（PDF 报告对齐）
+
+- `POST /api/v1/reports/pdf` 增加可选 `includeEvidence`（默认 `true`）和 `timeZone`（默认 `UTC`）。Evidence 仍须服务端处于 `serve` 模式且存在有效快照；关闭、缺失或非法快照不会阻断主结果报告，也不会触发重新计算。
+- 报告读取账号已有记录，补充原检测时间、记录标题和已有模型信息；正文、摘要、段落结果与 Evidence 均来自同一次保存的快照，不接收前端草稿或计算结果作为导出来源。
+- PDF 模板对齐段落级结果与写作特点摘要，删除旧模板原因和重复正文，兼容旧记录及长段落分页。下载文件名统一为 `repreguard-report-{id}-{timestamp}.pdf`，`Content-Disposition` 加入 CORS 暴露响应头。
+- 本次为本地实现更新，未表示部署或发布；检测计算和持久化格式不变。
+
 ## 未发布 - 2026-10-20（API 4.0.0）
 
 - 后端 Evidence 改为复用主检测地址发送 `{"text":"完整原文","action":"evidence"}`，支持直连和 HTTPS PHP 固定转发；检测端 `/detect` 按 action 分流，原 `/evidence/route` 保留兼容。主检测默认请求与公共 API 字段不变。
