@@ -41,7 +41,8 @@ def _get_copy(locale: str) -> dict[str, str]:
             "summary": "检测概览", "result": "疑似 AI 生成", "ai": "AI 生成", "human": "人工写作",
             "original": "原文与段落结果", "likelihood": "AI 生成可能性",
             "paragraph": "段落", "block": "检测块", "merged": "合并检测",
-            "too_short": "文本过短，未检测", "metadata": "标题或署名，仅作上下文", "truncated": "该检测块仅使用部分文本进行检测。",
+            "too_short": "文本过短，未检测", "document_title": "标题", "author": "作者",
+            "truncated": "该检测块仅使用部分文本进行检测。",
             "unmatched": "该历史记录的段落结果无法完整对应原文，以下保留原文和已保存的检测结果。",
             "saved_results": "已保存的段落结果", "no_segments": "本次未提供段落结果。",
             "note": "检测结果仅供参考，请结合原文复核。",
@@ -54,7 +55,8 @@ def _get_copy(locale: str) -> dict[str, str]:
         "summary": "Detection overview", "result": "detected as AI", "ai": "AI-generated", "human": "Human-written",
         "original": "Original text and paragraph results", "likelihood": "AI generation likelihood",
         "paragraph": "Paragraph", "block": "Block", "merged": "Merged",
-        "too_short": "Text too short; not analyzed", "metadata": "Title or byline; context only", "truncated": "Only part of this block was used for detection.",
+        "too_short": "Text too short; not analyzed", "document_title": "Title", "author": "Author",
+        "truncated": "Only part of this block was used for detection.",
         "unmatched": "The saved paragraph results cannot be fully matched to this original text. Both are preserved below.",
         "saved_results": "Saved paragraph results", "no_segments": "No paragraph results were provided.",
         "note": "Detection results are for reference. Review them alongside the original text.",
@@ -175,9 +177,11 @@ def _display_percentage(probability: float) -> int:
     return math.floor(probability * 100 + 0.5)
 
 
-def _segment_label(segment, index: int, copy: dict) -> str:
+def _segment_label(segment, index: int, copy: dict, metadata_paragraphs: set[int]) -> str:
     start, end = segment.start_paragraph, segment.end_paragraph
     if start and end and start <= end:
+        start -= sum(paragraph < start for paragraph in metadata_paragraphs)
+        end -= sum(paragraph <= end for paragraph in metadata_paragraphs)
         if start == end:
             return f"{copy['paragraph']} {start}"
         return f"{copy['paragraph']} {start}-{end} · {copy['merged']}"
@@ -196,10 +200,13 @@ def _segment_palette(segment) -> tuple[str, str]:
     return "#ECFDF5", "#065F46"
 
 
-def _segment_heading(segment, index: int, copy: dict) -> str:
-    label = _segment_label(segment, index, copy)
-    if segment.type in {"too_short", "metadata"}:
-        return f"{label} · {copy[segment.type]}"
+def _segment_heading(segment, index: int, copy: dict, metadata_paragraphs: set[int]) -> str:
+    if segment.type == "metadata":
+        byline = re.fullmatch(r"(?:作者|author)\s*[:：]\s*\S[^\r\n]*", (segment.raw or segment.text).strip(), re.IGNORECASE)
+        return copy["author" if byline else "document_title"]
+    label = _segment_label(segment, index, copy, metadata_paragraphs)
+    if segment.type == "too_short":
+        return f"{label} · {copy['too_short']}"
     classification = copy["ai"] if segment.type == "ai" else copy["human"]
     return f"{label} · {classification} · {copy['likelihood']}: {_display_percentage(segment.probability)}%"
 
@@ -237,13 +244,24 @@ def _append_plain_text(story: list, text: str, style: ParagraphStyle, width: flo
 def _append_original(story: list, payload: ReportPdfContent, copy: dict, styles: dict, width: float) -> None:
     text = payload.input_text.replace("\r\n", "\n").replace("\r", "\n")
     segments = payload.analysis.sentences
+    metadata_paragraphs = set()
+    for index, segment in enumerate(segments):
+        if segment.type == "metadata":
+            start = segment.start_paragraph or index + 1
+            end = max(segment.end_paragraph or start, start)
+            metadata_paragraphs.update(range(start, end + 1))
+    headings = []
+    metadata_count = 0
+    for index, segment in enumerate(segments):
+        headings.append(_segment_heading(segment, index - metadata_count, copy, metadata_paragraphs))
+        metadata_count += segment.type == "metadata"
     matches = _match_segments(text, segments)
     if matches is None:
         story.extend([Paragraph(copy["unmatched"], styles["muted"]), Spacer(1, 7)])
         _append_plain_text(story, text, styles["body"], width)
         story.append(Paragraph(copy["saved_results"], styles["section"]))
         for index, segment in enumerate(segments):
-            story.append(Paragraph(_escape_text(_segment_heading(segment, index, copy)), styles["body"]))
+            story.append(Paragraph(_escape_text(headings[index]), styles["body"]))
             if segment.is_truncated:
                 story.append(Paragraph(copy["truncated"], styles["muted"]))
         return
@@ -252,7 +270,7 @@ def _append_original(story: list, payload: ReportPdfContent, copy: dict, styles:
     cursor = 0
     for index, (segment, (start, end)) in enumerate(zip(segments, matches)):
         _append_plain_text(story, text[cursor:start], styles["body"], width)
-        story.append(Paragraph(_escape_text(_segment_heading(segment, index, copy)), styles["block_label"]))
+        story.append(Paragraph(_escape_text(headings[index]), styles["block_label"]))
         fill, ink = _segment_palette(segment)
         style = ParagraphStyle(f"Segment{index}", parent=styles["body"], backColor=colors.HexColor(fill),
                                textColor=colors.HexColor(ink), borderPadding=(0, 6))

@@ -67,6 +67,32 @@ def test_merged_block_matches_source_with_blank_lines_and_preserves_unmarked_tex
     assert "无法完整对应" not in text
 
 
+@pytest.mark.parametrize("matched", [True, False])
+@pytest.mark.parametrize("has_ranges", [True, False])
+def test_metadata_does_not_consume_body_numbers_in_matched_or_legacy_results(matched, has_ranges):
+    paragraphs = ["A title", "Author: Reader", "First body.", "Second body.", "A section title", "好。"]
+    source = "\n\n".join(paragraphs) if matched else "Unmatched original remains unchanged."
+    entries = [(paragraphs[0], "metadata", 1, 1), (paragraphs[1], "metadata", 2, 2),
+               ("\n".join(paragraphs[2:4]), "human", 3, 4), (paragraphs[4], "metadata", 5, 5),
+               (paragraphs[5], "ai", 6, 6)]
+    segments = [segment(raw, kind=kind, **({"start_paragraph": start, "end_paragraph": end} if has_ranges else {}))
+                for raw, kind, start, end in entries]
+    payload = report(source, segments, "en-US")
+    before = deepcopy(payload.model_dump())
+    _, text = render(payload)
+    section = text.split("Original text and paragraph results", 1)[1]
+    assert section.count("Title\n") == 2 and "Author\n" in section
+    assert "context only" not in section
+    if has_ranges:
+        assert "Paragraph 1-2 · Merged" in section and "Paragraph 3 ·" in section
+        assert "Paragraph 6" not in section
+    else:
+        assert "Block 1 ·" in section and "Block 2 ·" in section
+        assert "Block 3" not in section
+    assert section.count("AI generation likelihood") == 2
+    assert payload.model_dump() == before
+
+
 @pytest.mark.parametrize("locale", ["zh-CN", "en-US"])
 def test_very_long_paragraph_can_split_across_pages_without_losing_text(locale):
     source = "LONG_START " + "用于验证报告长段落分页的测试文本。" * 240 + " LONG_END"

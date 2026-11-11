@@ -196,13 +196,20 @@ async def test_pdf_endpoint_projects_saved_headings_before_rendering(monkeypatch
     assert record.meta_json == before
 
 
-@pytest.mark.parametrize("locale,label", [("zh-CN", "标题或署名，仅作上下文"), ("en-US", "Title or byline; context only")])
-def test_pdf_metadata_has_no_ai_human_label_or_percentage(locale, label):
-    record = saved_record()
+@pytest.mark.parametrize("locale,title_label,author_label,paragraph_label", [
+    ("zh-CN", "标题", "作者", "段落"), ("en-US", "Title", "Author", "Paragraph"),
+])
+@pytest.mark.parametrize("byline", ["作者: 朱自清", "作者：朱自清", "Author: John Smith", "AUTHOR：J. R. R. Tolkien"])
+def test_pdf_metadata_has_no_ai_human_label_or_percentage(locale, title_label, author_label, paragraph_label, byline):
+    record = saved_record(f"背影\n{byline}\n我与父亲不相见已二年余了。")
     analysis = project_document_analysis(record.meta_json["analysis"], record.input_text)
     payload = ReportPdfContent(input_text=record.input_text, analysis=analysis, include_evidence=False, locale=locale)
+    before = deepcopy(payload.model_dump())
     data = build_report_pdf(payload, SimpleNamespace(name="reader", email="test@example.invalid"))
     text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(data)).pages)
-    assert text.count(label) == 2
+    assert f"{title_label}\n背影\n{author_label}\n{byline}\n{paragraph_label} 1 ·" in text
+    assert "仅作上下文" not in text and "context only" not in text
+    assert f"{paragraph_label} 2" not in text and f"{paragraph_label} 3" not in text
     assert text.count("AI 生成可能性" if locale == "zh-CN" else "AI generation likelihood") == 1
     assert "23%" in text and "77%" in text
+    assert payload.model_dump() == before
