@@ -2,7 +2,7 @@
 
 RepreGuard 文本检测平台的后端 API，负责用户与游客会话、检测编排、配额、历史记录和 PDF 报告。服务使用 FastAPI、SQLAlchemy 和 PostgreSQL，主模型推理由独立的 RepreGuard 检测端完成。
 
-- 接收文本，按模型 token 上限分段调用检测端，返回整文结果和段落分析。
+- 接收文本，按顺序累加完整句子，首次达到或超过 256 token 时在句末切块；不足 256 token 的尾块在合并后满足模型硬上限时并入前块，返回整文结果和段落分析。
 - 用幂等请求管理检测任务，保存结果、历史与配额结算。
 - 提供注册登录、游客访问、API Key 和管理后台接口。
 - 可选启用写作特点分析，将整文路由与参考统计保存为结果快照。
@@ -17,7 +17,7 @@ AIDetector-web → AIDetector-Back → RepreGuard
 
 ## 快速开始
 
-以下本地步骤使用 PowerShell，在仓库根目录执行。需要 Docker Desktop、Docker Compose v2，以及一个已启动、可从 API 容器访问的 RepreGuard 服务。首次检测还需要下载或预先缓存 `DETECT_TOKENIZER_MODEL` 指定的 tokenizer。
+以下本地步骤使用 PowerShell，在仓库根目录执行。需要 Docker Desktop、Docker Compose v2，以及一个已启动、可从 API 容器访问的 RepreGuard 服务。API 启动时会预热 `DETECT_TOKENIZER_MODEL` 指定的 tokenizer；首次启动需要下载或预先缓存分词器文件。
 
 ### 1. 获取代码与配置
 
@@ -92,13 +92,15 @@ $headers = @{
     Authorization = "Bearer $($guest.accessToken)"
     'Idempotency-Key' = [guid]::NewGuid().ToString()
 }
-$text = 'This is a deployment check for the text detection service. The request goes through the application API, reaches the model server, and stores the returned result. We use a complete paragraph so the example meets the minimum input length and exercises the same path as a normal user submission.'
+$text = ('This is a deployment check for the text detection service. The request goes through the application API, reaches the model server, and stores the returned result. We use a complete paragraph so the example meets the minimum input length and exercises the same path as a normal user submission. ' * 5).Trim()
 $body = @{ text = $text } | ConvertTo-Json
+$preflight = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detect/preflight" -Headers $headers -ContentType 'application/json' -Body $body
+if (-not $preflight.ready) { throw 'Please add more text before detection.' }
 $result = Invoke-RestMethod -Method Post -Uri "$apiBase/api/v1/detect" -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 180
 $result | Select-Object detectionId, label, score, currentCredits
 ```
 
-成功时返回 `detectionId`、`label`、`score` 等字段，具体分数由模型计算。输入须包含至少 200 个非空白字符，总长度不超过 20,000 个字符。每次新检测生成新的 UUID `Idempotency-Key`，同一次请求重试时复用原请求头和正文。
+成功时返回 `detectionId`、`label`、`score` 等字段，具体分数由模型计算。输入须达到模型 tokenizer 计数的 256 token（含特殊 token），原文总长度不超过 20,000 个 Unicode 码点。预检返回非空白字符数、是否达标及估计还需补充的字符数，不调用模型、不消耗检测额度、不创建检测历史。正式提交仍重新校验长度。每次新检测生成新的 UUID `Idempotency-Key`，同一次请求重试时复用原请求头和正文。
 
 ## 生产部署
 

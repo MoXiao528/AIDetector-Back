@@ -23,6 +23,10 @@ from app.db.base_class import Base  # noqa: E402
 
 class FakeTokenizer:
     @staticmethod
+    def num_special_tokens_to_add(pair: bool = False) -> int:
+        return 2
+
+    @staticmethod
     def _pieces(text: str) -> list[str]:
         return [piece for piece in str(text or "").replace("\n", " ").split(" ") if piece]
 

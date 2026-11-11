@@ -17,11 +17,11 @@ DEFAULT_GUEST_COUNT = 5
 DEFAULT_DETECTION_COUNT = 5
 DEFAULT_DETECT_TEXT = (
     "This is a deliberately long sample paragraph for burst load testing. "
-    "It contains enough visible characters to pass the backend minimum threshold, "
+    "It contains enough model tokens to pass the backend minimum threshold, "
     "keeps sentence structure stable, and avoids accidental validation failures. "
     "The goal is to exercise the real detection path, database persistence path, "
-    "quota deduction path, and downstream detect service integration under concurrent traffic."
-)
+    "quota deduction path, and downstream detect service integration under concurrent traffic. "
+) * 4
 
 
 class BootstrapError(RuntimeError):

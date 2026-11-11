@@ -33,8 +33,9 @@ from app.services.repre_guard_client import RepreGuardError, repre_guard_client
 LONG_TEXT = (
     "This idempotency regression sample is deliberately long enough to pass validation and stay inside one "
     "detector segment. It gives the backend a stable logical request whose retries must never repeat model work, "
-    "quota settlement, or history creation after the first request has completed successfully."
-)
+    "quota settlement, or history creation after the first request has completed successfully. "
+) * 6
+LONG_TEXT = LONG_TEXT.strip()
 
 
 @pytest.fixture
@@ -583,8 +584,9 @@ async def test_multisegment_partial_failure_keeps_reservation_unknown(
 ):
     actor = await _user_actor(db_session, unique_email)
     key = uuid4()
-    first_paragraph = f"First segment. {LONG_TEXT}"
-    second_paragraph = f"Second segment. {LONG_TEXT}"
+    body = " ".join(f"word{index}" for index in range(252))
+    first_paragraph = f"First segment {body}."
+    second_paragraph = f"Second segment {body}."
     both_started = asyncio.Event()
     detector_calls: list[str] = []
 
@@ -592,7 +594,7 @@ async def test_multisegment_partial_failure_keeps_reservation_unknown(
         detector_calls.append(text)
         if len(detector_calls) == 2:
             both_started.set()
-        await both_started.wait()
+        await asyncio.wait_for(both_started.wait(), timeout=5)
         if text.startswith("First segment"):
             raise RepreGuardError(
                 "Detector queue rejected one segment",

@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 
 from app.core.roles import UserRole
 from app.schemas.base import SchemaBase
@@ -171,5 +171,5 @@ class AdminDetectionDetailResponse(AdminDetectionListItem):
 
     @field_validator("meta_json", mode="before")
     @classmethod
-    def normalize_public_meta_json(cls, value):
-        return project_public_meta_json(value)
+    def normalize_public_meta_json(cls, value, info: ValidationInfo):
+        return project_public_meta_json(value, info.data.get("input_text"), info.data.get("editor_html"))

@@ -24,9 +24,9 @@ from app.schemas.auth import LoginRequest, RegisterRequest
 from app.services.repre_guard_client import repre_guard_client
 
 LONG_TEXT = (
-    "Guest quota continuity check requires enough visible characters to pass the minimum detection threshold "
+    "Guest quota continuity check requires enough input tokens to pass the minimum detection threshold "
     "while still remaining deterministic for quota accounting across repeated guest sessions. "
-) * 3
+) * 11
 LONG_TEXT = LONG_TEXT.strip()
 REQUIRED_ACCESS_TOKEN_CLAIMS = {"iss", "aud", "iat", "jti", "exp"}
 

@@ -41,7 +41,7 @@ def _get_copy(locale: str) -> dict[str, str]:
             "summary": "检测概览", "result": "疑似 AI 生成", "ai": "AI 生成", "human": "人工写作",
             "original": "原文与段落结果", "likelihood": "AI 生成可能性",
             "paragraph": "段落", "block": "检测块", "merged": "合并检测",
-            "too_short": "文本过短，未检测", "truncated": "该检测块仅使用部分文本进行检测。",
+            "too_short": "文本过短，未检测", "metadata": "标题或署名，仅作上下文", "truncated": "该检测块仅使用部分文本进行检测。",
             "unmatched": "该历史记录的段落结果无法完整对应原文，以下保留原文和已保存的检测结果。",
             "saved_results": "已保存的段落结果", "no_segments": "本次未提供段落结果。",
             "note": "检测结果仅供参考，请结合原文复核。",
@@ -54,7 +54,7 @@ def _get_copy(locale: str) -> dict[str, str]:
         "summary": "Detection overview", "result": "detected as AI", "ai": "AI-generated", "human": "Human-written",
         "original": "Original text and paragraph results", "likelihood": "AI generation likelihood",
         "paragraph": "Paragraph", "block": "Block", "merged": "Merged",
-        "too_short": "Text too short; not analyzed", "truncated": "Only part of this block was used for detection.",
+        "too_short": "Text too short; not analyzed", "metadata": "Title or byline; context only", "truncated": "Only part of this block was used for detection.",
         "unmatched": "The saved paragraph results cannot be fully matched to this original text. Both are preserved below.",
         "saved_results": "Saved paragraph results", "no_segments": "No paragraph results were provided.",
         "note": "Detection results are for reference. Review them alongside the original text.",
@@ -185,6 +185,8 @@ def _segment_label(segment, index: int, copy: dict) -> str:
 
 
 def _segment_palette(segment) -> tuple[str, str]:
+    if segment.type == "metadata":
+        return "#FFFFFF", "#182230"
     if segment.type == "too_short":
         return "#F1F5F9", "#526174"
     for minimum, fill, ink in ((0.8, "#FFF1F2", "#9F1239"), (0.6, "#FFF7ED", "#9A3412"),
@@ -196,8 +198,8 @@ def _segment_palette(segment) -> tuple[str, str]:
 
 def _segment_heading(segment, index: int, copy: dict) -> str:
     label = _segment_label(segment, index, copy)
-    if segment.type == "too_short":
-        return f"{label} · {copy['too_short']}"
+    if segment.type in {"too_short", "metadata"}:
+        return f"{label} · {copy[segment.type]}"
     classification = copy["ai"] if segment.type == "ai" else copy["human"]
     return f"{label} · {classification} · {copy['likelihood']}: {_display_percentage(segment.probability)}%"
 

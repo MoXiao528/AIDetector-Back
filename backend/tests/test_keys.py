@@ -17,7 +17,7 @@ from app.services.repre_guard_client import repre_guard_client
 DETECT_TEXT = (
     "This API-key authorization test uses enough text to exercise the real detection route while keeping "
     "the downstream detector isolated at the external-service boundary. "
-) * 2
+) * 12
 
 
 @pytest.fixture()

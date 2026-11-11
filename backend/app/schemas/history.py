@@ -8,6 +8,7 @@ from pydantic import BeforeValidator, Field, model_validator
 
 from app.schemas.base import SchemaBase
 from app.schemas.evidence import EvidenceResponseBase
+from app.services.document_metadata import comparable_text, document_paragraphs, metadata_paragraph_indexes, paragraph_highlight_html
 
 
 def _normalize_legacy_label(value: Any) -> Any:
@@ -16,7 +17,7 @@ def _normalize_legacy_label(value: Any) -> Any:
     normalized = value.strip().casefold()
     if normalized == "mixed":
         return "human"
-    if normalized in {"ai", "human", "too_short"}:
+    if normalized in {"ai", "human", "too_short", "metadata"}:
         return normalized
     return value
 
@@ -26,7 +27,7 @@ PublicDetectionLabel = Annotated[
     BeforeValidator(_normalize_legacy_label),
 ]
 PublicSegmentType = Annotated[
-    Literal["ai", "human", "too_short"],
+    Literal["ai", "human", "too_short", "metadata"],
     BeforeValidator(_normalize_legacy_label),
 ]
 
@@ -67,7 +68,7 @@ class Sentence(SchemaBase):
         json_schema_extra={"example": 4},
         description="1-based end paragraph index covered by this segment",
     )
-    type: PublicSegmentType = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/human/too_short")
+    type: PublicSegmentType = Field(..., json_schema_extra={"example": "ai"}, description="Segment type: ai/human/too_short/metadata; metadata is context without an independent judgment")
     probability: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.85}, description="AI probability in [0, 1]")
     score: int = Field(..., ge=0, le=100, json_schema_extra={"example": 85}, description="Display score in [0, 100]")
     reason: str = Field(..., json_schema_extra={"example": "Highly structured phrasing"}, description="Explanation")
@@ -98,7 +99,47 @@ class Analysis(SchemaBase):
         return self
 
 
-def project_public_meta_json(value: Any) -> Any:
+def project_document_analysis(value: Any, input_text: str, editor_html: str | None = None) -> Analysis:
+    analysis = Analysis.model_validate(value)
+    paragraphs = document_paragraphs(input_text)
+    metadata_indexes = metadata_paragraph_indexes(input_text, editor_html)
+    if not metadata_indexes:
+        return analysis
+    aligned_without_indexes = len(paragraphs) == len(analysis.sentences) and all(
+        comparable_text(sentence.raw or sentence.text) == comparable_text(paragraph)
+        for sentence, paragraph in zip(analysis.sentences, paragraphs)
+    )
+    projected = []
+    changed = False
+    for index, sentence in enumerate(analysis.sentences):
+        start, end = sentence.start_paragraph, sentence.end_paragraph
+        if start is None and end is None and aligned_without_indexes:
+            start = end = index + 1
+        # Old merged blocks retain their saved judgment; never neutralize their body text.
+        if (
+            start == end and start is not None and start - 1 in metadata_indexes
+            and comparable_text(sentence.raw or sentence.text) == comparable_text(paragraphs[start - 1])
+        ):
+            sentence = sentence.model_copy(update={
+                "type": "metadata", "probability": 0.0, "score": 0,
+                "reason": "Document metadata; retained as context without an independent judgment.",
+                "suggestion": "No independent AI/Human classification is assigned to titles or bylines.",
+            })
+            changed = True
+        projected.append(sentence)
+    if not changed:
+        return analysis
+    return analysis.model_copy(update={
+        "sentences": projected,
+        "ai_likely_count": sum(sentence.type == "ai" for sentence in projected),
+        "highlighted_html": "".join(
+            paragraph_highlight_html(sentence.text, sentence.id, sentence.type, sentence.probability)
+            for sentence in projected
+        ),
+    })
+
+
+def project_public_meta_json(value: Any, input_text: str | None = None, editor_html: str | None = None) -> Any:
     if not isinstance(value, Mapping):
         return value
 
@@ -115,7 +156,10 @@ def project_public_meta_json(value: Any) -> Any:
         return public_meta
 
     try:
-        public_meta["analysis"] = Analysis.model_validate(analysis).model_dump()
+        public_meta["analysis"] = (
+            project_document_analysis(analysis, input_text, editor_html)
+            if input_text is not None else Analysis.model_validate(analysis)
+        ).model_dump()
     except ValueError:
         public_meta.pop("analysis", None)
     return public_meta

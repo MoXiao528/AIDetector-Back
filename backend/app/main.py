@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.api import router as api_router
 from app.api.v1.detections import scan_router
@@ -14,6 +15,7 @@ from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
 from app.services.evidence_engine import EvidenceEngine
 from app.services.repre_guard_client import repre_guard_client
+from app.services.token_chunker import count_tokens
 
 settings = get_settings()
 logger = configure_logging()
@@ -23,6 +25,11 @@ logger = configure_logging()
 async def lifespan(app: FastAPI):
     app.state.evidence_engine = None
     try:
+        try:
+            await run_in_threadpool(count_tokens, "warmup", tokenizer_model=settings.detect_tokenizer_model)
+        except Exception:
+            logger.exception("Detection tokenizer initialization failed")
+            raise
         try:
             app.state.evidence_engine = EvidenceEngine(
                 mode=settings.detect_evidence_mode,

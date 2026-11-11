@@ -6,7 +6,7 @@ from app.core.config import get_settings
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import ReportPdfContent, ReportPdfRequest
 from app.schemas.evidence import project_public_evidence
-from app.schemas.history import Analysis
+from app.schemas.history import project_document_analysis
 from app.services.history_service import HistoryService
 from app.services.report_pdf import build_report_filename, build_report_pdf
 
@@ -40,7 +40,7 @@ async def export_pdf_report(
         )
 
     try:
-        analysis = Analysis.model_validate(analysis_raw)
+        analysis = project_document_analysis(analysis_raw, detection.input_text, detection.editor_html)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

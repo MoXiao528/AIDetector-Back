@@ -243,6 +243,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/detect/preflight:
+    post:
+      tags: [detection]
+      summary: Check text length without running detection or consuming quota
+      operationId: preflightDetection
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectionPreflightRequest'
+      responses:
+        '200':
+          description: Token readiness and approximate additional character count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionPreflightResponse'
+        '400':
+          description: Multiple credential types supplied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope does not allow detection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request or text exceeds 20000 Unicode code points
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/detect:
     post:
       tags: [detection]
@@ -2161,6 +2206,35 @@ components:
           default: UTC
           example: Asia/Shanghai
           description: IANA time zone for report timestamps. Unknown zones fall back to UTC.
+    DetectionPreflightRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: Original text, at most 20000 Unicode code points; empty text is allowed.
+    DetectionPreflightResponse:
+      type: object
+      required: [characterCount, tokenCount, minimumTokens, ready, estimatedAdditionalCharacters]
+      properties:
+        characterCount:
+          type: integer
+          minimum: 0
+          description: Non-whitespace Unicode code points.
+        tokenCount:
+          type: integer
+          minimum: 0
+          description: Normalized input tokens including model special tokens.
+        minimumTokens:
+          type: integer
+          enum: [256]
+        ready:
+          type: boolean
+        estimatedAdditionalCharacters:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Approximate additional non-whitespace characters; zero when ready, null when unavailable.
     DetectRequest:
       type: object
       required:
@@ -2169,6 +2243,8 @@ components:
         text:
           type: string
           minLength: 1
+          maxLength: 20000
+          description: Must reach 256 model tokens including special tokens; check detect/preflight for readiness.
         functions:
           type: array
           items:
@@ -2190,6 +2266,7 @@ components:
           type: string
           minLength: 1
           maxLength: 20000
+          description: Must reach 256 model tokens including special tokens; check detect/preflight for readiness.
         functions:
           type: array
           items:
@@ -2204,6 +2281,11 @@ components:
       properties:
         text:
           type: string
+        type:
+          type: string
+          enum: [ai, human, too_short, metadata]
+          nullable: true
+          description: metadata identifies context-only titles or bylines; isAi=false and confidence=0 are placeholders, not a human classification.
         isAi:
           type: boolean
         confidence:
@@ -2336,7 +2418,8 @@ components:
           minimum: 1
         type:
           type: string
-          enum: [ai, human, too_short]
+          enum: [ai, human, too_short, metadata]
+          description: metadata is retained as context without an independent AI/Human judgment; probability and score are zero placeholders and must not be displayed as human scores.
         probability:
           type: number
           format: float

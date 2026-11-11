@@ -26,7 +26,7 @@ from app.schemas.admin import (
     AdminUserProfile,
     AdminUserUpdateRequest,
 )
-from app.schemas.history import Analysis, PublicDetectionLabel
+from app.schemas.history import Analysis, PublicDetectionLabel, project_document_analysis
 from app.services.admin_service import AdminOverviewData, AdminService, DetectionWithUser
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -91,7 +91,7 @@ def _extract_analysis(detection) -> Analysis | None:
     if not detection.meta_json or "analysis" not in detection.meta_json:
         return None
     try:
-        return Analysis(**detection.meta_json["analysis"])
+        return project_document_analysis(detection.meta_json["analysis"], detection.input_text, detection.editor_html)
     except Exception:
         return None
 
