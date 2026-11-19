@@ -70,14 +70,14 @@ ZH_PARAGRAPH = (
     "图书馆提醒大家妥善保管个人物品，离开时把阅读材料放回指定位置。"
 )
 CASES = {
-    "en": "\n\n".join([EN_PARAGRAPH] * 3),
+    "en": "\n\n".join([EN_PARAGRAPH] * 5),
     "zh": "\n\n".join([ZH_PARAGRAPH] * 3),
     "unsupported": (
         "La biblioteca sarà aperta anche la domenica e gli studenti potranno studiare insieme. "
         "Il comune ha rinnovato le sale di lettura con nuove sedie e lampade. "
         "I cittadini potranno prenotare un posto sul sito della biblioteca. "
     )
-    * 4,
+    * 7,
 }
 
 
@@ -201,7 +201,7 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
     output = Path(os.environ["EVIDENCE_REAL_REPORT_PATH"]).resolve()
     assert output.parent.is_dir() and not output.exists()
     engine = EvidenceEngine(
-        mode="serve", bundle_path=str(bundle), bundle_sha256=REAL_BUNDLE_SHA
+        bundle_path=str(bundle), bundle_sha256=REAL_BUNDLE_SHA
     )
     assert engine.status == "ready"
     report = {
@@ -267,8 +267,8 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
             baseline = {}
             used = records = 0
             user_token = None
-            for mode in ("off", "shadow", "serve"):
-                monkeypatch.setattr(settings, "detect_evidence_mode", mode)
+            for bundle_ready in (False, True):
+                monkeypatch.setattr(settings, "detect_evidence_bundle_path", str(bundle) if bundle_ready else "")
                 with TestClient(app) as client:
                     if user_token is None:
                         credentials = {
@@ -290,8 +290,6 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
                         user_token = login.json()["accessToken"]
                     client.headers["Authorization"] = f"Bearer {user_token}"
                     for name, text in CASES.items():
-                        if mode == "shadow" and name != "en":
-                            continue
                         headers = {"Idempotency-Key": str(uuid4())}
                         before = counts.copy()
                         started = time.monotonic()
@@ -302,28 +300,32 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
                         data = first.json()
                         elapsed = time.monotonic() - started
                         assert counts["router"] - before["router"] == (
-                            0 if mode == "off" else 1
+                            1 if bundle_ready else 0
                         )
+                        main_calls = counts["main"] - before["main"]
                         if name == "en":
-                            assert counts["main"] - before["main"] > 1
+                            assert main_calls > 1
                         primary = {
                             key: data[key]
                             for key in ("score", "rawScore", "threshold", "label")
                         }
-                        if mode == "off":
-                            baseline[name] = primary
+                        if not bundle_ready:
+                            baseline[name] = primary, main_calls
                         else:
-                            assert primary["label"] == baseline[name]["label"]
-                            assert primary["threshold"] == baseline[name]["threshold"]
+                            prior_primary, prior_calls = baseline[name]
+                            assert main_calls == prior_calls
+                            assert primary["label"] == prior_primary["label"]
+                            assert primary["threshold"] == prior_primary["threshold"]
                             for key in ("score", "rawScore"):
-                                assert abs(primary[key] - baseline[name][key]) <= 1e-6
+                                assert abs(primary[key] - prior_primary[key]) <= 1e-6
                         with Session(database) as session:
                             saved = session.get(Detection, data["detectionId"])
                             snapshot = saved.meta_json.get("evidence")
-                            if mode == "off":
+                            if not bundle_ready:
                                 assert (
-                                    snapshot is None
-                                    and "artifactVersion" not in saved.meta_json
+                                    snapshot["status"] == "failed"
+                                    and snapshot["quality"]["reasons"] == ["invalid_evidence_config"]
+                                    and saved.meta_json["artifactVersion"] is None
                                 )
                             else:
                                 assert (
@@ -339,9 +341,12 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
                                 if name != "unsupported":
                                     assert snapshot["route"]["language"] == name
                                     assert snapshot["quality"]["coverage"] > 0
-                        assert data.get("evidence") == (
-                            snapshot if mode == "serve" else None
-                        )
+                            if bundle_ready and name == "zh":
+                                assert snapshot["corpusExpressions"]["status"] == "matched"
+                                assert snapshot["corpusExpressions"]["expressions"]
+                            else:
+                                assert "corpusExpressions" not in snapshot
+                        assert data["evidence"] == snapshot
                         after = counts.copy()
                         replay = client.post(
                             "/api/v1/detect", json={"text": text}, headers=headers
@@ -375,7 +380,7 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
                             assert session.scalar(select(QuotaUsage.used)) == used
                         report["cases"].append(
                             {
-                                "mode": mode,
+                                "bundle_ready": bundle_ready,
                                 "case": name,
                                 "chars": len(text),
                                 "seconds": elapsed,
@@ -390,8 +395,8 @@ def test_real_models_snapshot_business_chain(tmp_path, monkeypatch):
                             }
                         )
         worker = report["worker"]
-        assert worker["calls"] == worker["completions"] == counts["router"] == 4
-        assert worker["forwards"] == 3
+        assert worker["calls"] == worker["completions"] == counts["router"] == 3
+        assert worker["forwards"] == 2
         assert (
             worker["final_admitted"]
             == worker["final_active"]

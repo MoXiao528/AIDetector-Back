@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.deps import ActiveMemberDep, SessionDep, _decode_token, _resolve_active_guest_session_id
 from app.schemas.history import (
-    Analysis,
     BatchDeleteRequest,
     BatchDeleteResponse,
     ClaimGuestHistoryRequest,
@@ -16,6 +15,7 @@ from app.schemas.history import (
     HistoryRecordCreate,
     HistoryRecordResponse,
     HistoryRecordUpdate,
+    project_document_analysis,
 )
 from app.services.history_service import GuestSessionNotClaimableError, HistoryService
 
@@ -26,7 +26,7 @@ def _detection_to_history_response(detection) -> HistoryRecordResponse:
     analysis_data = None
     if detection.meta_json and "analysis" in detection.meta_json:
         try:
-            analysis_data = Analysis(**detection.meta_json["analysis"])
+            analysis_data = project_document_analysis(detection.meta_json["analysis"], detection.input_text, detection.editor_html)
         except Exception:
             analysis_data = None
 

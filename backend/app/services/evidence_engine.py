@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from app.services.corpus_expressions import LexiconMatcher
     from app.services.repre_guard_client import RepreGuardClient
 
 logger = logging.getLogger(__name__)
@@ -432,12 +433,11 @@ class EvidenceEngine:
     def __init__(
         self,
         *,
-        mode: str = "off",
         bundle_path: str = "",
         bundle_sha256: str = "",
         timeout_seconds: str | float = "12",
     ) -> None:
-        self.status = "off"
+        self.status = "failed"
         self.reason: str | None = None
         self.artifact_version: str | None = None
         self.router_artifact_sha256: str | None = None
@@ -446,20 +446,14 @@ class EvidenceEngine:
         self.reference_extents: dict[tuple[str, str], tuple[float, float]] = {}
         self.timeout_seconds = 0.0
         self._task: asyncio.Task | None = None
-        if mode == "off":
-            return
-        self.status = "failed"
+        self.lexicon_matcher: LexiconMatcher | None = None
         try:
             timeout = float(timeout_seconds)
             _require(type(timeout_seconds) is not bool and 0 < timeout <= 60)
         except (TypeError, ValueError, OverflowError):
             self.reason = "invalid_evidence_config"
             return
-        if (
-            mode not in ("shadow", "serve")
-            or not bundle_path
-            or not _sha(bundle_sha256)
-        ):
+        if not bundle_path or not _sha(bundle_sha256):
             self.reason = "invalid_evidence_config"
             return
         try:
@@ -523,27 +517,33 @@ class EvidenceEngine:
         """One whole-document call and comparison under a single deadline."""
         if self.status != "ready":
             return self._empty_result(self.reason)
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         result = None
         try:
-            # ponytail: one active task per process, no queue; revisit after shadow load data.
+            # Retain the slot until the CPU worker actually finishes.
             if self._task is not None and not self._task.done():
                 result = self._empty_result("busy")
             else:
+                comparison = loop.create_future()
                 self._task = asyncio.create_task(
                     self._route_and_compare(
                         text,
                         main_label=main_label,
                         client=client,
                         deadline=started + self.timeout_seconds,
+                        comparison=comparison,
                     )
                 )
                 self._task.add_done_callback(self._release_task)
-                result = await asyncio.wait_for(
-                    asyncio.shield(self._task), timeout=self.timeout_seconds
-                )
-        except asyncio.TimeoutError:
-            result = self._empty_result("timeout")
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.shield(self._task), timeout=self.timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    result = (
+                        comparison.result() if comparison.done() else self._empty_result("timeout")
+                    )
         finally:
             logger.info(
                 "Evidence status=%s elapsed_ms=%.1f",
@@ -553,7 +553,13 @@ class EvidenceEngine:
         return result
 
     async def _route_and_compare(
-        self, text: str, *, main_label: str, client: RepreGuardClient, deadline: float
+        self,
+        text: str,
+        *,
+        main_label: str,
+        client: RepreGuardClient,
+        deadline: float,
+        comparison: asyncio.Future[dict],
     ) -> dict:
         import httpx
         from app.services.repre_guard_client import RepreGuardError
@@ -583,11 +589,38 @@ class EvidenceEngine:
         if asyncio.get_running_loop().time() >= deadline:
             return self._empty_result("timeout")
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self.analyze, text, payload, main_label=main_label
             )
         except Exception:
             return self._empty_result("comparison_failed")
+
+        now = asyncio.get_running_loop().time
+        if now() >= deadline:
+            return self._empty_result("timeout")
+        route = result["route"]
+        if route is None or route["language"] != "zh":
+            return result
+
+        matcher = self.lexicon_matcher
+        result["corpusExpressions"] = {
+            "status": "unavailable",
+            "lexiconVersion": matcher.version if matcher is not None else None,
+            "lexiconSha256": matcher.sha256 if matcher is not None else None,
+            "expressions": [],
+        }
+        # A slow optional match must not discard the completed reference comparison.
+        comparison.set_result(result)
+        if matcher is None:
+            return result
+        try:
+            expressions = await asyncio.to_thread(
+                matcher.match, text, language=route["language"], domain=route["domain"]
+            )
+        except Exception:
+            logger.warning("Corpus expression matching failed")
+            return result
+        return {**result, "corpusExpressions": expressions} if now() < deadline else result
 
     def _release_task(self, task: asyncio.Task) -> None:
         if self._task is task:
@@ -601,7 +634,7 @@ class EvidenceEngine:
 
     def _empty_result(self, reason: str | None) -> dict:
         return {
-            "status": "off" if self.status == "off" else "failed",
+            "status": "failed",
             "artifactVersion": self.artifact_version,
             "featureSchemaVersion": 1,
             "route": None,
@@ -655,7 +688,7 @@ class EvidenceEngine:
     def extract_features(self, text: Any, router_response: Any) -> dict:
         """Compute local features from the original text, without Reference comparison."""
         result = {
-            "status": "off" if self.status == "off" else "failed",
+            "status": "failed",
             "artifactVersion": self.artifact_version,
             "featureSchemaVersion": 1,
             "route": None,
@@ -675,7 +708,7 @@ class EvidenceEngine:
             result["reason"] = "invalid_text"
             return result
         try:
-            # Keep optional feature dependencies outside startup/off/failure paths.
+            # Keep feature dependencies outside startup and unavailable paths.
             from app.services import evidence_features
 
             _require(

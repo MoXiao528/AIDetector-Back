@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.api import router as api_router
 from app.api.v1.detections import scan_router
@@ -12,8 +13,10 @@ from app.api.v1.detections import scan_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
+from app.services.corpus_expressions import LexiconMatcher
 from app.services.evidence_engine import EvidenceEngine
 from app.services.repre_guard_client import repre_guard_client
+from app.services.token_chunker import count_tokens
 
 settings = get_settings()
 logger = configure_logging()
@@ -24,14 +27,25 @@ async def lifespan(app: FastAPI):
     app.state.evidence_engine = None
     try:
         try:
-            app.state.evidence_engine = EvidenceEngine(
-                mode=settings.detect_evidence_mode,
+            await run_in_threadpool(count_tokens, "warmup", tokenizer_model=settings.detect_tokenizer_model)
+        except Exception:
+            logger.exception("Detection tokenizer initialization failed")
+            raise
+        try:
+            engine = EvidenceEngine(
                 bundle_path=settings.detect_evidence_bundle_path,
                 bundle_sha256=settings.detect_evidence_bundle_sha256,
                 timeout_seconds=settings.detect_evidence_timeout_seconds,
             )
         except Exception:
             logger.warning("Optional Evidence initialization failed")
+        else:
+            app.state.evidence_engine = engine
+            if engine.status == "ready":
+                try:
+                    engine.lexicon_matcher = await run_in_threadpool(LexiconMatcher)
+                except Exception:
+                    logger.warning("Corpus expression lexicon initialization failed")
         yield
     finally:
         engine = app.state.evidence_engine
@@ -49,7 +63,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "Content-Disposition"],
 )
 
 

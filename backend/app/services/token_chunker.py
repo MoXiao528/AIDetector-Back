@@ -1,21 +1,48 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_left, bisect_right
+from collections.abc import Iterator
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypedDict
 
 
 DEFAULT_TOKENIZER_MODEL = "WUJUNCHAO/DetectRL-X-XLM-RoBERTa-Detector-All"
 DEFAULT_MAX_INPUT_TOKENS = 512
+TARGET_INPUT_TOKENS = 256
 DEFAULT_SHORT_SEGMENT_VISIBLE_CHARS = 40
 DETECTABLE_STATUS = "detectable"
 TOO_SHORT_STATUS = "too_short"
 
-_SENTENCE_BOUNDARY_PATTERN = re.compile(
-    r".+?(?:[\u3002\uff01\uff1f]+|[.!?]+)(?:\s+|$)|.+?$",
-    re.S,
+_SENTENCE_SUFFIX = r"""[”’」』）】》〉"'»)\]}]*"""
+_CJK_SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？][。！？.!?]*" + _SENTENCE_SUFFIX)
+_ENGLISH_SENTENCE_BOUNDARY_PATTERN = re.compile(
+    r"(?:(?P<word>\b(?:[a-z]\.)*[a-z]+))?(?P<mark>[.!?]+)"
+    + _SENTENCE_SUFFIX
+    + r"(?=\s|$)",
+    re.IGNORECASE,
 )
-_CJK_SENTENCE_BOUNDARY_PATTERN = re.compile(r"[\u3002\uff01\uff1f]")
+# shortcut: abbreviations are fixed; use language-specific models when ambiguous sentence boundaries need resolving.
+_ABBREVIATIONS = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "vs", "e.g", "i.e", "fig", "u.s", "u.k"}
+
+
+class ParagraphPart(TypedDict):
+    index: int
+    text: str
+    weight: float
+
+
+class TokenSegment(TypedDict):
+    start: int
+    end: int
+    text: str
+    detect_text: str
+    visible_chars: int
+    token_count: int
+    weight: int
+    status: str
+    truncated: bool
+    paragraph_parts: list[ParagraphPart]
 
 
 @lru_cache(maxsize=4)
@@ -42,77 +69,38 @@ def count_tokens(
     return len(tokenizer.encode(str(text or ""), add_special_tokens=add_special_tokens))
 
 
-def truncate_to_token_limit(
-    text: str,
-    *,
-    max_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
-    tokenizer_model: str = DEFAULT_TOKENIZER_MODEL,
-) -> str:
-    tokenizer = get_tokenizer(tokenizer_model)
-    token_ids = tokenizer.encode(
-        str(text or ""),
-        add_special_tokens=True,
-        truncation=True,
-        max_length=max_tokens,
-    )
-    decoded = tokenizer.decode(
-        token_ids,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )
-    return decoded.strip() or str(text or "")
-
-
 def split_sentence_like_chunks(text: str) -> list[str]:
-    normalized = str(text or "")
-    if not normalized.strip():
+    if not text.strip():
         return []
 
-    nltk_chunks = _split_with_nltk(normalized)
-    if len(nltk_chunks) > 1 and not _CJK_SENTENCE_BOUNDARY_PATTERN.search(normalized):
-        return nltk_chunks
-
-    regex_chunks = [
-        match.group(0)
-        for match in _SENTENCE_BOUNDARY_PATTERN.finditer(normalized)
-        if match.group(0).strip()
-    ]
-    return regex_chunks or nltk_chunks or [normalized]
-
-
-def _split_with_nltk(text: str) -> list[str]:
-    try:
-        from nltk.tokenize import PunktSentenceTokenizer
-    except ImportError:
-        return []
-
-    tokenizer = PunktSentenceTokenizer()
-    try:
-        spans = list(tokenizer.span_tokenize(text))
-    except (LookupError, ValueError):
-        return []
-
-    if not spans:
-        return []
-
+    ends = {match.end() for match in _CJK_SENTENCE_BOUNDARY_PATTERN.finditer(text)}
+    ends.update(_english_sentence_ends(text))
+    ends.add(len(text))
     chunks: list[str] = []
-    cursor = 0
-    for start, end in spans:
-        adjusted_start = min(cursor, start)
-        chunk = text[adjusted_start:end]
+    start = 0
+    for end in sorted(ends):
+        chunk = text[start:end]
         if chunk.strip():
             chunks.append(chunk)
-        cursor = end
-
-    if cursor < len(text):
-        tail = text[cursor:]
-        if tail.strip():
-            if chunks:
-                chunks[-1] += tail
-            else:
-                chunks.append(tail)
-
+            start = end
+    if start < len(text):
+        chunks[-1] += text[start:]
     return chunks
+
+
+def _english_sentence_ends(text: str) -> list[int]:
+    try:
+        from nltk.tokenize.punkt import PunktParameters, PunktSentenceTokenizer
+
+        parameters = PunktParameters()
+        parameters.abbrev_types = _ABBREVIATIONS
+        return [end for _, end in PunktSentenceTokenizer(parameters).span_tokenize(text)]
+    except (ImportError, LookupError, ValueError):
+        return [
+            match.end()
+            for match in _ENGLISH_SENTENCE_BOUNDARY_PATTERN.finditer(text)
+            if match["mark"] != "." or (match["word"] or "").lower() not in _ABBREVIATIONS
+        ]
 
 
 def build_token_aware_segments(
@@ -121,155 +109,129 @@ def build_token_aware_segments(
     short_visible_chars: int = DEFAULT_SHORT_SEGMENT_VISIBLE_CHARS,
     max_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
     tokenizer_model: str = DEFAULT_TOKENIZER_MODEL,
-) -> list[dict[str, int | str | bool]]:
-    segments: list[dict[str, int | str | bool]] = []
+) -> list[TokenSegment]:
+    text = "\n".join(paragraphs)
+    visible_chars = count_visible_chars(text)
+    if not visible_chars:
+        return []
 
-    for paragraph_index, paragraph in enumerate(paragraphs):
-        paragraph_text = str(paragraph or "")
-        if not paragraph_text.strip():
-            continue
+    paragraph_starts = [0]
+    for paragraph in paragraphs[:-1]:
+        paragraph_starts.append(paragraph_starts[-1] + len(paragraph) + 1)
 
-        visible_chars = count_visible_chars(paragraph_text)
-        if visible_chars < short_visible_chars:
-            segments.append(
-                _make_segment(
-                    text=paragraph_text,
-                    paragraph_index=paragraph_index,
-                    visible_chars=visible_chars,
-                    token_count=count_tokens(paragraph_text, tokenizer_model=tokenizer_model),
-                    weight=0,
-                    status=TOO_SHORT_STATUS,
-                )
-            )
-            continue
+    status = TOO_SHORT_STATUS if visible_chars < short_visible_chars else DETECTABLE_STATUS
+    ranges = (
+        [(0, len(text))]
+        if status == TOO_SHORT_STATUS
+        else list(_detectable_ranges(text, max_tokens=max_tokens, tokenizer_model=tokenizer_model))
+    )
+    if len(ranges) >= 2:
+        tail_start, tail_end = ranges[-1]
+        previous_start, _ = ranges[-2]
+        tail_tokens = count_tokens(text[tail_start:tail_end].strip(), tokenizer_model=tokenizer_model)
+        if tail_tokens < TARGET_INPUT_TOKENS:
+            merged_tokens = count_tokens(text[previous_start:tail_end].strip(), tokenizer_model=tokenizer_model)
+            if merged_tokens <= max_tokens:
+                ranges[-2:] = [(previous_start, tail_end)]
 
-        token_count = count_tokens(paragraph_text, tokenizer_model=tokenizer_model)
-        if token_count <= max_tokens:
-            segments.append(
-                _make_segment(
-                    text=paragraph_text,
-                    paragraph_index=paragraph_index,
-                    visible_chars=visible_chars,
-                    token_count=token_count,
-                    weight=max(count_tokens(paragraph_text, add_special_tokens=False, tokenizer_model=tokenizer_model), 1),
-                    status=DETECTABLE_STATUS,
-                )
-            )
-            continue
-
-        segments.extend(
-            _split_oversized_paragraph_by_tokens(
-                paragraph_text,
-                paragraph_index,
-                max_tokens=max_tokens,
-                tokenizer_model=tokenizer_model,
-            )
+    segments: list[TokenSegment] = []
+    for start, end in ranges:
+        original_text = text[start:end]
+        detect_text = original_text.strip()
+        weight = (
+            0
+            if status == TOO_SHORT_STATUS
+            else max(count_tokens(detect_text, add_special_tokens=False, tokenizer_model=tokenizer_model), 1)
         )
+        first_paragraph = bisect_right(paragraph_starts, start) - 1
+        last_paragraph = bisect_left(paragraph_starts, end) - 1
+        paragraph_parts: list[ParagraphPart] = []
+        for index in range(first_paragraph, last_paragraph + 1):
+            paragraph_start = paragraph_starts[index]
+            part_text = text[max(start, paragraph_start) : min(end, paragraph_start + len(paragraphs[index]))]
+            if part_text.strip():
+                paragraph_parts.append({"index": index, "text": part_text, "weight": 0.0})
 
+        if weight and len(paragraph_parts) == 1:
+            paragraph_parts[0]["weight"] = weight
+        elif weight:
+            for part in paragraph_parts:
+                part["weight"] = max(
+                    count_tokens(part["text"].strip(), add_special_tokens=False, tokenizer_model=tokenizer_model),
+                    1,
+                )
+            total_part_weight = sum(part["weight"] for part in paragraph_parts)
+            for part in paragraph_parts:
+                part["weight"] *= weight / total_part_weight
+
+        segments.append(
+            {
+                "start": paragraph_parts[0]["index"],
+                "end": paragraph_parts[-1]["index"],
+                "text": original_text,
+                "detect_text": detect_text,
+                "visible_chars": count_visible_chars(detect_text),
+                "token_count": count_tokens(detect_text, tokenizer_model=tokenizer_model),
+                "weight": weight,
+                "status": status,
+                "truncated": False,
+                "paragraph_parts": paragraph_parts,
+            }
+        )
     return segments
 
 
-def _split_oversized_paragraph_by_tokens(
-    paragraph: str,
-    paragraph_index: int,
+def _detectable_ranges(
+    text: str,
     *,
     max_tokens: int,
     tokenizer_model: str,
-) -> list[dict[str, int | str | bool]]:
-    segments: list[dict[str, int | str | bool]] = []
-    buffer: list[str] = []
+) -> Iterator[tuple[int, int]]:
+    target_tokens = min(TARGET_INPUT_TOKENS, max_tokens)
+    start = end = 0
+    for sentence in split_sentence_like_chunks(text):
+        sentence_end = end + len(sentence)
+        candidate_tokens = count_tokens(text[start:sentence_end].strip(), tokenizer_model=tokenizer_model)
+        if candidate_tokens > max_tokens and start < end:
+            yield start, end
+            start = end
+            candidate_tokens = count_tokens(sentence.strip(), tokenizer_model=tokenizer_model)
+        if candidate_tokens > max_tokens:
+            for start, part_end in _split_overlong_sentence(
+                text, start, sentence_end, max_tokens=max_tokens, tokenizer_model=tokenizer_model
+            ):
+                if part_end < sentence_end:
+                    yield start, part_end
+            candidate_tokens = count_tokens(text[start:sentence_end].strip(), tokenizer_model=tokenizer_model)
+        if candidate_tokens >= target_tokens:
+            yield start, sentence_end
+            start = sentence_end
+        end = sentence_end
 
-    def flush_buffer() -> None:
-        nonlocal buffer
-        if not buffer:
-            return
-
-        text = "".join(buffer)
-        if text.strip():
-            segments.append(
-                _make_detectable_segment(
-                    text=text,
-                    paragraph_index=paragraph_index,
-                    tokenizer_model=tokenizer_model,
-                )
-            )
-        buffer = []
-
-    for sentence in split_sentence_like_chunks(paragraph):
-        sentence_token_count = count_tokens(sentence, tokenizer_model=tokenizer_model)
-        if sentence_token_count > max_tokens:
-            flush_buffer()
-            detect_text = truncate_to_token_limit(sentence, max_tokens=max_tokens, tokenizer_model=tokenizer_model)
-            segments.append(
-                _make_detectable_segment(
-                    text=sentence,
-                    paragraph_index=paragraph_index,
-                    tokenizer_model=tokenizer_model,
-                    detect_text=detect_text,
-                    truncated=True,
-                    original_token_count=sentence_token_count,
-                )
-            )
-            continue
-
-        candidate = "".join([*buffer, sentence])
-        candidate_token_count = count_tokens(candidate, tokenizer_model=tokenizer_model)
-        if buffer and candidate_token_count > max_tokens:
-            flush_buffer()
-
-        buffer.append(sentence)
-
-    flush_buffer()
-    return segments
+    if start < end:
+        yield start, end
 
 
-def _make_detectable_segment(
-    *,
+def _split_overlong_sentence(
     text: str,
-    paragraph_index: int,
+    start: int,
+    end: int,
+    *,
+    max_tokens: int,
     tokenizer_model: str,
-    detect_text: str | None = None,
-    truncated: bool = False,
-    original_token_count: int | None = None,
-) -> dict[str, int | str | bool]:
-    text_for_detect = detect_text if detect_text is not None else text
-    return _make_segment(
-        text=text,
-        paragraph_index=paragraph_index,
-        visible_chars=count_visible_chars(text),
-        token_count=count_tokens(text_for_detect, tokenizer_model=tokenizer_model),
-        weight=max(count_tokens(text_for_detect, add_special_tokens=False, tokenizer_model=tokenizer_model), 1),
-        status=DETECTABLE_STATUS,
-        detect_text=text_for_detect,
-        truncated=truncated,
-        original_token_count=original_token_count,
-    )
-
-
-def _make_segment(
-    *,
-    text: str,
-    paragraph_index: int,
-    visible_chars: int,
-    token_count: int,
-    weight: int,
-    status: str,
-    detect_text: str | None = None,
-    truncated: bool = False,
-    original_token_count: int | None = None,
-) -> dict[str, int | str | bool]:
-    segment: dict[str, int | str | bool] = {
-        "start": paragraph_index,
-        "end": paragraph_index,
-        "text": text,
-        "visible_chars": visible_chars,
-        "token_count": token_count,
-        "weight": weight,
-        "status": status,
-        "truncated": truncated,
-    }
-    if detect_text is not None:
-        segment["detect_text"] = detect_text
-    if original_token_count is not None:
-        segment["original_token_count"] = original_token_count
-    return segment
+) -> Iterator[tuple[int, int]]:
+    while count_tokens(text[start:end].strip(), tokenizer_model=tokenizer_model) > max_tokens:
+        low, high = start + 1, end - 1
+        split = start
+        while low <= high:
+            middle = (low + high) // 2
+            if count_tokens(text[start:middle].strip(), tokenizer_model=tokenizer_model) <= max_tokens:
+                split = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+        if not text[start:split].strip():
+            raise ValueError("A character exceeds the detector token limit")
+        yield start, split
+        start = split
+    yield start, end

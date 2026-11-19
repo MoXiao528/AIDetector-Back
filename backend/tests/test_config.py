@@ -104,9 +104,11 @@ def test_settings_accept_https_php_detect_service_in_production(detect_url, url_
         {"repre_guard_service_token": "short"},
     ],
 )
-def test_production_php_keeps_other_safety_requirements(overrides):
+@pytest.mark.parametrize("allow_insecure_http_cookies", [False, True])
+def test_production_php_keeps_other_safety_requirements(overrides, allow_insecure_http_cookies):
     values = {
         "environment": "production",
+        "allow_insecure_http_cookies": allow_insecure_http_cookies,
         "secret_key": "a" * 32,
         "postgres_password": "StrongDbPass!23",
         "repre_guard_service_token": SERVICE_TOKEN,
@@ -171,25 +173,79 @@ def test_settings_accept_safe_production_values():
     assert settings.environment == "production"
 
 
-def test_evidence_settings_default_to_off():
+def test_insecure_http_cookies_default_to_off(monkeypatch):
+    monkeypatch.delenv("ALLOW_INSECURE_HTTP_COOKIES", raising=False)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.allow_insecure_http_cookies is False
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False)])
+def test_insecure_http_cookies_environment_switch(monkeypatch, value, expected):
+    monkeypatch.setenv("ALLOW_INSECURE_HTTP_COOKIES", value)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.allow_insecure_http_cookies is expected
+
+
+def test_insecure_http_cookies_reject_invalid_switch(monkeypatch):
+    monkeypatch.setenv("ALLOW_INSECURE_HTTP_COOKIES", "invalid")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+
+
+def test_insecure_http_cookies_dotenv_switch(monkeypatch, tmp_path):
+    monkeypatch.delenv("ALLOW_INSECURE_HTTP_COOKIES", raising=False)
+    env_file = tmp_path / "http-demo.env"
+    env_file.write_text("ALLOW_INSECURE_HTTP_COOKIES=true\n", encoding="utf-8")
+    settings = Settings(_env_file=env_file, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.allow_insecure_http_cookies is True
+
+
+def test_evidence_settings_default_to_unconfigured_bundle():
     settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
 
-    assert settings.detect_evidence_mode == "off"
     assert settings.detect_evidence_bundle_path == ""
     assert settings.detect_evidence_bundle_sha256 == ""
     assert settings.detect_evidence_timeout_seconds == "12"
+
+
+def test_text_envelope_defaults_to_off(monkeypatch):
+    monkeypatch.delenv("DETECT_TEXT_ENVELOPE_ENABLED", raising=False)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.detect_text_envelope_enabled is False
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False)])
+def test_text_envelope_environment_switch(monkeypatch, value, expected):
+    monkeypatch.setenv("DETECT_TEXT_ENVELOPE_ENABLED", value)
+    settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
+    assert settings.detect_text_envelope_enabled is expected
+
+
+def test_text_envelope_rejects_invalid_switch(monkeypatch):
+    monkeypatch.setenv("DETECT_TEXT_ENVELOPE_ENABLED", "invalid")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
 
 
 def test_invalid_optional_evidence_config_does_not_block_settings():
     settings = Settings(
         _env_file=None,
         repre_guard_service_token=SERVICE_TOKEN,
-        detect_evidence_mode="invalid-mode",
         detect_evidence_bundle_path="missing.bundle",
         detect_evidence_bundle_sha256="invalid-sha",
         detect_evidence_timeout_seconds="invalid-timeout",
     )
 
-    assert settings.detect_evidence_mode == "invalid-mode"
     assert settings.detect_evidence_bundle_sha256 == "invalid-sha"
     assert settings.detect_evidence_timeout_seconds == "invalid-timeout"
+
+@pytest.mark.parametrize("legacy_mode", ["off", "shadow", "serve"])
+def test_retired_evidence_mode_is_ignored(monkeypatch, tmp_path, legacy_mode):
+    env_file = tmp_path / "legacy.env"
+    env_file.write_text(f"DETECT_EVIDENCE_MODE={legacy_mode}\n", encoding="utf-8")
+    monkeypatch.setenv("DETECT_EVIDENCE_MODE", legacy_mode)
+
+    settings = Settings(_env_file=env_file, repre_guard_service_token=SERVICE_TOKEN)
+
+    assert "detect_evidence_mode" not in settings.model_dump()
+    assert settings.detect_evidence_timeout_seconds == "12"

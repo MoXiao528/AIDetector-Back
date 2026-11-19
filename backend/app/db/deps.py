@@ -268,20 +268,36 @@ def require_session_actor(current_actor: AuthenticatedActorDep) -> ActorContext:
     return current_actor
 
 
+def _check_actor_scope(current_actor: ActorContext, required_scope: str) -> ActorContext:
+    if current_actor.auth_method == "api_key" and required_scope not in current_actor.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "API_KEY_SCOPE_FORBIDDEN",
+                "message": "API key scope forbidden",
+                "detail": f"The API key requires the {required_scope} scope.",
+            },
+        )
+    return current_actor
+
+
 def require_actor_scope(required_scope: str):
     def _checker(current_actor: AuthenticatedActorDep) -> ActorContext:
-        if current_actor.auth_method == "api_key" and required_scope not in current_actor.scopes:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "API_KEY_SCOPE_FORBIDDEN",
-                    "message": "API key scope forbidden",
-                    "detail": f"The API key requires the {required_scope} scope.",
-                },
-            )
-        return current_actor
+        return _check_actor_scope(current_actor, required_scope)
 
     return Depends(_checker)
+
+
+def authorize_preflight(
+    db: SessionDep,
+    token: TokenDep,
+    auth_cookie: AuthCookieDep = None,
+    api_key_header: APIKeyHeaderDep = None,
+) -> None:
+    # get_db creates a lazy Session; checkout, authentication and close stay in this one worker call.
+    with db:
+        actor = get_current_actor(db, token, auth_cookie, api_key_header)
+        _check_actor_scope(actor, "detect:write")
 
 
 def require_api_key_actor(current_actor: AuthenticatedActorDep) -> ActorContext:
@@ -299,6 +315,7 @@ def require_api_key_actor(current_actor: AuthenticatedActorDep) -> ActorContext:
 
 CurrentActorDep = Annotated[ActorContext, Depends(require_session_actor)]
 DetectActorDep = Annotated[ActorContext, require_actor_scope("detect:write")]
+PreflightAuthorizationDep = Annotated[None, Depends(authorize_preflight)]
 QuotaActorDep = Annotated[ActorContext, require_actor_scope("quota:read")]
 APIKeyActorDep = Annotated[ActorContext, Depends(require_api_key_actor)]
 

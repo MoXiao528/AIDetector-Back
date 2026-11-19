@@ -243,6 +243,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/detect/preflight:
+    post:
+      tags: [detection]
+      summary: Check text length without running detection or consuming quota
+      operationId: preflightDetection
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectionPreflightRequest'
+      responses:
+        '200':
+          description: Token readiness and approximate additional character count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionPreflightResponse'
+        '400':
+          description: Multiple credential types supplied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope does not allow detection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request or text exceeds 20000 Unicode code points
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/detect:
     post:
       tags: [detection]
@@ -1102,6 +1147,7 @@ paths:
     post:
       tags: [reports]
       summary: Export PDF report
+      description: Exports the authenticated account's saved detection snapshot. When requested, includes available writing characteristics and expressions whose saved positions can be verified in AI-labeled body segments.
       operationId: exportPdfReport
       security:
         - BearerAuth: []
@@ -1114,6 +1160,11 @@ paths:
       responses:
         '200':
           description: PDF report
+          headers:
+            Content-Disposition:
+              description: Attachment filename; exposed to cross-origin browser clients.
+              schema:
+                type: string
           content:
             application/pdf:
               schema:
@@ -1127,6 +1178,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: History not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request or unavailable/invalid saved analysis (REPORT_SOURCE_INVALID).
           content:
             application/json:
               schema:
@@ -2138,6 +2195,46 @@ components:
         historyId:
           type: integer
           minimum: 1
+        includeEvidence:
+          type: boolean
+          default: true
+          description: Include available writing characteristics and eligible expressions from the saved snapshot.
+        timeZone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: UTC
+          example: Asia/Shanghai
+          description: IANA time zone for report timestamps. Unknown zones fall back to UTC.
+    DetectionPreflightRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: Original text, at most 20000 Unicode code points; empty text is allowed.
+    DetectionPreflightResponse:
+      type: object
+      required: [characterCount, tokenCount, minimumTokens, ready, estimatedAdditionalCharacters]
+      properties:
+        characterCount:
+          type: integer
+          minimum: 0
+          description: Non-whitespace Unicode code points.
+        tokenCount:
+          type: integer
+          minimum: 0
+          description: Normalized input tokens including model special tokens.
+        minimumTokens:
+          type: integer
+          enum: [256]
+        ready:
+          type: boolean
+        estimatedAdditionalCharacters:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Approximate additional non-whitespace characters; zero when ready, null when unavailable.
     DetectRequest:
       type: object
       required:
@@ -2146,6 +2243,8 @@ components:
         text:
           type: string
           minLength: 1
+          maxLength: 20000
+          description: Must reach 256 model tokens including special tokens; check detect/preflight for readiness.
         functions:
           type: array
           items:
@@ -2167,6 +2266,7 @@ components:
           type: string
           minLength: 1
           maxLength: 20000
+          description: Must reach 256 model tokens including special tokens; check detect/preflight for readiness.
         functions:
           type: array
           items:
@@ -2181,6 +2281,11 @@ components:
       properties:
         text:
           type: string
+        type:
+          type: string
+          enum: [ai, human, too_short, metadata]
+          nullable: true
+          description: metadata identifies context-only titles or bylines; isAi=false and confidence=0 are placeholders, not a human classification.
         isAi:
           type: boolean
         confidence:
@@ -2270,7 +2375,7 @@ components:
         evidence:
           allOf:
             - $ref: '#/components/schemas/EvidenceResult'
-          description: Server snapshot; omitted outside serve mode, when absent or invalid.
+          description: Validated server snapshot, omitted when absent or invalid.
     HistorySummary:
       type: object
       required:
@@ -2313,7 +2418,8 @@ components:
           minimum: 1
         type:
           type: string
-          enum: [ai, human, too_short]
+          enum: [ai, human, too_short, metadata]
+          description: metadata is retained as context without an independent AI/Human judgment; probability and score are zero placeholders and must not be displayed as human scores.
         probability:
           type: number
           format: float
@@ -2449,7 +2555,7 @@ components:
         evidence:
           allOf:
             - $ref: '#/components/schemas/EvidenceResult'
-          description: Server snapshot; omitted outside serve mode, when absent or invalid.
+          description: Validated server snapshot, omitted when absent or invalid.
     HistoryListResponse:
       type: object
       required:
@@ -3179,6 +3285,71 @@ components:
       - offsets
       - reasons
       type: object
+    CorpusExpressionMatch:
+      type: object
+      additionalProperties: false
+      required: [expression, offsets]
+      properties:
+        expression:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        offsets:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/EvidenceOffset'
+          description: Half-open Unicode code point intervals in the original submitted text, sorted by (start, end), with start less than end.
+    CorpusExpressions:
+      type: object
+      additionalProperties: false
+      required: [status, lexiconVersion, lexiconSha256, expressions]
+      description: Saved expressions from the Chinese reference lexicon for the parent route domain.
+      properties:
+        status:
+          type: string
+          enum: [matched, no_match, unavailable]
+        lexiconVersion:
+          type: string
+          minLength: 1
+          pattern: '\S'
+          nullable: true
+        lexiconSha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          nullable: true
+        expressions:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            pattern: '\S'
+        matches:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CorpusExpressionMatch'
+          description: When present, exactly one item for each expression in the same order. Omitted for old snapshots or unavailable positions.
+      allOf:
+        - oneOf:
+            - properties:
+                lexiconVersion: {type: string}
+                lexiconSha256: {type: string}
+            - properties:
+                status: {enum: [unavailable]}
+                lexiconVersion: {type: string, nullable: true, enum: [null]}
+                lexiconSha256: {type: string, nullable: true, enum: [null]}
+        - oneOf:
+            - properties:
+                status: {enum: [matched]}
+                expressions: {minItems: 1}
+            - properties:
+                status: {enum: [no_match, unavailable]}
+                expressions: {maxItems: 0}
+              not:
+                required: [matches]
     EvidenceResult:
       additionalProperties: false
       properties:
@@ -3216,6 +3387,10 @@ components:
           - type: object
             nullable: true
             enum: [null]
+        corpusExpressions:
+          allOf:
+            - $ref: '#/components/schemas/CorpusExpressions'
+          description: Optional saved word-choice reference. Its domain is given by the parent Chinese route.
       required:
       - status
       - artifactVersion

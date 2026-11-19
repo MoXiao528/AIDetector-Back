@@ -1,0 +1,110 @@
+{
+  "inputText": "  值得关注的是  \r\n作者：仅作示例\r\n \t\r\n这不仅仅是一个试验。\r\n  😀青山依旧，神情平静。  \r\n这不仅仅是一个试验。\r这不仅仅是一个试验。\n很高兴。\r\n  值得商榷的是时间。  ",
+  "summary": {
+    "ai": 58,
+    "human": 42
+  },
+  "sentences": [
+    {
+      "raw": "  值得关注的是  ",
+      "startParagraph": 1,
+      "endParagraph": 1,
+      "type": "metadata"
+    },
+    {
+      "raw": "作者：仅作示例",
+      "startParagraph": 2,
+      "endParagraph": 2,
+      "type": "metadata"
+    },
+    {
+      "raw": "这不仅仅是一个试验。\n  😀青山依旧，神情平静。  \n这不仅仅是一个试验。",
+      "startParagraph": 3,
+      "endParagraph": 5,
+      "type": "ai"
+    },
+    {
+      "raw": "这不仅仅是一个试验。",
+      "startParagraph": 6,
+      "endParagraph": 6,
+      "type": "human"
+    },
+    {
+      "raw": "很高兴。",
+      "startParagraph": 7,
+      "endParagraph": 7,
+      "type": "too_short"
+    },
+    {
+      "raw": "  值得商榷的是时间。  ",
+      "startParagraph": 8,
+      "endParagraph": 8,
+      "type": "human"
+    }
+  ],
+  "corpusExpressions": {
+    "status": "matched",
+    "lexiconVersion": "1.0.0",
+    "lexiconSha256": "ea2793dd9b6bbc045194ccd8db8ab018006519dd961629cc879cd0a9cfe80ced",
+    "expressions": [
+      "仅作示例",
+      "不仅仅是",
+      "青山依旧",
+      "神情",
+      "很高兴",
+      "值得关注的是",
+      "值得商榷的是"
+    ],
+    "matches": [
+      {
+        "expression": "仅作示例",
+        "offsets": [
+          { "start": 15, "end": 19 }
+        ]
+      },
+      {
+        "expression": "不仅仅是",
+        "offsets": [
+          { "start": 26, "end": 30 },
+          { "start": 55, "end": 59 },
+          { "start": 66, "end": 70 }
+        ]
+      },
+      {
+        "expression": "青山依旧",
+        "offsets": [
+          { "start": 40, "end": 44 }
+        ]
+      },
+      {
+        "expression": "神情",
+        "offsets": [
+          { "start": 45, "end": 47 }
+        ]
+      },
+      {
+        "expression": "很高兴",
+        "offsets": [
+          { "start": 76, "end": 79 }
+        ]
+      },
+      {
+        "expression": "值得关注的是",
+        "offsets": [
+          { "start": 2, "end": 8 }
+        ]
+      },
+      {
+        "expression": "值得商榷的是",
+        "offsets": [
+          { "start": 84, "end": 90 }
+        ]
+      }
+    ]
+  },
+  "expectedExpressions": [
+    "不仅仅是",
+    "青山依旧",
+    "神情"
+  ]
+}

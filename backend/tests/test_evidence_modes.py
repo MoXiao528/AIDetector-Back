@@ -1,4 +1,4 @@
-"""EV4-03 mode/output checks; Router responses and stored snapshots are fixtures."""
+"""Evidence output and persistence checks using server-side fixtures."""
 
 import copy
 import hashlib
@@ -32,7 +32,7 @@ from app.models.detection import Detection
 from app.models.guest_session import GuestSession
 from app.models.quota_usage import QuotaUsage
 from app.schemas.detection import DetectionItem, DetectionRequest, DetectionResponse
-from app.schemas.evidence import EvidenceResult, project_public_evidence
+from app.schemas.evidence import EvidenceResult, validate_evidence_snapshot
 from app.schemas.history import HistoryRecordCreate, project_public_meta_json
 from app.services.evidence_engine import EvidenceEngine
 from app.services.history_service import HistoryService
@@ -48,7 +48,6 @@ artifacts = engine_tests.artifacts
 comparison_input = engine_tests.comparison_input
 ready_engine = engine_tests.ready_engine
 
-MODES = ["off", "shadow", "serve", "invalid-mode"]
 DETECT_PATHS = [
     "/api/v1/detect",
     "/api/v1/scan/detect",
@@ -61,7 +60,6 @@ DETECT_PATHS = [
 @pytest.fixture(autouse=True)
 def optional_settings(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings, "detect_evidence_mode", "off")
     monkeypatch.setattr(settings, "detect_evidence_bundle_path", "")
     monkeypatch.setattr(settings, "detect_evidence_bundle_sha256", "")
 
@@ -94,13 +92,11 @@ def detection_response(evidence=None):
     )
 
 
-@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("path", DETECT_PATHS)
-def test_actual_response_serialization_gates_evidence_only(
-    db_session, monkeypatch, optional_settings, snapshot, mode, path
+def test_actual_response_serialization_exposes_evidence_on_detect(
+    db_session, monkeypatch, snapshot, path
 ):
     baseline = detection_response().model_dump(mode="json", by_alias=True)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
     before = copy.deepcopy(snapshot)
 
     async def fixture_result(*args, **kwargs):
@@ -118,8 +114,7 @@ def test_actual_response_serialization_gates_evidence_only(
         assert result.status_code == 200
         data = result.json()
         if path == "/api/v1/detect":
-            if mode == "serve":
-                assert data.pop("evidence") == snapshot
+            assert data.pop("evidence") == snapshot
             assert (
                 data == baseline
             )  # Includes the old result:null and other null fields.
@@ -131,44 +126,10 @@ def test_actual_response_serialization_gates_evidence_only(
         app.dependency_overrides.clear()
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_shadow_and_serve_share_real_local_calculation(
-    tmp_path, artifacts, comparison_input, monkeypatch, optional_settings, mode
-):
-    path, sha = write_bundle(tmp_path, artifacts)
-    engine = EvidenceEngine(mode=mode, bundle_path=str(path), bundle_sha256=sha)
-    result = engine.analyze(comparison_input["text"], response(), main_label="AI")
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
-    public = detection_response(result).model_dump(mode="json")
-    if mode in {"shadow", "serve"}:
-        assert result["status"] == "partial"
-        assert EvidenceResult.model_validate(result).model_dump() == result
-        other = EvidenceEngine(
-            mode="serve" if mode == "shadow" else "shadow",
-            bundle_path=str(path),
-            bundle_sha256=sha,
-        )
-        assert (
-            other.analyze(comparison_input["text"], response(), main_label="AI")
-            == result
-        )
-    else:
-        assert comparison_input["calls"] == []
-    assert ("evidence" in public) == (mode == "serve")
-    assert (
-        public["score"],
-        public["raw_score"],
-        public["threshold"],
-        public["label"],
-    ) == (0.72, 0.72, 0.5, "ai")
-
-
-@pytest.mark.parametrize("mode", MODES)
 def test_lifespan_loads_once_and_never_runs_analysis(
-    tmp_path, artifacts, monkeypatch, optional_settings, mode
+    tmp_path, artifacts, monkeypatch
 ):
     path, sha = write_bundle(tmp_path, artifacts)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
     monkeypatch.setattr(get_settings(), "detect_evidence_bundle_path", str(path))
     monkeypatch.setattr(get_settings(), "detect_evidence_bundle_sha256", sha)
     reads = []
@@ -186,12 +147,11 @@ def test_lifespan_loads_once_and_never_runs_analysis(
     monkeypatch.setattr(EvidenceEngine, "analyze", forbidden_analysis)
     with TestClient(app) as client:
         engine = app.state.evidence_engine
-        assert engine.status == {"off": "off", "invalid-mode": "failed"}.get(
-            mode, "ready"
-        )
+        assert engine.status == "ready"
+        assert engine.lexicon_matcher is not None
         assert client.get("/").status_code == client.get("/").status_code == 200
         assert app.state.evidence_engine is engine
-    assert len(reads) == (1 if mode in {"shadow", "serve"} else 0)
+    assert len(reads) == 1
     assert app.state.evidence_engine is None
 
 
@@ -208,17 +168,22 @@ def test_unexpected_optional_initialization_failure_does_not_break_app(
     assert "private bundle path" not in caplog.text
 
 
-def test_off_app_lifespan_does_not_import_feature_module():
+def test_unavailable_bundle_lifespan_does_not_import_feature_module():
     script = """
 import asyncio, sys
 sys.path.insert(0, sys.argv[1])
 from app.main import app, lifespan, settings
-settings.detect_evidence_mode = 'off'
+from app.services import token_chunker
+class FakeTokenizer:
+    def encode(self, text, *, add_special_tokens=True):
+        body = list(range(len(text.split())))
+        return [-1, *body, -2] if add_special_tokens else body
+token_chunker.get_tokenizer = lambda model_name=None: FakeTokenizer()
 settings.detect_evidence_bundle_path = 'unused-private-path'
 settings.detect_evidence_bundle_sha256 = 'invalid-unused-sha'
 async def check():
     async with lifespan(app):
-        assert app.state.evidence_engine.status == 'off'
+        assert app.state.evidence_engine.status == 'failed'
         assert 'app.services.evidence_features' not in sys.modules
 asyncio.run(check())
 """
@@ -253,7 +218,6 @@ asyncio.run(check())
 def test_malformed_snapshot_is_omitted_without_changing_main_result(
     snapshot, optional_settings, monkeypatch, damage
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     if damage == "extra":
         snapshot["path"] = "private-path"
     elif damage == "nested_extra":
@@ -283,7 +247,6 @@ def test_malformed_snapshot_is_omitted_without_changing_main_result(
 def test_invalid_reference_extent_omits_only_evidence(
     ready_engine, comparison_input, monkeypatch, extent
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     result = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
     result["signals"][0]["referenceExtent"] = extent
     assert detection_response(result).model_dump() == detection_response().model_dump()
@@ -292,7 +255,6 @@ def test_invalid_reference_extent_omits_only_evidence(
 def test_reference_extent_allows_a_point_and_revalidates_existing_instances(
     ready_engine, comparison_input, monkeypatch
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     result = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
     result["signals"][0].update(
         referenceExtent=[0.5, 0.5],
@@ -302,15 +264,6 @@ def test_reference_extent_allows_a_point_and_revalidates_existing_instances(
     assert detection_response(parsed).model_dump(mode="json")["evidence"] == result
     parsed.signals[0].referenceExtent[0] = 1.0
     assert "evidence" not in detection_response(parsed).model_dump()
-
-
-def test_serializing_prebuilt_response_after_switch_off_hides_evidence(
-    snapshot, optional_settings, monkeypatch
-):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
-    built = detection_response(snapshot)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "off")
-    assert "evidence" not in built.model_dump(mode="json")
 
 
 @pytest.mark.parametrize(
@@ -327,7 +280,6 @@ def test_serializing_prebuilt_response_after_switch_off_hides_evidence(
 def test_real_engine_degradation_remains_a_valid_public_result(
     ready_engine, monkeypatch, failure
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     status = "unsupported" if failure == "unsupported_language" else "failed"
     result = ready_engine.analyze(
         LONG_TEXT, response(status, reason=failure), main_label="AI"
@@ -346,7 +298,6 @@ def test_real_engine_degradation_remains_a_valid_public_result(
 def test_computation_failures_do_not_break_public_response(
     ready_engine, comparison_input, monkeypatch, failure
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
 
     def fail(*args, **kwargs):
         raise RuntimeError("private input and exception")
@@ -366,9 +317,7 @@ def test_computation_failures_do_not_break_public_response(
     assert "private input" not in json.dumps(public)
 
 
-@pytest.mark.parametrize("mode", ["shadow", "serve"])
-def test_bad_bundle_does_not_break_lifespan_or_main_result(monkeypatch, tmp_path, mode):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
+def test_bad_bundle_does_not_break_lifespan_or_main_result(monkeypatch, tmp_path):
     monkeypatch.setattr(
         get_settings(), "detect_evidence_bundle_path", str(tmp_path / "missing.bundle")
     )
@@ -379,15 +328,14 @@ def test_bad_bundle_does_not_break_lifespan_or_main_result(monkeypatch, tmp_path
         assert client.get("/").status_code == 200
         result = engine.analyze(LONG_TEXT, response(), main_label="AI")
         public = detection_response(result).model_dump(mode="json")
-        assert ("evidence" in public) == (mode == "serve")
+        assert public["evidence"]["status"] == "failed"
         assert public["score"] == 0.72 and public["label"] == "ai"
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("mode", MODES)
 async def test_new_detection_replay_history_and_admin_boundaries(
     db_session, unique_email, monkeypatch, optional_settings,
-    ready_engine, comparison_input, mode
+    ready_engine, comparison_input
 ):
     # Stored snapshots have already passed this serializer at creation time.
     snapshot = EvidenceResult.model_validate(
@@ -399,7 +347,6 @@ async def test_new_detection_replay_history_and_admin_boundaries(
         json.dumps(snapshot, sort_keys=True).encode()
     ).hexdigest()
     actor = await _user_actor(db_session, unique_email)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
     key = uuid4()
     calls = []
 
@@ -458,12 +405,10 @@ async def test_new_detection_replay_history_and_admin_boundaries(
         _detection_to_history_response(stored),
     ):
         public = result.model_dump(mode="json", by_alias=True)
-        assert ("evidence" in public) == (mode == "serve")
-        if mode == "serve":
-            assert public["evidence"] == snapshot
-            assert hashlib.sha256(
-                json.dumps(public["evidence"], sort_keys=True).encode()
-            ).hexdigest() == snapshot_hash
+        assert public["evidence"] == snapshot
+        assert hashlib.sha256(
+            json.dumps(public["evidence"], sort_keys=True).encode()
+        ).hexdigest() == snapshot_hash
     assert replay.model_dump(exclude={"evidence"}) == first.model_dump(
         exclude={"evidence"}
     )
@@ -507,9 +452,7 @@ async def test_new_detection_replay_history_and_admin_boundaries(
                     assert result.status_code == 200
                     data = result.json()
                     record = data["items"][0] if path.endswith("history") else data
-                    assert ("evidence" in record) == (
-                        mode == "serve" and candidate == snapshot
-                    )
+                    assert ("evidence" in record) == (candidate == snapshot)
                 rebuilt = await detection_api.detect(
                     payload=request,
                     db=db_session,
@@ -529,7 +472,6 @@ async def test_client_history_cannot_write_server_evidence(
     db_session, unique_email, monkeypatch, optional_settings, snapshot
 ):
     actor = await _user_actor(db_session, unique_email)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     payload = HistoryRecordCreate.model_validate(
         {
             "title": "manual",
@@ -557,7 +499,7 @@ async def test_client_history_cannot_write_server_evidence(
     )
 
 
-def test_modes_do_not_load_artifacts_while_projecting(
+def test_snapshot_projection_does_not_load_artifacts(
     ready_engine, comparison_input, monkeypatch, optional_settings
 ):
     snapshot = ready_engine.analyze(comparison_input["text"], response(), main_label="AI")
@@ -569,16 +511,9 @@ def test_modes_do_not_load_artifacts_while_projecting(
         raise AssertionError("Projection must not load an artifact")
 
     monkeypatch.setattr(Path, "open", forbidden)
-    for mode in MODES:
-        monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
-        projected = project_public_evidence(snapshot)
-        assert (projected is not None) == (mode == "serve")
-        if projected is not None:
-            assert projected.model_dump(mode="json") == snapshot
-            assert (
-                EvidenceResult.model_validate(projected).model_dump(mode="json")
-                == snapshot
-            )
+    projected = validate_evidence_snapshot(snapshot)
+    assert projected.model_dump(mode="json") == snapshot
+    assert EvidenceResult.model_validate(projected).model_dump(mode="json") == snapshot
     assert "evidence" not in project_public_meta_json({"evidence": object()})
 
 
@@ -588,7 +523,6 @@ async def test_invalid_computed_snapshot_is_omitted_before_database_write(
     db_session, unique_email, monkeypatch, snapshot, failure
 ):
     actor = await _user_actor(db_session, unique_email)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     candidate = copy.deepcopy(snapshot)
     if failure == "extra_field":
         candidate["private"] = "must not persist"
@@ -610,7 +544,7 @@ async def test_invalid_computed_snapshot_is_omitted_before_database_write(
         calls.append("main")
         return _fake_result()
 
-    engine = EvidenceEngine(mode="serve")
+    engine = EvidenceEngine()
     monkeypatch.setattr(engine, "run", run)
     monkeypatch.setattr(repre_guard_client, "detect", main_detect)
     request = Request(
@@ -642,11 +576,10 @@ async def test_invalid_computed_snapshot_is_omitted_before_database_write(
 
 
 @pytest.mark.anyio
-async def test_saved_snapshot_survives_mode_bundle_history_edits_and_claim(
+async def test_saved_snapshot_survives_bundle_history_edits_and_claim(
     db_session, unique_email, monkeypatch, snapshot
 ):
     actor = await _user_actor(db_session, unique_email)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "shadow")
 
     async def run(*args, **kwargs):
         return copy.deepcopy(snapshot)
@@ -654,7 +587,7 @@ async def test_saved_snapshot_survives_mode_bundle_history_edits_and_claim(
     async def main_detect(text):
         return _fake_result()
 
-    engine = EvidenceEngine(mode="serve")
+    engine = EvidenceEngine()
     monkeypatch.setattr(engine, "run", run)
     monkeypatch.setattr(repre_guard_client, "detect", main_detect)
     request = Request(
@@ -672,7 +605,7 @@ async def test_saved_snapshot_survives_mode_bundle_history_edits_and_claim(
     )
     first = await detection_api.detect(**kwargs)
     stored = db_session.get(Detection, first.detection_id)
-    assert first.evidence is None
+    assert first.evidence.model_dump(mode="json") == snapshot
     assert stored.meta_json["evidence"] == snapshot
     assert stored.meta_json["artifactVersion"] == snapshot["artifactVersion"]
     before = copy.deepcopy(stored.meta_json)
@@ -686,18 +619,14 @@ async def test_saved_snapshot_survives_mode_bundle_history_edits_and_claim(
         get_settings(), "detect_evidence_bundle_path", "missing-new-bundle"
     )
     monkeypatch.setattr(get_settings(), "detect_evidence_bundle_sha256", "f" * 64)
-    for mode in ("off", "serve", "shadow", "serve"):
-        monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
-        replay = await detection_api.detect(**kwargs)
-        detail = await get_history(
-            history_id=stored.id, db=db_session, current_user=actor.user
-        )
-        for value in (replay, detail):
-            assert value.model_dump(mode="json").get("evidence") == (
-                snapshot if mode == "serve" else None
-            )
-        db_session.refresh(stored)
-        assert stored.meta_json == before
+    replay = await detection_api.detect(**kwargs)
+    detail = await get_history(
+        history_id=stored.id, db=db_session, current_user=actor.user
+    )
+    for value in (replay, detail):
+        assert value.model_dump(mode="json")["evidence"] == snapshot
+    db_session.refresh(stored)
+    assert stored.meta_json == before
 
     service = HistoryService(db_session)
     service.update_history(
@@ -721,6 +650,44 @@ async def test_saved_snapshot_survives_mode_bundle_history_edits_and_claim(
     assert stored.meta_json == before and stored.user_id == actor.user.id
 
 
+def test_invalid_corpus_positions_preserve_saved_evidence_and_word_list(ready_engine):
+    text = "😀值得关注的是，研究成果。值得关注的是。"
+    routed = response()
+    routed["route"]["language"] = "zh"
+    evidence = ready_engine.analyze(text, routed, main_label="AI")
+    expressions = ["值得关注的是", "研究成果"]
+    corpus = {
+        "status": "matched",
+        "lexiconVersion": "1.0.0",
+        "lexiconSha256": "f" * 64,
+        "expressions": expressions,
+    }
+    good_matches = [
+        {"expression": expressions[0], "offsets": [{"start": 1, "end": 7}, {"start": 13, "end": 19}]},
+        {"expression": expressions[1], "offsets": [{"start": 8, "end": 12}]},
+    ]
+    legacy = {**evidence, "corpusExpressions": corpus}
+    valid = {**evidence, "corpusExpressions": {**corpus, "matches": good_matches}}
+    assert validate_evidence_snapshot(legacy).model_dump() == legacy
+    assert validate_evidence_snapshot(valid).model_dump() == valid
+
+    for bad_matches in (
+        None,
+        [],
+        good_matches[::-1],
+        good_matches[:1],
+        [good_matches[0], good_matches[0]],
+        [{**good_matches[0], "offsets": good_matches[0]["offsets"][::-1]}, good_matches[1]],
+        [{**good_matches[0], "offsets": good_matches[0]["offsets"][:1] * 2}, good_matches[1]],
+        [{**good_matches[0], "offsets": []}, good_matches[1]],
+        [{**good_matches[0], "offsets": [{"start": True, "end": 6}]}, good_matches[1]],
+        [{**good_matches[0], "offsets": [{"start": 6, "end": 6}]}, good_matches[1]],
+    ):
+        malformed = {**evidence, "corpusExpressions": {**corpus, "matches": bad_matches}}
+        assert validate_evidence_snapshot(malformed).model_dump() == legacy
+        assert malformed["corpusExpressions"]["matches"] == bad_matches
+
+
 def test_openapi_exposes_evidence_only_on_output_models():
     schemas = app.openapi()["components"]["schemas"]
     for name in ("DetectionResponse", "HistoryRecordResponse"):
@@ -737,6 +704,13 @@ def test_openapi_exposes_evidence_only_on_output_models():
 
     contract_path = Path(__file__).resolve().parents[2] / "contract" / "openapi.yaml"
     contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    for components in (schemas, contract["components"]["schemas"]):
+        corpus = components["CorpusExpressions"]
+        assert "matches" not in corpus["required"]
+        assert corpus["properties"]["matches"]["type"] == "array"
+        match_schema = components["CorpusExpressionMatch"]
+        assert set(match_schema["required"]) == {"expression", "offsets"}
+        assert match_schema["properties"]["offsets"]["items"]["$ref"].endswith("/EvidenceOffset")
     notice = contract["components"]["schemas"]["EvidenceSignal"]["properties"]["notice"]
     assert notice["nullable"] is True
     # Nullable does not override enum: normal Engine results contain notice:null.

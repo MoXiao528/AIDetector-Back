@@ -5,6 +5,11 @@
 - `run_loadtest.py`: burst load test runner.
 - `detect_100_users.py`: quota-aware detect-only load test for the online site.
 - `scenarios.example.json`: example config for the online site.
+- `preflight_interference.py`: local-only comparison of detection latency with concurrent length preflights. Run inside the API container with `PYTHONPATH=/app`; it creates dedicated ordinary test users, performs real detections, and removes only its own users and records after no requests remain processing. JWTs stay in memory. Use a unique `--output` path; it refuses to overwrite reports. `--self-check` runs pure checks without database or HTTP access.
+
+Detection inputs must reach 256 model tokens (including special tokens). Character count is not a token guarantee: check each custom sample with `POST /api/v1/detect/preflight` before the timed run. The `--chars` option controls sample size only; it does not replace the server's token validation.
+
+See the [2026-11-11 preflight interference report](../../docs/preflight-interference-2026-11-11.md) for the local before/after measurements and their limitations.
 
 ## What it outputs
 

@@ -3,11 +3,25 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator
 
 from app.schemas.base import SchemaBase
 from app.schemas.evidence import EvidenceResponseBase
 from app.schemas.history import Analysis, PublicDetectionLabel, project_public_meta_json
+
+
+class DetectionPreflightRequest(SchemaBase):
+    text: str
+
+
+class DetectionPreflightResponse(SchemaBase):
+    character_count: int = Field(..., ge=0, description="Non-whitespace Unicode code points.")
+    token_count: int = Field(..., ge=0, description="Normalized input tokens, including model special tokens.")
+    minimum_tokens: int = Field(..., ge=1)
+    ready: bool
+    estimated_additional_characters: int | None = Field(
+        ..., ge=0, description="Approximate additional non-whitespace characters; null when unavailable."
+    )
 
 
 class DetectionRequest(SchemaBase):
@@ -110,8 +124,8 @@ class DetectionItem(SchemaBase):
 
     @field_validator("meta_json", mode="before")
     @classmethod
-    def normalize_public_meta_json(cls, value: Any) -> Any:
-        return project_public_meta_json(value)
+    def normalize_public_meta_json(cls, value: Any, info: ValidationInfo) -> Any:
+        return project_public_meta_json(value, info.data.get("input_text"))
 
     @classmethod
     def from_orm_detection(cls, detection):
@@ -121,7 +135,7 @@ class DetectionItem(SchemaBase):
             score=detection.score,
             input_text=detection.input_text,
             created_at=detection.created_at,
-            meta_json=detection.meta_json,
+            meta_json=project_public_meta_json(detection.meta_json, detection.input_text, detection.editor_html),
         )
 
     model_config = ConfigDict(from_attributes=True)

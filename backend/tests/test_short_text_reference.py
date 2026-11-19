@@ -97,7 +97,7 @@ def load_engine(tmp_path, artifacts, short_reference):
             ("short_text_reference.json", v1.encoded(short_reference)),
         ],
     )
-    return EvidenceEngine(mode="shadow", bundle_path=str(path), bundle_sha256=digest)
+    return EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
 
 
 @pytest.fixture
@@ -419,7 +419,7 @@ def test_real_optional_bundle_smoke_without_router_model():
     digest = hashlib.sha256(data).hexdigest()
     assert digest == "f04fee602a09850adae31e5e78ea9926a27cd96663aeeeaeaafb11d8a959fb0e"
     engine = EvidenceEngine(
-        mode="shadow", bundle_path=bundle_path, bundle_sha256=digest
+        bundle_path=bundle_path, bundle_sha256=digest
     )
     assert engine.status == "ready", engine.reason
     payload = chinese_response()

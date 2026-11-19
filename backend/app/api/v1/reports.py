@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Response, status
 
 from app.db.deps import ActiveMemberDep, SessionDep
 from app.schemas import ReportPdfContent, ReportPdfRequest
-from app.schemas.history import Analysis
+from app.schemas.evidence import validate_evidence_snapshot
+from app.schemas.history import project_document_analysis
 from app.services.history_service import HistoryService
 from app.services.report_pdf import build_report_filename, build_report_pdf
 
@@ -29,7 +30,8 @@ async def export_pdf_report(
             detail={"code": "HISTORY_NOT_FOUND", "message": "History record not found", "detail": payload.history_id},
         )
 
-    analysis_raw = (detection.meta_json or {}).get("analysis")
+    meta = detection.meta_json if isinstance(detection.meta_json, dict) else {}
+    analysis_raw = meta.get("analysis")
     if not isinstance(analysis_raw, dict):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -37,17 +39,29 @@ async def export_pdf_report(
         )
 
     try:
-        analysis = Analysis.model_validate(analysis_raw)
+        analysis = project_document_analysis(analysis_raw, detection.input_text, detection.editor_html)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "REPORT_SOURCE_INVALID", "message": "History analysis is invalid", "detail": detection.id},
         ) from exc
 
+    include_evidence = payload.include_evidence
+    options = meta.get("options")
+    model = options.get("repre_guard") if isinstance(options, dict) else None
+    model_name = model.get("model_name") if isinstance(model, dict) else None
+
     report_content = ReportPdfContent(
         report_type=payload.report_type,
         generated_at=datetime.now(timezone.utc),
+        detected_at=detection.created_at,
+        title=detection.title or "",
+        chars_used=detection.chars_used,
+        model_name=model_name if isinstance(model_name, str) else None,
         locale=payload.locale,
+        time_zone=payload.time_zone,
+        include_evidence=include_evidence,
+        evidence=validate_evidence_snapshot(meta.get("evidence")) if include_evidence else None,
         history_id=detection.id,
         detection_id=detection.id,
         functions=detection.functions_used or ["scan"],

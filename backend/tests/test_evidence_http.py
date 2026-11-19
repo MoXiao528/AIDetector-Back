@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from app.api.v1 import detections as detection_api
 from app.core.config import get_settings
-from app.db.deps import get_current_actor, get_current_user
+from app.db.deps import authorize_preflight, get_current_actor, get_current_user
 from app.db.session import get_db
 from app.main import app
 from app.models.detection import Detection
@@ -43,7 +43,6 @@ committed_db_session = idempotency_tests.committed_db_session
 @pytest.fixture(autouse=True)
 def optional_settings(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings, "detect_evidence_mode", "off")
     monkeypatch.setattr(settings, "detect_evidence_bundle_path", "")
     monkeypatch.setattr(settings, "detect_evidence_bundle_sha256", "")
     monkeypatch.setattr(settings, "detect_evidence_timeout_seconds", "12")
@@ -60,7 +59,6 @@ async def mock_client(handler, endpoint="https://router.example/prefix/detect"):
 @pytest.mark.parametrize("timeout", ["invalid", "NaN", "inf", "0", "-1", "60.01", ""])
 def test_invalid_timeout_disables_only_evidence(monkeypatch, timeout):
     settings = get_settings()
-    monkeypatch.setattr(settings, "detect_evidence_mode", "serve")
     monkeypatch.setattr(settings, "detect_evidence_timeout_seconds", timeout)
     with TestClient(app) as client:
         assert client.get("/").status_code == 200
@@ -71,7 +69,7 @@ def test_invalid_timeout_disables_only_evidence(monkeypatch, timeout):
 @pytest.mark.anyio
 async def test_bad_bundle_does_not_call_router(tmp_path, artifacts):
     path, _ = write_bundle(tmp_path, artifacts)
-    engine = EvidenceEngine(mode="serve", bundle_path=str(path), bundle_sha256="f" * 64)
+    engine = EvidenceEngine(bundle_path=str(path), bundle_sha256="f" * 64)
 
     def forbidden(request):
         pytest.fail("Bad Bundle must not contact Router")
@@ -342,15 +340,66 @@ async def test_http_time_is_part_of_comparison_budget(ready_engine, monkeypatch)
         assert task.result()["quality"]["reasons"] == ["comparison_failed"]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["exception", "timeout"])
+async def test_corpus_match_failure_preserves_completed_comparison(
+    ready_engine, monkeypatch, failure
+):
+    entered, release = Event(), Event()
+    payload = response()
+    payload["route"]["language"] = "zh"
+    text = "值得关注的是，这不仅仅是新的研究成果。"
+    comparison = ready_engine.analyze(text, payload, main_label="AI")
+    assert comparison["status"] == "insufficient"
+
+    def match(text, *, language, domain):
+        assert (language, domain) == ("zh", "news")
+        entered.set()
+        if failure == "timeout":
+            assert release.wait(5)
+        raise RuntimeError("private lexicon failure")
+
+    ready_engine.lexicon_matcher = SimpleNamespace(match=match, version="1.0.0", sha256="3" * 64)
+    ready_engine.timeout_seconds = 0.2 if failure == "timeout" else 2
+    monkeypatch.setattr(ready_engine, "analyze", lambda *a, **k: dict(comparison))
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=payload)
+
+    async with mock_client(handler) as client:
+        try:
+            result = await ready_engine.run(text, main_label="AI", client=client)
+            assert entered.is_set()
+            assert result.pop("corpusExpressions") == {
+                "status": "unavailable",
+                "lexiconVersion": "1.0.0",
+                "lexiconSha256": "3" * 64,
+                "expressions": [],
+            }
+            assert result == comparison
+            if failure == "timeout":
+                busy = await ready_engine.run(text, main_label="AI", client=client)
+                assert busy["quality"]["reasons"] == ["busy"]
+            assert len(calls) == 1
+        finally:
+            release.set()
+            await asyncio.wait_for(ready_engine.drain(), 2)
+        assert ready_engine._task is None
+
+
 @contextmanager
-def loopback_router(calls):
+def loopback_router(calls, *, language):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["content-length"]))
             calls.append(
                 (self.path, self.headers["X-RepreGuard-Token"], json.loads(body))
             )
-            encoded = json.dumps(response()).encode()
+            payload = response()
+            payload["route"]["language"] = language
+            encoded = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
@@ -372,14 +421,15 @@ def loopback_router(calls):
 
 
 @pytest.mark.parametrize(
-    "mode,path,timeout",
+    "path,case",
     [
-        ("serve", "/api/v1/detect", "12"),
-        ("shadow", "/api/v1/detect", "12"),
-        ("off", "/api/v1/detect", "invalid"),
-        ("serve", "/api/v1/detect", "invalid"),
+        ("/api/v1/detect", "en"),
+        ("/api/v1/detect", "zh"),
+        ("/api/v1/detect", "zh_lexicon_invalid"),
+        ("/api/v1/detect", "invalid_timeout"),
+        ("/api/v1/detect", "missing_bundle"),
         *[
-            ("serve", path, "12")
+            (path, "en")
             for path in [
                 "/api/v1/scan/detect",
                 "/api/v1/scan",
@@ -389,17 +439,28 @@ def loopback_router(calls):
         ],
     ],
 )
-def test_whole_text_over_real_http_modes_lease_and_replay(
-    db_session, unique_email, tmp_path, artifacts, monkeypatch, mode, path, timeout
+def test_whole_text_over_real_http_lease_and_replay(
+    db_session, unique_email, tmp_path, artifacts, monkeypatch, path, case
 ):
     bundle, sha = write_bundle(tmp_path, artifacts)
+    language = "zh" if case.startswith("zh") else "en"
+    ready = case not in {"invalid_timeout", "missing_bundle"}
     settings = get_settings()
-    monkeypatch.setattr(settings, "detect_evidence_mode", mode)
-    monkeypatch.setattr(settings, "detect_evidence_bundle_path", str(bundle))
+    monkeypatch.setattr(
+        settings, "detect_evidence_bundle_path",
+        str(tmp_path / "missing.bundle" if case == "missing_bundle" else bundle),
+    )
     monkeypatch.setattr(settings, "detect_evidence_bundle_sha256", sha)
-    monkeypatch.setattr(settings, "detect_evidence_timeout_seconds", timeout)
+    monkeypatch.setattr(settings, "detect_evidence_timeout_seconds", "invalid" if case == "invalid_timeout" else "12")
     monkeypatch.setattr(settings, "detect_request_timeout", 120)
     monkeypatch.setattr(settings, "detect_service_timeout", 60)
+
+    if case == "zh_lexicon_invalid":
+        def bad_lexicon():
+            raise ValueError("Lexicon bytes or SHA mismatch")
+
+        monkeypatch.setattr("app.main.LexiconMatcher", bad_lexicon)
+
     main_calls, router_calls, leases = [], [], []
     original_reserve = detection_api.reserve_detection_request
 
@@ -418,12 +479,23 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_actor] = lambda: actor
     app.dependency_overrides[get_current_user] = lambda: actor.user
-    text = ("  😀\r\n" + (LONG_TEXT + "\r\n\r\n") * 70)[:20000]
+    app.dependency_overrides[authorize_preflight] = lambda: None
+    expression_text = "值得关注的是，进一步研究仍很重要。这不仅仅是新的研究成果。\n\n" if language == "zh" else ""
+    text = ("  😀\r\n" + expression_text + (LONG_TEXT + "\r\n\r\n") * 70)[:20000]
     key = {"Idempotency-Key": str(uuid4())}
     try:
-        with loopback_router(router_calls) as endpoint:
+        with loopback_router(router_calls, language=language) as endpoint:
             monkeypatch.setattr(repre_guard_client, "detect_url", endpoint)
             with TestClient(app) as client:
+                if case == "zh":
+                    def unexpected_match(*args, **kwargs):
+                        pytest.fail("Preflight must not match corpus expressions")
+
+                    with monkeypatch.context() as patch:
+                        patch.setattr(app.state.evidence_engine.lexicon_matcher, "match", unexpected_match)
+                        preflight = client.post("/api/v1/detect/preflight", json={"text": text})
+                    assert preflight.status_code == 200 and preflight.json()["ready"]
+                    assert main_calls == router_calls == []
                 first = client.post(path, json={"text": text}, headers=key)
                 assert first.status_code == 200
                 count = len(main_calls)
@@ -439,13 +511,33 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
                         data["threshold"],
                     ) == pytest.approx((0.72, 0.72, 0.5))
                     assert data["label"] == "ai"
-                    if mode == "serve":
-                        assert data["evidence"]["status"] == (
-                            "failed" if timeout == "invalid" else "partial"
-                        )
-                        EvidenceResult.model_validate(data["evidence"])
+                    assert data["evidence"]["status"] == (
+                        "insufficient" if language == "zh" else "partial" if ready else "failed"
+                    )
+                    EvidenceResult.model_validate(data["evidence"])
+                    if case == "zh":
+                        expressions = ["重要", "进一步", "不仅仅是", "值得关注的是"]
+                        assert data["evidence"]["corpusExpressions"] == {
+                            "status": "matched",
+                            "lexiconVersion": "1.0.0",
+                            "lexiconSha256": "ea2793dd9b6bbc045194ccd8db8ab018006519dd961629cc879cd0a9cfe80ced",
+                            "expressions": expressions,
+                            "matches": [
+                                {
+                                    "expression": expression,
+                                    "offsets": [{"start": start, "end": start + len(expression)}],
+                                }
+                                for expression in expressions
+                                for start in [text.index(expression)]
+                            ],
+                        }
+                    elif case == "zh_lexicon_invalid":
+                        assert data["evidence"]["corpusExpressions"] == {
+                            "status": "unavailable", "lexiconVersion": None,
+                            "lexiconSha256": None, "expressions": [],
+                        }
                     else:
-                        assert "evidence" not in data
+                        assert "corpusExpressions" not in data["evidence"]
                 assert second.json().get("evidence") == data.get("evidence")
                 stored = db_session.scalar(
                     select(Detection).where(Detection.actor_id == actor.actor_id)
@@ -458,12 +550,9 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
                         if history_path.endswith("history")
                         else history.json()
                     )
-                    assert record.get("evidence") == (
-                        stored.meta_json.get("evidence") if mode == "serve" else None
-                    )
+                    assert record["evidence"] == stored.meta_json["evidence"]
                 assert len(main_calls) == count
-        enabled = mode != "off" and timeout != "invalid"
-        assert leases == [162 if enabled else 150] * 2
+        assert leases == [162 if ready else 150] * 2
         assert router_calls == (
             [
                 (
@@ -472,24 +561,15 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
                     {"text": text, "action": "evidence"},
                 )
             ]
-            if enabled
+            if ready
             else []
         )
         stored = db_session.scalar(
             select(Detection).where(Detection.actor_id == actor.actor_id)
         )
         assert stored.input_text == text
-        if mode == "off":
-            assert (
-                "evidence" not in stored.meta_json
-                and "artifactVersion" not in stored.meta_json
-            )
-        else:
-            EvidenceResult.model_validate(stored.meta_json["evidence"])
-            assert (
-                stored.meta_json["artifactVersion"]
-                == stored.meta_json["evidence"]["artifactVersion"]
-            )
+        EvidenceResult.model_validate(stored.meta_json["evidence"])
+        assert stored.meta_json.get("artifactVersion") == stored.meta_json["evidence"]["artifactVersion"]
         assert (
             db_session.scalar(
                 select(func.count(Detection.id)).where(
@@ -508,13 +588,13 @@ def test_whole_text_over_real_http_modes_lease_and_replay(
 @pytest.mark.parametrize(
     "gateway_behavior", ["passthrough", "discard_action", "crop_response"]
 )
+@pytest.mark.parametrize("text_envelope_enabled", [False, True])
 def test_php_action_transport_preserves_main_result_and_settlement(
-    db_session, unique_email, tmp_path, artifacts, monkeypatch, gateway_behavior
+    db_session, unique_email, tmp_path, artifacts, monkeypatch, gateway_behavior, text_envelope_enabled
 ):
     bundle, sha = write_bundle(tmp_path, artifacts)
     settings = get_settings()
     for name, value in {
-        "detect_evidence_mode": "serve",
         "detect_evidence_bundle_path": str(bundle),
         "detect_evidence_bundle_sha256": sha,
     }.items():
@@ -527,9 +607,14 @@ def test_php_action_transport_preserves_main_result_and_settlement(
         calls.append(payload)
         assert str(request.url) == endpoint
         assert request.headers["X-RepreGuard-Token"] == SERVICE_TOKEN
+        if gateway_behavior == "discard_action":
+            payload = {"text": payload["text"]}
+        if text_envelope_enabled:
+            header, original_text = payload["text"].split("\n", 1)
+            payload = {"text": original_text, "action": header.removeprefix("AIDT:1:")}
         result = _fake_result()
         if payload.get("action") == "evidence":
-            if gateway_behavior == "passthrough":
+            if gateway_behavior != "crop_response":
                 result = response()
             elif gateway_behavior == "crop_response":
                 result = {"route": response()["route"]}
@@ -541,6 +626,7 @@ def test_php_action_transport_preserves_main_result_and_settlement(
 
     monkeypatch.setattr(repre_guard_client, "detect_url", endpoint)
     monkeypatch.setattr(repre_guard_client, "service_token", SERVICE_TOKEN)
+    monkeypatch.setattr(repre_guard_client, "text_envelope_enabled", text_envelope_enabled)
     monkeypatch.setattr(
         repre_guard_client,
         "_client",
@@ -563,7 +649,7 @@ def test_php_action_transport_preserves_main_result_and_settlement(
             ) == pytest.approx((0.72, 0.72, 0.5))
             assert data["label"] == "ai"
             evidence = data["evidence"]
-            if gateway_behavior == "passthrough":
+            if gateway_behavior == "passthrough" or (text_envelope_enabled and gateway_behavior == "discard_action"):
                 assert evidence["status"] == "partial"
             else:
                 assert evidence["status"] == "failed"
@@ -574,8 +660,12 @@ def test_php_action_transport_preserves_main_result_and_settlement(
             assert replay.status_code == 200
             assert replay.json()["evidence"] == evidence
             assert len(calls) == count
-        evidence_calls = [payload for payload in calls if "action" in payload]
-        assert evidence_calls == [{"text": text, "action": "evidence"}]
+        evidence_calls = [
+            payload for payload in calls
+            if "action" in payload or payload["text"].startswith("AIDT:1:evidence\n")
+        ]
+        expected = {"text": f"AIDT:1:evidence\n{text}"} if text_envelope_enabled else {"text": text, "action": "evidence"}
+        assert evidence_calls == [expected]
         assert calls[-1] == evidence_calls[0]
         assert all(set(payload) == {"text"} for payload in calls[:-1])
         stored = db_session.scalars(
@@ -600,7 +690,6 @@ async def test_evidence_preserves_settlement_and_cancellation(
 ):
     db_session = committed_db_session
     actor = await _user_actor(db_session, unique_email)
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     ready_engine.timeout_seconds = 0.05
     request = Request(
         {

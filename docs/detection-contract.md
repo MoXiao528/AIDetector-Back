@@ -45,6 +45,24 @@
 
 - `POST /api/v1/detect`
 
+### 长度预检
+
+`POST /api/v1/detect/preflight` 接收 `{"text":"..."}`，沿用检测身份认证（游客、用户或具有 `detect:write` scope 的 API key），无需 `Idempotency-Key`。
+
+返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `characterCount` | 原文非空白 Unicode 码点数 |
+| `tokenCount` | 与正式检测相同口径的 tokenizer 计数，包含特殊 token |
+| `minimumTokens` | 固定为 256 |
+| `ready` | 是否达到最低 token 数 |
+| `estimatedAdditionalCharacters` | 按当前文本比例估计还需补充的非空白字符数；达标为 0，空文本或无法估算时为 null |
+
+原文上限仍为 20,000 个 Unicode 码点，空文本可预检。预检在同一次同步鉴权回调中查询身份、检查 scope 并关闭数据库 Session，归还连接后才在线程池中进行分词计数；JWT、游客会话、API key、撤销状态与 scope 检查继续复用原逻辑。不调用模型、不创建检测记录、不预留或扣减额度。前端在编辑模式输入停止 500ms 后请求，文本变化立即使旧结果失效，只展示字符数、长度状态与近似补充建议；高亮预览暂停预检。建议值不是固定字数门槛，继续输入后会重新估算。
+
+正式提交会重新执行同一长度校验。不足 256 token 时返回 `422 / TEXT_TOO_SHORT`，`detail` 包含上述字段和 `unit: "tokens"`，且不会启动推理或扣减额度。200 个字符不再作为最低检测条件。
+
 ## 3. 当前请求语义
 
 ### `Idempotency-Key`
@@ -109,18 +127,32 @@ Idempotency-Key: 7b8b9d42-fb91-4e0f-a801-8ec6172eed9a
 
 ### `result.sentences`
 
-这个字段当前不是“自然语言句子数组”。
+新检测结果按原始非空段落返回，每条包含该段原文和用于高亮的聚合分数。历史快照可能包含合并段落范围。
 
-真实语义是：
+主检测先对全文分句，再按原文顺序累加完整句子。拼接后经模型 tokenizer 计数，首次达到或超过 256 token 时在当前句末形成候选块。计数包含特殊 token，短段可与相邻内容共同检测。
 
-- 检测块数组
-- 通常对应 `paragraph / merged paragraph block`
+文末尾块不足 256 token 且前面已有候选块时，将最后两块的原文拼接后重新计数，满足 `DETECT_MAX_INPUT_TOKENS` 硬上限（默认 512）就合并为一次推理，否则分别送检。尾块恰好 256 token 时独立送检，整篇不足 256 token 时在入口拒绝。最终块边界确定后计算模型分数、token 权重和段落覆盖关系。
 
-所以前端虽然能做句级或块级展示，但契约里的核心单位仍然是检测块，不是稳定的 NLP sentence token。
+`DETECT_MAX_INPUT_TOKENS` 是每次推理的硬上限，默认 512。追加一句会超过硬上限时，先提交已有缓冲，再处理该句。单句本身超限时切成满足硬上限的原文连续片段，所有余文继续检测。
+
+全文 `score` 和 `rawScore` 按实际检测块的正文 token 数加权。`result.summary` 按检测块判定后的 AI/HUMAN token 权重计算占比。段落分数按各检测块在该段覆盖的正文 token 权重聚合，再映射为显示分数；`aiLikelyCount` 统计聚合后判为 AI 的显示段落数。分块详情保存在检测记录的 `options.repre_guard.segments`。
+
+### 标题与署名的展示
+
+明确的文档元信息返回 `sentences[].type="metadata"`，保留原文及格式，不单独高亮、展示 AI/Human 判断或计入 `aiLikelyCount`。`probability=0`、`score=0` 仅为兼容字段占位，不能解释为人工写作。旧 `/scan` 兼容响应新增可选 `type` 字段；`metadata` 对应的 `isAi=false`、`confidence=0` 同样不是人工判断。
+
+识别规则仅包括：
+
+- `editorHtml` 中明确的 `h1`～`h6`，且 HTML 全部非空段与 `inputText` 逐位置对应。
+- 文章前两个非空段为“短标题＋独立署名”，且后面还有正文。标题最多 60 个非空白字符、无句末标点；署名最多 80 个非空白字符，匹配 `作者：`、`作者:`、`Author:` 或 `Author：`，名字部分不能含完整句子分隔符。
+
+这些上限只用于上述结构的保守识别，不是普通段落的最低字数。短句、短对白、正文中提到作者都不会因为少于 40 字被过滤。
+
+元信息仍随完整上下文送检，分块、全文 `score/summary` 和 Evidence 不变。历史读取、幂等回放、管理视图和 PDF 共用展示投影，不改写旧数据库快照；旧结果只有在原段位置及文本精确对应时才应用，覆盖正文的旧合并块不会被整体标为元信息。
 
 ### `result.sentences[].startParagraph / endParagraph`
 
-表示这个检测块对应原始段落范围。
+表示该显示结果对应的原始非空段落范围。新结果中两者相等，历史合并块可以覆盖多段。
 
 ## 5. 富文本和高亮
 
@@ -230,7 +262,7 @@ Idempotency-Key: 7b8b9d42-fb91-4e0f-a801-8ec6172eed9a
 7. i18n
 8. 测试
 
-## 10. Evidence V1 本地计算与模式输出合同
+## 10. Evidence V1 本地计算与快照合同
 
 EV4-01 已提供 `app.services.evidence_engine.EvidenceEngine` 的 Bundle 加载、响应校验、本地特征计算和 Reference 比较；
 EV4-03 已接入应用生命周期和可选公共输出字段；EV4-02 已接通 Router HTTP 与本地比较，主检测分数、阈值和标签保持不变。
@@ -241,29 +273,18 @@ EV4-04 已把 Evidence 快照接入既有结算事务。用户明确部署问题
 
 | 配置 | 默认值 | 语义 |
 |---|---|---|
-| `DETECT_EVIDENCE_MODE` | `off` | `off/shadow/serve`；控制整文调用、本地计算和公开输出 |
 | `DETECT_EVIDENCE_BUNDLE_PATH` | 空 | 部署提供的本地 Bundle 路径 |
 | `DETECT_EVIDENCE_BUNDLE_SHA256` | 空 | 受控部署配置锁定的 64 位小写 SHA-256 |
-| `DETECT_EVIDENCE_TIMEOUT_SECONDS` | `12` | HTTP 与本地比较共用的总预算；有限 `(0,60]` 秒，非法值只关闭 Evidence |
+| `DETECT_EVIDENCE_TIMEOUT_SECONDS` | `12` | Router HTTP、本地比较和词库匹配共用的总预算；有限 `(0,60]` 秒，非法值使 Evidence 降级 |
 
-```python
-from app.services.evidence_engine import EvidenceEngine
-
-engine = EvidenceEngine(
-    mode=settings.detect_evidence_mode,
-    bundle_path=settings.detect_evidence_bundle_path,
-    bundle_sha256=settings.detect_evidence_bundle_sha256,
-    timeout_seconds=settings.detect_evidence_timeout_seconds,
-)
-```
+后端默认执行 Evidence，并公开已保存的有效快照。旧 `DETECT_EVIDENCE_MODE` 在进程环境或 dotenv 中的值均已失效，可删除该键。
 
 主应用 lifespan 在 `app.state.evidence_engine` 持有一个实例；每次应用启动只构造一次，成功后的 `reference` 与已加载 Router 标识驻留内存，
 响应校验不再读文件或重算 SHA。失败同样保留状态，重启应用才重试或应用新的配置；不实现在线配置热更新。
 意外构造异常只记录固定告警并保留 `None`，不阻止主应用启动；退出时先等待已有 Evidence 任务结束，再关闭共享 HTTP 客户端。
-`off` 不访问 Bundle，即使路径/SHA/超时非法也不影响基线；无效 mode/path/SHA/超时或加载失败只产生实例
-`status=failed`，不会因可选配置使全局 Settings 或主服务启动失败。
+路径、SHA、超时配置非法或加载失败只产生实例 `status=failed`，主服务可正常启动。
 
-加载状态为 `off/ready/failed`，失败原因只为 `invalid_evidence_config/invalid_evidence_bundle`，
+加载状态为 `ready/failed`，失败原因只为 `invalid_evidence_config/invalid_evidence_bundle`，
 不包含本地路径、JSON 内容或底层异常。这里的 `ready` 仅表示消费实例已加载，不是产品 Evidence ready 或上线批准。
 
 Bundle 读取上限及成员声明解压总量上限均为 32 MiB；先验证同一份读取 bytes 的外部 SHA，
@@ -277,14 +298,7 @@ Router 身份由 Bundle 的 `router.artifact_sha256` 绑定。冻结的 `serve_e
 保持原值；这份历史事实不阻止本地加载，也不授予 serve 权限。后续 EV4/EV6 验收控制上线。
 回退应恢复匹配的 Bundle/Router 组合；单独更换成不匹配的一侧只能降级 Evidence。
 
-### EV4-03 模式与公开读取
-
-| mode | 本地消费者 | 公开结果 |
-|---|---|---|
-| `off`（默认） | 不读取 Bundle，不计算 Evidence | 完全省略 `evidence` |
-| `shadow` | 加载一次；分析并保存合法快照 | 完全省略 `evidence` |
-| `serve` | 加载一次；分析并保存合法快照 | 有合法服务端快照才输出 `evidence` |
-| 其他值 | 实例为 `failed/invalid_evidence_config` | 完全省略 `evidence`，主功能不受影响 |
+### 公开读取
 
 可选 `evidence` 仅位于标准 `DetectionResponse` 与 `HistoryRecordResponse` 顶层，结构直接沿用下方 `analyze` 结果；
 不加入 `Analysis`、检测请求或手工历史输入。公共 Evidence 只读取已校验并保存的 `meta_json.evidence`，首次响应也使用这份快照；
@@ -293,57 +307,115 @@ Router 身份由 Bundle 的 `router.artifact_sha256` 绑定。冻结的 `serve_e
 缺少、畸形或未知版本的快照只被省略，不造成主结果验证失败；有效的 `failed/unsupported/insufficient/partial/ready` 结果按原状态输出。
 输出类型拒绝额外嵌套字段、非有限数和未知原因，校验固定指标/维度、版本、覆盖率与状态，避免透传路径、异常和额外正文。
 
-off/shadow 只省略 Evidence 字段，不全局排除 null，因此已有 null 字段保留。
-检测列表和管理员详情共用 `project_public_meta_json`，所有模式均移除原始根级 `evidence/artifactVersion`，防止绕过专用输出字段；
-其他已有元数据语义保持不变。旧 scan 兼容接口、PDF 和示例维持原白名单输出，不增加 Evidence 展示。
+检测列表和管理员详情共用 `project_public_meta_json`，移除原始根级 `evidence/artifactVersion`，防止绕过专用输出字段。
+旧 scan 兼容接口和示例维持原白名单输出。PDF 的可选 `includeEvidence`（默认 `true`）控制是否导出已保存的写作特点。报告时间按可选 `timeZone`（默认 UTC，未知时区回退 UTC）显示，数据来自账号已有检测记录。
 
 EV4-03 通过固定 Router 响应和预置快照验证投影；EV4-02 另用临时回环 HTTP Router、实际后端路由/客户端/特征计算验证请求链。
-EV4-04 接通快照写入，首次响应、数据库、历史和幂等回放使用同一份已校验结果；公开输出仍由当前 mode 控制。
+EV4-04 接通快照写入，首次响应、数据库、历史和幂等回放使用同一份已校验结果。
 
 ### EV4-04 快照与事务
 
 `DetectionService.create_detection` 只接收服务端独立 `evidence` 参数，复用公开 schema 严格校验，再序列化为 JSON 基础类型。
 合法结果写入既有 `Detection.meta_json.evidence`，根级 `artifactVersion` 取自同一结果；加载失败的合法快照允许该版本为 null。
 客户端 options、Analysis 和手工历史输入不能创建服务端快照；不新建表或迁移。
-off 不产生快照；shadow/serve 都保存合法的正常或降级结果，包括 failed/unsupported/insufficient。
+合法的正常或降级结果都可保存，包括 `failed`、`unsupported` 和 `insufficient`。
 校验或快照序列化失败时仅省略 Evidence 及其版本，首次响应也不输出未保存的候选结果。
 
 快照随原检测结果、配额 ledger 和幂等完成状态一次提交；实际 flush/commit 失败沿用原事务回滚，不去掉 Evidence 重试第二次写入。
 取消、过期 lease 和 owner 被接管仍按原合同处理；后台 Evidence 任务只计算，不能写快照。
 提交成功后响应丢失，重放读取已提交快照，不重复模型调用、扣费或建记录。
-历史读投影只校验快照 schema，不要求匹配当前 Bundle SHA、不补算或回写；切换 mode/Bundle、改名、置顶及 guest claim 都保留原快照。
-因此关掉 Evidence 可隐藏旧快照，之后 serve 可再展示；旧记录没有快照时继续省略。
+历史读投影只校验已存快照 schema，不比对现在的制品 SHA，也不会补算或回写。更换 Bundle、改名、置顶及 guest claim 都使用原快照。旧记录没有快照时省略整个字段。
 
 ### EV4-02 整文调用与预算
 
 所有五个检测入口共用 `_detect_impl`：先完成原有主检测分段和结果合并，再把原始 `payload.text` 一次性传给
 `EvidenceEngine.run`；不规范化、不截断、不进入主检测重试/分段循环，不发送主标签或 score。
 `run` 调用既有 `RepreGuardClient.route_evidence`，再在线程中调用已有同步 `analyze`；主标签仅供本地参考差异展示。
-off、坏配置/Bundle、主检测失败或已完成幂等重放不发起 Router HTTP。
+无有效配置或 Bundle、主检测失败、已完成幂等重放均不发起 Router HTTP。
 
 Router 请求复用生效的检测 URL，JSON 为 `{"text":"用户原始整文","action":"evidence"}`，由检测端 `/detect` 分流；不再派生其他路径，不新增 URL 配置或客户端。
 支持末尾为 `/detect` 或 `.php` 的 HTTP(S) 地址；后缀识别忽略大小写，请求实际 URL 保留配置中的大小写，生产实际地址必须为 HTTPS。query/fragment、userinfo、params、非 HTTP(S) 或其他路径在可选路径降级。
-HTTPS PHP 固定转发 `/detect` 即可，但必须透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求或仅返回主检测字段会导致 Evidence 降级。
+原协议要求 HTTPS PHP 透传整个 JSON 请求和响应以及令牌；仅提取 `text` 重建请求会丢失 action。下述可选 text 封装可适配这种请求转发，响应字段和令牌仍须完整保留。
 复用连接池、`X-RepreGuard-Token`、128 KiB 声明/流式响应上限，不重试、不跟随重定向、不解析或透传非 200 错误正文。
 HTTP 200 仍须通过严格 JSON（含重复键/非有限数拒绝）、schema 与已加载 SHA 校验。
 传输失败/非 200 为 `model_unavailable`，超时为 `timeout`，畸形/超大响应或 SHA 不匹配为 `invalid_router_response`；
 D1 合法 `failed/unsupported` 保留原原因；这些都只影响 Evidence。
 
 单一总预算默认 12 秒（D1 默认 10 秒）；整体截止时间也约束持续零碎返回的 HTTP 响应，不能靠每次读超时续命。
-后端每进程一个活动 Evidence 任务、零等待队列，繁忙立即返回 `failed/busy`；HTTP 后的特征/比较在线程执行，避免直接占用事件循环。
+后端每进程一个活动 Evidence 任务、零等待队列，繁忙立即返回 `failed/busy`。HTTP 后的特征计算、比较和词库匹配均在线程执行。
 调用者超时或取消后，已有任务仍计入占位，直至有界 HTTP/实际线程结束；后台任务只计算，不做数据库结算或写入。
 这不是 CPU/RSS 或 native 卡死硬隔离；不启动独立 worker/进程池。shutdown 等待占位任务完成，卡死线程也会阻碍正常退出。
-shadow/serve 都记录固定状态和耗时，不记录原文、token、路径或底层异常。
+运行日志只记录固定状态和耗时。
 
 结算 lease 为 `max(DETECT_REQUEST_TIMEOUT, DETECT_SERVICE_TIMEOUT) + ceil(有效 Evidence 预算) + 30 秒结算缓冲`；
-默认有效启用时为 162 秒，off/不可用 Bundle 保持 150 秒。Evidence 在结算事务加锁前完成或超时，不延长持锁事务。
+默认在 Bundle 可用时为 162 秒，Bundle 不可用时为 150 秒。Evidence 在结算事务加锁前完成或超时。
 原 owner-token 与 lease 校验不放宽：取消请求保留原未知执行状态，过期/被接管的 owner 不能写结果或扣配额。
 超时正常降级后主检测可结算，已完成 key 重放不再推理、扣费或新增记录。
+
+<a id="text-封装协议演示分支"></a>
+
+### text 封装协议
+
+`DETECT_TEXT_ENVELOPE_ENABLED` 默认 `false`。开启后，主检测、整文 Evidence 和通过主检测执行的 readiness probe 都只发送一个 `text` 字段：
+
+```json
+{"text":"AIDT:1:detect\n用户原文"}
+```
+
+```json
+{"text":"AIDT:1:evidence\n用户完整原文"}
+```
+
+JSON 中的 `\n` 解析后是一个 LF 分隔符。`AIDT:` 为保留命名空间，版本只接受 `1`，action 只接受 `detect/evidence`。检测端只按第一个 LF 分离协议头和正文，不 trim、不解码内层 JSON、不递归解释正文；正文自身的 CRLF、空白、引号、Unicode 和完整协议头都保留。封装请求只允许 `text`，额外 action（包括 null）或其他字段均拒绝；未知版本、错误 action、CRLF 协议头、缺少分隔符等返回固定脱敏 422。
+
+协议不使用 Base64、HMAC、压缩或新密钥，继续要求 `X-RepreGuard-Token`。没有完整性签名，无法发现所有仍然合法的正文截短或改写；PHP 必须保留字符串内容、Token、响应字段和状态码。若 PHP 还有截断、trim 或响应裁剪，本方案不视为解决这些问题。
+
+关闭开关时保持原 JSON 格式，`/evidence/route` 仍保留原请求协议。旧客户端直接向 `/detect` 发送以 `AIDT:` 开头的正文可能被解析或拒绝；这属于保留前缀的兼容例外。开启封装后，用户正文即使是一个完整合法封装，也只在外层解包一次。
+
+| 检查位置 | 规则 |
+|---|---|
+| 公共业务入口 | 至少 256 token（含特殊 token）、原文最多 20,000 Unicode 码点 |
+| 后端下游客户端，两种模式 | 原文严格字符串、非空白、1～20,000 Unicode 码点、可编码为 UTF-8；探针和分段不套用业务整文 256 token 下限 |
+| 后端真正发送前 | 检查 HTTP 客户端生成的实际 JSON 字节，最多 128 KiB；发送检查过的同一份请求 |
+| 检测端 ingress | 先鉴权，再检查声明长度和实际流，最多 128 KiB |
+| 检测端请求模型前 | 单次解包，然后按还原原文检查 20,000 字符等原有条件；协议头不占原文字数 |
+
+发送前失败不截断、不发网络请求，错误不包含原文、Token 或底层异常；请求体超限不触发主模型 token 超限拆分重试。主检测分块遵循第 4 节，极长单句的全部片段均送检，新结果 `truncated=false`。检测端 trim 和 Evidence 整文一次的响应/SHA、预算、失败隔离、结算与历史快照合同继续适用。
+
+原文 Unicode 字符数与请求体字节数分别检查。后端通过不代表 PHP 重编码后的字节数也通过：例如将大量四字节 Unicode 字符重新序列化成 `\uXXXX` 转义会增加体积，检测端仍按实际 128 KiB 边界拒绝，不放宽限制。
+
+#### 部署、验收和恢复
+
+以下是获得部署授权后执行的操作，不表示目标服务器已验收。先记录实际部署 commit、镜像及受保护的配置备份（`.env`、实际使用的 Compose override、启动环境），保留 Token 与模型/Bundle。先更新兼容新旧协议的检测端并重启，再更新后端镜像、开启封装并重建 API。数据库无需迁移，不能使用删除卷的回退方式。
+
+在后端仓库根目录，使用服务器原有的生产 Compose 文件组合重建；下面命令适用于原先就用默认 Compose 文件组合的部署：
+
+```bash
+docker compose up -d --no-deps --build --force-recreate api
+```
+
+后端镜像包含验收入口；服务 Token 和已配置的 Bundle/SHA 从运行环境读取，不放进命令参数。实际 PHP 的地址由操作者明确提供：
+
+```bash
+docker compose exec -T api python smoke_text_envelope.py --url https://umcat.cis.um.edu.mo/api/aidetect.php
+```
+
+脚本必须正常退出并通过主检测 probability 合同及 Evidence 五字段、匹配 SHA、`status=routed`、有效 route 和 `reason=null` 检查；仅 HTTP 200 或合法失败响应不是成功。该命令会真实调用模型，应在检测端与后端配置就绪后执行；本地模拟通过不能替代实际 PHP 回执。
+
+Evidence 参考比较依赖匹配的 Bundle 与 Router。网页展示需部署支持该字段的前端 `dist`。
+
+回退封装时，在后端设 `DETECT_TEXT_ENVELOPE_ENABLED=false` 并重建 API。PHP 丢弃 `action` 时，Evidence 请求可能被检测端当成主检测执行，返回的主检测响应会使 Evidence 降级。
+
+`main` 合入此功能后也支持该配置，切回 `main` 不会关闭封装或恢复旧实现。代码回退应使用部署前记录的明确 commit 或镜像，并恢复对应版本的配置及实际 Compose 文件组合，不能把仓库内 Windows 开发 override 当作生产配置。
+
+只有回退到尚未支持封装配置的旧版本时，才须从实际 `.env` **删除** `DETECT_TEXT_ENVELOPE_ENABLED`（仅设 false 仍是未知字段），同时清除 shell、Compose、service 的同名覆盖。其他配置键也应按目标版本核对，不放宽 Settings 校验。
+
+切换代码不会更新运行中的容器，后端须按原部署方式重建或恢复镜像。若检测端也回退，先停止原服务进程，再恢复已记录版本并用原进程管理方式重启；仓库便携入口为 `python run_roberta_server.py`，不假设 systemd 单元名。恢复后分别验收主检测、Evidence 与已保存历史，不以分支名判断服务版本。
 
 ### D1 响应 schema v1
 
 内部请求复用主检测入口：直连为 RepreGuard `POST /detect`，PHP 部署为生效 PHP 地址，均携带既有 `X-RepreGuard-Token`，
-JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；不附主模型结果，不进入主检测分段循环。
+默认 JSON 精确为 `{"text":"用户原始整文","action":"evidence"}`；启用下述封装时只有 `text` 字段。不附主模型结果，不进入主检测分段循环。
 未提供 `action` 或显式 `action="detect"` 时继续主检测；`action="evidence"` 直接复用 Evidence 处理、输入校验与独立容量，不运行主模型。其他 action 返回 422。
 原 `POST /evidence/route` 仍接受精确的 `{"text":"用户原始整文"}`，供旧客户端兼容。先更新检测端再更新后端；新后端遇到旧检测端返回的分数时，按 `invalid_router_response` 降级而不重试。
 请求体上限 128 KiB（含流式计数），text 严格要求非空白字符串、1–20,000 Unicode code points，
@@ -357,7 +429,7 @@ D1 业务结果含 `busy/timeout` 均为 HTTP 200，必须继续检查下面的 
 首标签受支持才执行冻结 XLM-R；不替换其最终 language/domain，也不加两模型一致性或低分拒绝门。
 短文/混合文本按同一整文规则处理，不做分段投票或 Mixed；此分类器会误判，空信息检查也不覆盖所有无意义文本。
 
-检测端默认关闭，显式启用才在启动时加载一次。Evidence 独立 1 active / 0 queued，复用既有 admission；
+检测端的 `REPRE_GUARD_EVIDENCE_ENABLED` 默认关闭，显式启用才在启动时加载一次。Evidence 独立 1 active / 0 queued，复用既有 admission；
 默认响应超时 10 秒，`REPRE_GUARD_EVIDENCE_TIMEOUT_SECONDS` 可配置为有限的 `(0,60]` 秒。
 超时或请求取消后仍等工作线程实际结束才释放容量，其间返回 `failed/busy`。
 关闭/加载失败返回 `failed/model_unavailable`、SHA 为 null；请求失败只影响 Evidence。
@@ -416,14 +488,14 @@ result = engine.extract_features(original_text, router_response)
 
 | 字段 | 内容 |
 |---|---|
-| `status` | `extracted/off/unsupported/failed` |
+| `status` | `extracted/unsupported/failed` |
 | `artifactVersion` | 已加载的 Bundle SHA；未加载为 `null` |
 | `featureSchemaVersion` | 本地消费的特征合同版本 `1` |
 | `route` | 已校验的路由副本；无合法路由为 `null` |
 | `features` | 成功时完整 37 个 V1 scalar 字段，否则 `null` |
 | `missingReasons` | 每个缺失 scalar 的原因；未提取为 `{}` |
 | `patterns` | 三类描述性计数和原文 offsets；未提取为 `null` |
-| `reason` | `extracted/off` 为 `null`；其余为固定原因码 |
+| `reason` | `extracted` 时为 `null`，其余为固定原因码 |
 
 `extracted` 只表示特征计算完成，不是产品 Evidence ready、语言识别通过或可比较承诺。
 `features` 保持研究端字段名、单位与资格规则；`length_band` 原样保留
@@ -443,7 +515,7 @@ Reference 比较由下方 `analyze` 入口完成。
 前端使用 JavaScript UTF-16 索引时须转换，不能直接套用。各组最多 20 个偏移；完整计数不截断，
 高频词按语言最多 10 项（中文 20 项），重复短语和句首模板各最多 10 项。
 
-`off`、加载失败、无效路由及合法 `unsupported/failed` 响应均不导入特征依赖或执行提取。
+加载失败、无效路由及合法 `unsupported/failed` 响应均不执行特征提取。
 加载失败保留实例原因；Router 失败保留校验后的固定原因；特征依赖缺失、schema 不兼容、
 计算或资源错误统一为 `feature_extraction_failed`。失败不返回半成品，不泄漏底层异常或用户文本，
 也不改变 Bundle 的加载状态；后续请求可以独立计算。
@@ -519,16 +591,17 @@ Reference 必须存在合法 exact key，再按 `exact → language_length → l
 选定后单个未通过验收的指标不另行池化。`quality.coverage` 分母仍为 22，
 `ready/partial/insufficient` 与可比项数量严格一致，不生成新的 AI 概率、投票或主结果。
 
-顶层结果固定包含：
+顶层结果字段如下：
 
 | 字段 | 内容 |
 |---|---|
-| `status` | `ready/partial/insufficient/off/unsupported/failed` |
+| `status` | `ready/partial/insufficient/unsupported/failed` |
 | `artifactVersion/featureSchemaVersion` | 已加载 Bundle SHA 或 `null` / 整数 `1` |
 | `route` | 校验后的路由加原始 `lengthBucket` 与 `fallbackLevel`；未提取为 `null` |
 | `quality` | `level/coverage/reasons`；可比较项数固定除以 **22** |
 | `signals` | 特征提取成功时固定 22 项，缺项不删除；否则 `[]` |
 | `patterns` | 提取入口的三类描述性计数和原文 offsets；未提取为 `null` |
+| `corpusExpressions` | 可选的中文表达词库命中快照 |
 
 22/22 为 `ready`，1–21/22 为 `partial`，0/22 或资格/参考组不可用为 `insufficient`；
 这三个状态下 `quality.level=status`，其余状态的 level 为 `unavailable`、coverage 为 0。
@@ -585,6 +658,44 @@ Bundle 冻结的 `descriptive_percentiles_only_no_direction_or_product_relation`
 资格通过并选定参考组后仍没有可比项时增加 `no_comparable_metrics`，无参考组为 `reference_cell_unavailable`。
 资格失败沿用提取器原因，长度越界另有 `length_out_of_range`。以上都只影响 Evidence。
 
+### 六领域中文表达词库
+
+正式检测完成后，后端复用当次已校验的 `evidence.route`。中文按 `academic`、`news`、`novel`、`seo`、`webtext`、`wiki` 中的路由领域查表，长度预检跳过词库匹配。词库匹配只用本地固定分词，无额外模型请求。有合法中文路由时，`evidence.status=insufficient` 也可附带表达。无合法中文路由的结果省略该字段。
+
+后端启动并加载有效 Bundle 后，校验并初始化随包词库和固定 Jieba 0.42.1 字典。每次检测逐 token 查表，从左到右选最长表达，同一表达去重后按领域词库排名返回。词库和来源摘要见[运行清单](../backend/app/assets/corpus_expressions/manifest.json)。
+
+下面是父级路由为 `zh/news`、原文为“不仅仅是。值得关注的是。”时的坐标示意。示意文本仅说明偏移，正式检测仍需达到入口长度门槛。
+
+```json
+{
+  "status": "matched",
+  "lexiconVersion": "1.0.0",
+  "lexiconSha256": "ea2793dd9b6bbc045194ccd8db8ab018006519dd961629cc879cd0a9cfe80ced",
+  "expressions": ["不仅仅是", "值得关注的是"],
+  "matches": [
+    {"expression": "不仅仅是", "offsets": [{"start": 0, "end": 4}]},
+    {"expression": "值得关注的是", "offsets": [{"start": 5, "end": 11}]}
+  ]
+}
+```
+
+`evidence.corpusExpressions` 包含必填的 `status`、`lexiconVersion`、`lexiconSha256`、`expressions` 和可选的 `matches`。`matched` 表示匹配完成且有去重的表达，`no_match` 表示匹配完成但没有命中，`unavailable` 表示词库加载、匹配或匹配预算不可用。后两态的 `expressions` 为 `[]`。已确认词库身份时返回版本和 64 位小写 SHA-256，身份未确认时两项均为 `null`，仅适用于 `unavailable`。
+
+`matches` 仅可在 `matched` 时提供，并按 `expressions` 原顺序逐项对应。每个表达至少有一处坐标，`offsets` 按 `(start, end)` 升序去重，端点是原始提交全文的 0-based Unicode 码点索引，区间为 `[start, end)`，两端均为整数且 `0 ≤ start < end`。emoji 等补充面字符计一个码点，CRLF 计两个码点。旧快照、无法建立可靠坐标或 `matches` 校验失败时省略此字段，并保留有效的词表和其余 Evidence。
+
+词库加载失败、运行异常或比较完成后匹配超时只影响表达字段。父级 Evidence 比较本身超时仍返回 `failed/timeout`。旧快照可缺少整个 `corpusExpressions`。若已存词表字段非法，读出时省略 `corpusExpressions`，保留其余有效 Evidence。
+
+首次响应、历史和幂等回放读取同一份已保存的表达及坐标。前端详情和 PDF 只展示落在疑似 AI 正文段内的命中。PDF 还要求 `includeEvidence=true`，并独立决定是否展示参考图表。
+
+- 摘要为 `AI=0%` 或 `Human=100%` 时，省略整块表达。
+- 按 CRLF、CR 或 LF 分割保存的原文，跳过纯空白行，非空行保留首尾空白及原始端点。`startParagraph` 和 `endParagraph` 按非空行从 1 编号，包含两端。各段必须按顺序完整覆盖非空行，且互不重叠。某段的 `raw`（缺失时用 `text`）同样分行并跳过纯空白行后，必须逐行等于所指原文。一段可包含多个原始非空行。
+- 每处坐标必须在原文范围内，且截取原文后经 NFKC 规范化的字面值必须等于 `expression`。只保留完整落入单个 `type="ai"` 正文段的命中。同一表达若在 AI 段和其他段都有命中，只使用 AI 段坐标。
+- 旧快照缺坐标、任一坐标或段映射无法验证、没有合格命中时，省略整块表达。显示时标题为“疑似 AI 片段中的常见表达”，附“仅作为用词参考，不参与检测评分”。
+
+前端和 PDF 的边界用例使用同一份[表达段落样例](../contract/fixtures/corpus-expression-visibility.json)。
+
+词库固定抽查中，人类与 AI 文本各 60 篇，两个组都是 60/60 命中。命中仅作描述性用词参考，主分数、配额、22 项指标、覆盖率和特征版本不随表达变化。词库保留 `production_eligible=false` 和原用途限制，本次仅用于本地集成与测试。
+
 ### 验证
 
 在仓库根目录、使用现有开发环境执行；普通测试使用合成 Bundle，不依赖研究仓库：
@@ -601,8 +712,7 @@ python -B -m pytest -q -p no:cacheprovider backend/tests/test_evidence_http.py b
 验收失败、排除比率、旧 Bundle 兼容及严格成员校验；设置 `EVIDENCE_SHORT_TEST_BUNDLE`
 为新短文 Bundle 的绝对路径可运行固定 SHA 的真实产物 smoke，同样不调用 Router 或主模型。
 `language_undetermined` 已覆盖合法/非法状态组合及无特征依赖时的失败透传，schema 仍为 v1。
-现有模式/合同测试同时读取静态 OpenAPI，确认 `EvidenceSignal.notice` 的 nullable 枚举包含 `null` 和两个合法提示值，防止合同拒绝正常响应。
-D1 真实模型与本机共存、模式公共投影、EV4-02 受控 HTTP 整文单次调用/超时/并发/lease，以及 EV4-04 快照事务、回放和本机真实模型业务链已验收。
+现有合同测试读取静态 OpenAPI，确认 `EvidenceSignal.notice` 的 nullable 枚举包含 `null` 和两个合法提示值。
 数据库回滚/提交后断线恢复使用独立文件 SQLite；既有 PostgreSQL opt-in 测试仍需其专用环境，不把 SQLite 结果表述为 PostgreSQL 或部署验收。
 
 完整真实模型验收单独运行 `backend/tests/test_evidence_runtime_real.py`，普通全量测试默认跳过；复用 RepreGuard 的
@@ -624,7 +734,7 @@ python -B -m pytest -q --tb=short -p no:cacheprovider backend/tests/test_evidenc
 ```
 
 执行后恢复这些进程环境变量；若执行账户无权访问默认 pytest 临时目录，使用工作区内确认不存在的新目录作为 `--basetemp`，不要复用已有目录。
-2026-09-07 本机通过报告为 `scripts/loadtest/results/evidence-runtime-20260907-ev404-02.json`（本地忽略产物）：
+旧模式的 2026-09-07 本机验收报告为 `scripts/loadtest/results/evidence-runtime-20260907-ev404-02.json`（本地忽略产物）。
 三种 mode 共 7 次检测；EN/ZH 为 partial、意大利语为 unsupported；四次整文 Router 调用、三次 XLM-R forward，
 首次响应/已存快照/历史/回放一致，读取不再调用模型或扣费，主 score/rawScore 差为 0、阈值/标签不变。
 首轮中文样本低于冻结的 600 汉字门，正确返回 insufficient，与脚本 partial 预期不符；仅扩充固定样本后重跑，原失败报告保留，不修改资格规则。
@@ -634,7 +744,7 @@ python -B -m pytest -q --tb=short -p no:cacheprovider backend/tests/test_evidenc
 
 ## 游客历史恢复（2026-09-12，本地修复）
 
-- `GET /api/v1/guest/history` 接受 `page`、`per_page`、`sort`、`order`、`q`、`pinned`，返回 `items/total/page/perPage/totalPages`。每条记录与会员历史相同，游客的 `userId` 为 `null`；包含服务器保存的原文、HTML、分析和按现有模式公开的 Evidence 快照，不重新检测。
+- `GET /api/v1/guest/history` 接受 `page`、`per_page`、`sort`、`order`、`q`、`pinned`，返回 `items/total/page/perPage/totalPages`。每条记录与会员历史相同，游客的 `userId` 为 `null`。记录包含服务器保存的原文、HTML、分析和有效的 Evidence 快照。
 - `GET/PATCH/DELETE /api/v1/guest/history/{id}` 分别读取、修改标题/置顶、删除；`POST /api/v1/guest/history/batch-delete` 接受 `{ids}`；`DELETE /api/v1/guest/history` 清空当前游客历史。没有游客历史创建或隐式认领接口。
 - 必须显式提交活动游客 Bearer，仅访问该会话尚未认领的记录。用户令牌、API key、仅 Cookie、失效/已放弃/已认领游客会话不能访问。会员 `/api/v1/history` 保留原有会员鉴权。
 - 写操作重新验证并锁定游客会话行，直到提交结束；与认领/放弃互斥。批删保持一个事务。历史管理不修改额度账本，不重算检测或 Evidence。

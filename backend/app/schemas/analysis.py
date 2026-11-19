@@ -3,6 +3,7 @@
 from pydantic import Field
 
 from app.schemas.base import SchemaBase
+from app.schemas.history import PublicSegmentType
 
 
 class DetectRequest(SchemaBase):
@@ -16,6 +17,7 @@ class DetectRequest(SchemaBase):
 
 class SentenceAnalysis(SchemaBase):
     text: str = Field(..., json_schema_extra={"example": "This is a sentence."})
+    type: PublicSegmentType | None = Field(default=None, description="metadata and too_short have no independent AI/Human judgment")
     is_ai: bool = Field(..., json_schema_extra={"example": False})
     confidence: float = Field(..., ge=0, le=1, json_schema_extra={"example": 0.12})
 

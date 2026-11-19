@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from math import exp
 from uuid import uuid4
 
 import pytest
@@ -8,7 +7,6 @@ from fastapi import HTTPException
 from app.api.v1.auth import register_user
 from app.api.v1.detections import (
     _combine_repre_guard_results,
-    _merge_short_paragraphs,
     _split_paragraphs,
     detect,
     detect_scan,
@@ -16,32 +14,33 @@ from app.api.v1.detections import (
 )
 from app.api.v1.keys import create_api_key
 from app.db.deps import ActorContext, get_current_actor
+from app.models.detection import Detection
 from app.models.guest_session import GuestSession
 from app.schemas.analysis import DetectRequest
 from app.schemas.api_key import APIKeyCreateRequest
 from app.schemas.auth import RegisterRequest
 from app.schemas.detection import DetectionRequest
 from app.services.repre_guard_client import RepreGuardError, repre_guard_client
-from app.services.token_chunker import TOO_SHORT_STATUS, build_token_aware_segments
+from app.services.token_chunker import build_token_aware_segments, split_sentence_like_chunks
 
 LONG_TEXT = (
     "This is a sufficiently long detection sample that keeps repeating structured content "
     "to satisfy the minimum length requirement for the scan endpoint. "
     "It contains enough visible characters to pass validation and exercise the downstream "
     "detection flow without relying on tiny placeholder inputs. "
-) * 3
+) * 7
 LONG_TEXT = LONG_TEXT.strip()
 
 LONG_PARAGRAPH_A = (
     "Paragraph A keeps expanding with consistent academic wording so the detector has enough "
     "content to evaluate this block independently and return a stable probability score. "
-) * 3
+) * 6
 LONG_PARAGRAPH_A = LONG_PARAGRAPH_A.strip()
 
 LONG_PARAGRAPH_B = (
     "Paragraph B also exceeds the minimum size and is intentionally different so tests can "
     "verify weighted aggregation and merged block behavior with deterministic model outputs. "
-) * 3
+) * 6
 LONG_PARAGRAPH_B = LONG_PARAGRAPH_B.strip()
 
 WRAPPED_CHINESE_LINES = [
@@ -53,7 +52,7 @@ WRAPPED_CHINESE_LINES = [
     "回家变卖典质，父亲还了亏空；又借钱办了丧事。这些日子，家中光",
     "景很是惨淡，一半为了丧事，一半为了父亲赋闲。丧事完毕，父亲要到南",
     "京谋事，我也要回北京念书，我们便同行。",
-]
+] * 2
 WRAPPED_CHINESE_TEXT = "\n".join(WRAPPED_CHINESE_LINES)
 
 ROBERTA_MODEL_NAME = "openai-community/roberta-base-openai-detector"
@@ -61,6 +60,10 @@ ROBERTA_THRESHOLD = 0.0
 
 
 class FakeTokenizer:
+    @staticmethod
+    def num_special_tokens_to_add(pair: bool = False) -> int:
+        return 2
+
     @staticmethod
     def _pieces(text: str) -> list[str]:
         return [piece for piece in str(text or "").replace("\n", " ").split(" ") if piece]
@@ -80,20 +83,6 @@ class FakeTokenizer:
         if not add_special_tokens:
             return body
         return [-1, *body, -2]
-
-    def decode(
-        self,
-        token_ids: list[int],
-        *,
-        skip_special_tokens: bool = True,
-        clean_up_tokenization_spaces: bool = False,
-    ) -> str:
-        _ = skip_special_tokens, clean_up_tokenization_spaces
-        return " ".join(f"tok{token_id}" for token_id in token_ids if token_id >= 0)
-
-
-def _fake_token_weight(text: str) -> int:
-    return len(FakeTokenizer().encode(text, add_special_tokens=False))
 
 
 @pytest.fixture(autouse=True)
@@ -313,60 +302,90 @@ async def test_detect_scan_compat_returns_real_scan_only_payload(db_session, uni
 
 
 @pytest.mark.anyio
-async def test_detect_uses_paragraph_level_weighted_average(db_session, unique_email, monkeypatch):
+async def test_detect_flushes_after_reaching_target_and_projects_block_scores(db_session, unique_email, monkeypatch):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
+    opening = "Opening " + "alpha " * 118 + "ends."
+    first = "First " + "beta " * 131 + "ends."
+    crossing = "Crossing " + "gamma " * 18 + "ends."
+    last = "Last " + "delta " * 236 + "ends."
+    tail = "Tiny tail."
+    body = f"{first} {crossing} {last}"
+    first_block = f"{opening}\n{first} {crossing}"
+    final_block = f"{last}\n{tail}"
+    calls = []
+
     async def fake_detect(text: str) -> dict:
-        if text == LONG_PARAGRAPH_A:
-            return {
-                "score": -1.3862943611198906,
-                "threshold": ROBERTA_THRESHOLD,
-                "label": "HUMAN",
-                "model_name": ROBERTA_MODEL_NAME,
-                "score_type": "raw_logit",
-            }
+        calls.append(text)
+        score = {first_block: 0.4, final_block: 0.95}[text]
         return {
-            "score": 0.4054651081081642,
-            "threshold": ROBERTA_THRESHOLD,
-            "label": "AI",
+            "score": score,
+            "threshold": 0.5,
+            "label": "AI" if score >= 0.5 else "HUMAN",
             "model_name": ROBERTA_MODEL_NAME,
-            "score_type": "raw_logit",
+            "score_type": "probability",
         }
 
     monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
 
-    text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
+    text = f"{opening}\n{body}\n{tail}"
     response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
 
-    short_probability = 1.0 / (1.0 + exp(-(-1.3862943611198906 - ROBERTA_THRESHOLD)))
-    long_probability = 1.0 / (1.0 + exp(-(0.4054651081081642 - ROBERTA_THRESHOLD)))
-    expected_probability = (
-        short_probability * _fake_token_weight(LONG_PARAGRAPH_A)
-        + long_probability * _fake_token_weight(LONG_PARAGRAPH_B)
-    ) / (_fake_token_weight(LONG_PARAGRAPH_A) + _fake_token_weight(LONG_PARAGRAPH_B))
-
-    assert response.label == "human"
-    assert response.score == pytest.approx(expected_probability)
-    assert len(response.result.sentences) == 2
-    assert response.result.sentences[0].text == LONG_PARAGRAPH_A
-    assert response.result.sentences[1].text == LONG_PARAGRAPH_B
-    assert response.result.sentences[0].start_paragraph == 1
-    assert response.result.sentences[0].end_paragraph == 1
-    assert response.result.sentences[1].start_paragraph == 2
-    assert response.result.sentences[1].end_paragraph == 2
-    expected_ai_summary = round(
-        _fake_token_weight(LONG_PARAGRAPH_B)
-        / (_fake_token_weight(LONG_PARAGRAPH_A) + _fake_token_weight(LONG_PARAGRAPH_B))
-        * 100
-    )
-    assert response.result.sentences[0].type == "human"
-    assert response.result.sentences[1].type == "ai"
-    assert response.result.summary.ai == expected_ai_summary
+    # The first two sentences total 255 input tokens. The next sentence takes the block to 275.
+    assert calls == [first_block, final_block]
+    assert response.label == "ai"
+    assert response.score == pytest.approx((273 * 0.4 + 240 * 0.95) / 513)
+    assert response.result.summary.ai == 47
+    assert response.result.summary.human == 53
+    assert [(item.start_paragraph, item.end_paragraph, item.raw, item.type) for item in response.result.sentences] == [
+        (1, 1, opening, "human"),
+        (2, 2, body, "ai"),
+        (3, 3, tail, "ai"),
+    ]
+    body_score = (153 * 0.4 + 238 * 0.95) / 391
+    assert response.result.sentences[1].probability == pytest.approx(0.67 + (body_score - 0.5) / 0.5 * 0.33)
 
 
 @pytest.mark.anyio
-async def test_detect_rejects_text_under_minimum_visible_chars(db_session, unique_email):
+async def test_detect_merges_short_tail_before_single_inference(db_session, unique_email, monkeypatch):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
+    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
+    first = " ".join(f"word{index}" for index in range(254)) + "."
+    tail = "Tail remaining sentence."
+    combined_text = f"{first}\n{tail}"
+    calls = []
+
+    async def fake_detect(text: str) -> dict:
+        calls.append(text)
+        assert text == combined_text
+        return {
+            "score": 0.23,
+            "threshold": 0.5,
+            "label": "HUMAN",
+            "model_name": ROBERTA_MODEL_NAME,
+            "score_type": "probability",
+        }
+
+    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
+    response = await _detect_once(payload=DetectionRequest(text=combined_text), db=db_session, current_actor=actor)
+
+    assert calls == [combined_text]
+    assert response.score == pytest.approx(0.23)
+    assert response.raw_score == pytest.approx(0.23)
+    assert response.result.summary.ai == 0
+    assert [(item.start_paragraph, item.end_paragraph, item.raw) for item in response.result.sentences] == [
+        (1, 1, first),
+        (2, 2, tail),
+    ]
+    stored = db_session.get(Detection, response.detection_id).meta_json["options"]["repre_guard"]["segments"]
+    assert len(stored) == 1
+    assert stored[0]["token_count"] == 259
+    assert stored[0]["raw_score"] == pytest.approx(0.23)
+
+
+@pytest.mark.anyio
+async def test_detect_rejects_text_under_minimum_tokens(db_session, unique_email):
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
 
@@ -375,39 +394,7 @@ async def test_detect_rejects_text_under_minimum_visible_chars(db_session, uniqu
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["code"] == "TEXT_TOO_SHORT"
-    assert exc_info.value.detail["detail"]["minimum"] == 200
-
-
-@pytest.mark.anyio
-async def test_detect_marks_short_paragraph_without_downstream_call(db_session, unique_email, monkeypatch):
-    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
-    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
-    calls = []
-
-    async def fake_detect(text: str) -> dict:
-        calls.append(text)
-        return {
-            "score": 0.4054651081081642,
-            "threshold": ROBERTA_THRESHOLD,
-            "label": "AI",
-            "model_name": ROBERTA_MODEL_NAME,
-            "score_type": "raw_logit",
-        }
-
-    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
-
-    text = f"Short intro\n{LONG_PARAGRAPH_A}"
-    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
-
-    assert calls == [LONG_PARAGRAPH_A]
-    assert len(response.result.sentences) == 2
-    assert response.result.sentences[0].text == "Short intro"
-    assert response.result.sentences[0].start_paragraph == 1
-    assert response.result.sentences[0].end_paragraph == 1
-    assert response.result.sentences[0].type == TOO_SHORT_STATUS
-    assert response.result.sentences[1].text == LONG_PARAGRAPH_A
-    assert response.result.sentences[1].start_paragraph == 2
-    assert response.result.sentences[1].end_paragraph == 2
+    assert exc_info.value.detail["detail"]["minimumTokens"] == 256
 
 
 @pytest.mark.anyio
@@ -415,6 +402,13 @@ async def test_detect_merges_line_wrapped_chinese_text_for_detection(db_session,
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
     calls = []
+
+    class CharacterTokenizer(FakeTokenizer):
+        @staticmethod
+        def _pieces(text: str) -> list[str]:
+            return [character for character in text if not character.isspace()]
+
+    monkeypatch.setattr("app.services.token_chunker.get_tokenizer", lambda model_name=None: CharacterTokenizer())
 
     async def fake_detect(text: str) -> dict:
         calls.append(text)
@@ -431,97 +425,46 @@ async def test_detect_merges_line_wrapped_chinese_text_for_detection(db_session,
     response = await _detect_once(payload=DetectionRequest(text=WRAPPED_CHINESE_TEXT), db=db_session, current_actor=actor)
 
     assert calls == [WRAPPED_CHINESE_TEXT]
-    assert len(response.result.sentences) == 1
-    sentence = response.result.sentences[0]
-    assert sentence.text == WRAPPED_CHINESE_TEXT
-    assert sentence.start_paragraph == 1
-    assert sentence.end_paragraph == len(WRAPPED_CHINESE_LINES)
-    assert sentence.type != TOO_SHORT_STATUS
-    assert "\n" in sentence.text
+    assert [(item.start_paragraph, item.end_paragraph, item.raw, item.type) for item in response.result.sentences] == [
+        (index, index, line, "ai") for index, line in enumerate(WRAPPED_CHINESE_LINES, start=1)
+    ]
     assert response.result.highlighted_html.count("<p>") == len(WRAPPED_CHINESE_LINES)
-
-
-@pytest.mark.anyio
-async def test_detect_keeps_two_long_paragraphs_independent(db_session, unique_email, monkeypatch):
-    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
-    actor = ActorContext(actor_type="user", actor_id=str(user.id), user=user)
-    calls = []
-
-    async def fake_detect(text: str) -> dict:
-        calls.append(text)
-        return {
-            "score": 0.4054651081081642,
-            "threshold": ROBERTA_THRESHOLD,
-            "label": "AI",
-            "model_name": ROBERTA_MODEL_NAME,
-            "score_type": "raw_logit",
-        }
-
-    monkeypatch.setattr(repre_guard_client, "detect", fake_detect)
-
-    text = f"{LONG_PARAGRAPH_A}\n{LONG_PARAGRAPH_B}"
-    response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
-
-    assert calls == [LONG_PARAGRAPH_A, LONG_PARAGRAPH_B]
-    assert len(response.result.sentences) == 2
-    assert response.result.sentences[0].start_paragraph == 1
-    assert response.result.sentences[0].end_paragraph == 1
-    assert response.result.sentences[1].start_paragraph == 2
-    assert response.result.sentences[1].end_paragraph == 2
 
 
 def test_segmenting_preserves_indentation_and_sentence_spacing():
     text = 'def run():\n    value = {"path": "C:\\\\tmp\\\\file.txt"}\n    return value\nEnglish sentence one. English sentence two.'
 
     paragraphs = _split_paragraphs(text)
-    merged = _merge_short_paragraphs(paragraphs, min_chars=200, max_chars=1500)
+    segments = build_token_aware_segments(paragraphs, tokenizer_model=ROBERTA_MODEL_NAME)
 
     assert paragraphs[1].startswith("    value")
-    assert merged[0]["text"] == text
-    assert "one. English" in str(merged[0]["text"])
+    assert len(segments) == 1
+    assert segments[0]["text"] == text
 
 
-def test_merge_short_paragraphs_does_not_merge_short_title_into_long_body():
-    merged = _merge_short_paragraphs(["Short intro", LONG_PARAGRAPH_A], min_chars=40, max_chars=1500)
-
-    assert len(merged) == 2
-    assert merged[0]["text"] == "Short intro"
-    assert merged[0]["start"] == 0
-    assert merged[0]["end"] == 0
-    assert merged[1]["text"] == LONG_PARAGRAPH_A
-    assert merged[1]["start"] == 1
-    assert merged[1]["end"] == 1
+def test_split_chinese_sentences_without_spaces():
+    assert split_sentence_like_chunks("甲。乙！丙？末尾") == ["甲。", "乙！", "丙？", "末尾"]
 
 
-def test_token_aware_segments_mark_short_paragraphs():
-    segments = build_token_aware_segments(["Short title", LONG_PARAGRAPH_A], tokenizer_model=ROBERTA_MODEL_NAME)
+@pytest.mark.parametrize("body_tokens", [254, 400])
+def test_token_aware_segments_merge_short_tail_with_an_entire_sentence(body_tokens):
+    first = " ".join(f"word{i}" for i in range(body_tokens)) + "."
+    tail = "Short tail."
+    segments = build_token_aware_segments([f"{first} {tail}"], tokenizer_model=ROBERTA_MODEL_NAME)
 
-    assert len(segments) == 2
-    assert segments[0]["status"] == TOO_SHORT_STATUS
-    assert segments[0]["weight"] == 0
-    assert segments[1]["status"] == "detectable"
-
-
-def test_token_aware_segments_split_long_paragraph_by_sentence():
-    sentence = " ".join(f"word{i}" for i in range(220)) + ". "
-    segments = build_token_aware_segments([sentence * 3], tokenizer_model=ROBERTA_MODEL_NAME)
-
-    assert len(segments) == 2
-    assert all(segment["status"] == "detectable" for segment in segments)
-    assert all(int(segment["token_count"]) <= 512 for segment in segments)
-    assert all(segment["start"] == 0 and segment["end"] == 0 for segment in segments)
+    assert [segment["detect_text"] for segment in segments] == [f"{first} {tail}"]
+    assert [segment["token_count"] for segment in segments] == [body_tokens + 4]
 
 
-def test_token_aware_segments_truncate_single_oversized_sentence():
+def test_token_aware_segments_split_single_oversized_sentence_without_text_loss():
     oversized_sentence = " ".join(f"word{i}" for i in range(600)) + "."
     segments = build_token_aware_segments([oversized_sentence], tokenizer_model=ROBERTA_MODEL_NAME)
 
-    assert len(segments) == 1
-    assert segments[0]["status"] == "detectable"
-    assert segments[0]["truncated"] is True
-    assert int(segments[0]["token_count"]) <= 512
-    assert str(segments[0]["detect_text"]).startswith("tok0")
-    assert segments[0]["text"] == oversized_sentence
+    assert len(segments) > 1
+    assert all(segment["status"] == "detectable" and not segment["truncated"] for segment in segments)
+    assert all(0 < int(segment["token_count"]) <= 512 for segment in segments)
+    assert "".join(str(segment["text"]) for segment in segments) == oversized_sentence
+    assert " ".join(str(segment["detect_text"]) for segment in segments).split() == oversized_sentence.split()
 
 
 def test_combine_repre_guard_raw_logit_preserves_score_scale():
@@ -545,14 +488,10 @@ def test_combine_repre_guard_raw_logit_preserves_score_scale():
         ],
     )
 
-    short_weight = len("".join("short text".split()))
-    long_weight = len("".join("longer text segment".split()))
-    expected_score = ((-1.0 * short_weight) + (1.0 * long_weight)) / (short_weight + long_weight)
-
     assert result["score_type"] == "raw_logit"
     assert result["threshold"] == pytest.approx(0.25)
-    assert result["score"] == pytest.approx(expected_score)
-    assert result["label"] == "AI"
+    assert result["score"] == pytest.approx((-1.0 * 2 + 1.0 * 3) / 5)
+    assert result["label"] == "HUMAN"
 
 
 @pytest.mark.anyio
@@ -587,7 +526,7 @@ async def test_detect_retries_downstream_input_too_long(db_session, unique_email
     text = (
         "This compact paragraph intentionally repeats content so the downstream service rejects "
         "the initial segment and the backend has to split it into smaller retry chunks. "
-    ) * 4
+    ) * 11
     text = text.strip()
 
     response = await _detect_once(payload=DetectionRequest(text=text), db=db_session, current_actor=actor)
