@@ -144,7 +144,7 @@ def project_public_meta_json(value: Any, input_text: str | None = None, editor_h
         return value
 
     public_meta = dict(value)
-    # Evidence is only exposed through the validated, mode-controlled response field.
+    # Evidence is only exposed through the validated response field.
     public_meta.pop("evidence", None)
     public_meta.pop("artifactVersion", None)
     if "analysis" not in public_meta:

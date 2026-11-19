@@ -6,19 +6,20 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     field_validator,
     model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from app.core.config import get_settings
 from app.schemas.base import SchemaBase
 from app.services.evidence_engine import METRICS
 
 
 UnitInterval = Annotated[float, Field(ge=0, le=1)]
 Percentile = Annotated[float, Field(ge=0, le=100)]
+NonEmptyText = Annotated[str, Field(min_length=1, pattern=r"\S")]
 Reason = Literal[
     "invalid_evidence_config",
     "invalid_evidence_bundle",
@@ -160,6 +161,61 @@ class EvidenceQuality(_EvidenceModel):
     reasons: list[Reason]
 
 
+class CorpusExpressionMatch(_EvidenceModel):
+    expression: NonEmptyText
+    offsets: list[EvidenceOffset] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def ordered_offsets(self):
+        offsets = [(offset.start, offset.end) for offset in self.offsets]
+        if any(left >= right for left, right in zip(offsets, offsets[1:])):
+            raise ValueError("Corpus offsets must be ordered and unique")
+        return self
+
+
+class CorpusExpressions(_EvidenceModel):
+    status: Literal["matched", "no_match", "unavailable"]
+    lexiconVersion: NonEmptyText | None
+    lexiconSha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None
+    expressions: list[NonEmptyText]
+    matches: (
+        Annotated[list[CorpusExpressionMatch], Field(min_length=1)] | SkipJsonSchema[None]
+    ) = Field(default_factory=lambda: None)
+
+    @field_validator("matches", mode="wrap")
+    @classmethod
+    def validate_optional_matches(cls, value, handler):
+        try:
+            return handler(value)
+        except ValidationError:
+            # Keep the saved word list and the rest of Evidence usable without positions.
+            return None
+
+    @model_validator(mode="after")
+    def consistent_match(self):
+        if (self.lexiconVersion is None) != (self.lexiconSha256 is None) or (
+            self.status != "unavailable" and self.lexiconSha256 is None
+        ):
+            raise ValueError("Invalid corpus lexicon identity")
+        if (self.status == "matched") != bool(self.expressions) or len(
+            self.expressions
+        ) != len(set(self.expressions)):
+            raise ValueError("Invalid corpus expressions")
+        if self.matches is not None and (
+            self.status != "matched"
+            or [match.expression for match in self.matches] != self.expressions
+        ):
+            self.matches = None
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_absent_matches(self, handler):
+        result = handler(self)
+        if self.matches is None:
+            result.pop("matches", None)
+        return result
+
+
 class EvidenceResult(_EvidenceModel):
     status: Literal["ready", "partial", "insufficient", "unsupported", "failed"]
     artifactVersion: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None
@@ -168,6 +224,18 @@ class EvidenceResult(_EvidenceModel):
     quality: EvidenceQuality
     signals: list[EvidenceSignal]
     patterns: EvidencePatterns | None
+    corpusExpressions: CorpusExpressions | SkipJsonSchema[None] = Field(
+        default_factory=lambda: None
+    )
+
+    @field_validator("corpusExpressions", mode="wrap")
+    @classmethod
+    def validate_optional_corpus_expressions(cls, value, handler):
+        try:
+            return handler(value)
+        except ValidationError:
+            # An invalid corpus field must not hide the saved writing characteristics.
+            return None
 
     @field_validator("featureSchemaVersion", mode="before")
     @classmethod
@@ -205,11 +273,22 @@ class EvidenceResult(_EvidenceModel):
             )
         if not valid:
             raise ValueError("Invalid Evidence result")
+        if self.corpusExpressions is not None and (
+            self.route is None or self.route.language != "zh"
+        ):
+            self.corpusExpressions = None
         return self
+
+    @model_serializer(mode="wrap")
+    def omit_absent_corpus_expressions(self, handler):
+        result = handler(self)
+        if self.corpusExpressions is None:
+            result.pop("corpusExpressions", None)
+        return result
 
 
 def validate_evidence_snapshot(value: Any) -> EvidenceResult | None:
-    """Validate stored or newly computed data independently of the public mode."""
+    """Validate a server snapshot without loading its artifacts or changing stored data."""
     if value is None:
         return None
     try:
@@ -218,28 +297,20 @@ def validate_evidence_snapshot(value: Any) -> EvidenceResult | None:
         return None
 
 
-def project_public_evidence(value: Any) -> EvidenceResult | None:
-    """Read snapshots without loading artifacts, changing storage or exposing errors."""
-    if get_settings().detect_evidence_mode != "serve":
-        return None
-    return validate_evidence_snapshot(value)
-
-
 class EvidenceResponseBase(SchemaBase):
     evidence: EvidenceResult | None = Field(
         default=None,
-        description="Server Evidence snapshot. Omitted outside serve mode, when absent or invalid.",
+        description="Server Evidence snapshot. Omitted when absent or invalid.",
     )
 
     @field_validator("evidence", mode="before")
     @classmethod
     def project_evidence(cls, value):
-        return project_public_evidence(value)
+        return validate_evidence_snapshot(value)
 
     @model_serializer(mode="wrap")
     def omit_hidden_evidence(self, handler):
         result = handler(self)
-        # Preserve all existing null fields; only Evidence is conditionally omitted.
-        if self.evidence is None or get_settings().detect_evidence_mode != "serve":
+        if self.evidence is None:
             result.pop("evidence", None)
         return result

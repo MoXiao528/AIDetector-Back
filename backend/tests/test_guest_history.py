@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.v1 import guest_history
-from app.core.config import get_settings
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -59,7 +58,6 @@ def guest_history_data(db_session, unique_email):
 
 def test_guest_history_restores_and_persists_management_without_quota_changes(guest_history_data, db_session, monkeypatch):
     client, records, _, tokens, _, usage = guest_history_data
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     headers = {"Authorization": f"Bearer {tokens[0]}"}
     base = "/api/v1/guest/history"
     response = client.get(base, params={"per_page": 2}, headers=headers)

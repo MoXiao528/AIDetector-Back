@@ -200,10 +200,9 @@ def test_insecure_http_cookies_dotenv_switch(monkeypatch, tmp_path):
     assert settings.allow_insecure_http_cookies is True
 
 
-def test_evidence_settings_default_to_off():
+def test_evidence_settings_default_to_unconfigured_bundle():
     settings = Settings(_env_file=None, repre_guard_service_token=SERVICE_TOKEN)
 
-    assert settings.detect_evidence_mode == "off"
     assert settings.detect_evidence_bundle_path == ""
     assert settings.detect_evidence_bundle_sha256 == ""
     assert settings.detect_evidence_timeout_seconds == "12"
@@ -232,12 +231,21 @@ def test_invalid_optional_evidence_config_does_not_block_settings():
     settings = Settings(
         _env_file=None,
         repre_guard_service_token=SERVICE_TOKEN,
-        detect_evidence_mode="invalid-mode",
         detect_evidence_bundle_path="missing.bundle",
         detect_evidence_bundle_sha256="invalid-sha",
         detect_evidence_timeout_seconds="invalid-timeout",
     )
 
-    assert settings.detect_evidence_mode == "invalid-mode"
     assert settings.detect_evidence_bundle_sha256 == "invalid-sha"
     assert settings.detect_evidence_timeout_seconds == "invalid-timeout"
+
+@pytest.mark.parametrize("legacy_mode", ["off", "shadow", "serve"])
+def test_retired_evidence_mode_is_ignored(monkeypatch, tmp_path, legacy_mode):
+    env_file = tmp_path / "legacy.env"
+    env_file.write_text(f"DETECT_EVIDENCE_MODE={legacy_mode}\n", encoding="utf-8")
+    monkeypatch.setenv("DETECT_EVIDENCE_MODE", legacy_mode)
+
+    settings = Settings(_env_file=env_file, repre_guard_service_token=SERVICE_TOKEN)
+
+    assert "detect_evidence_mode" not in settings.model_dump()
+    assert settings.detect_evidence_timeout_seconds == "12"

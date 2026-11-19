@@ -22,7 +22,7 @@ class ReportPdfRequest(SchemaBase):
     history_id: int = Field(..., ge=1, description="Associated history record ID.", json_schema_extra={"example": 12})
     include_evidence: bool = Field(
         default=True,
-        description="Include available writing characteristics. Server Evidence mode must also be serve.",
+        description="Include available saved writing characteristics.",
     )
     time_zone: str = Field(
         default="UTC",

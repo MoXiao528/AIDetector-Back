@@ -292,7 +292,7 @@ def write_bundle(tmp_path, artifacts, *, members=None):
 @pytest.fixture
 def ready_engine(tmp_path, artifacts):
     path, digest = write_bundle(tmp_path, artifacts)
-    engine = EvidenceEngine(mode="shadow", bundle_path=str(path), bundle_sha256=digest)
+    engine = EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
     assert engine.status == "ready", engine.reason
     return engine
 
@@ -323,17 +323,17 @@ def replace_at(value, path, replacement):
     value[path[-1]] = replacement
 
 
-def test_off_does_not_read_bundle_or_validate_unused_config(monkeypatch):
+def test_invalid_bundle_config_does_not_read_bundle(monkeypatch):
     reads = []
 
     def forbidden_open(*args, **kwargs):
         reads.append(args)
-        raise AssertionError("off must not read a bundle")
+        raise AssertionError("Invalid config must not read a bundle")
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", forbidden_open)
         engine = EvidenceEngine(
-            mode="off", bundle_path="missing-private-artifact", bundle_sha256="invalid"
+            bundle_path="missing-private-artifact", bundle_sha256="invalid"
         )
     assert reads == []
     assert (
@@ -341,16 +341,15 @@ def test_off_does_not_read_bundle_or_validate_unused_config(monkeypatch):
         engine.reason,
         engine.artifact_version,
         engine.reference,
-    ) == ("off", None, None, None)
+    ) == ("failed", "invalid_evidence_config", None, None)
     assert engine.validate_router_response(response()) == failure("bundle_unavailable")
     result = engine.extract_features(None, None)
-    assert result["status"] == "off" and result["reason"] is None
+    assert result["status"] == "failed" and result["reason"] == "invalid_evidence_config"
     assert result["features"] is None and result["patterns"] is None
 
 
-@pytest.mark.parametrize("mode", ["shadow", "serve"])
 def test_bundle_loads_once_and_waivers_do_not_become_a_runtime_gate(
-    tmp_path, artifacts, mode, monkeypatch, comparison_input
+    tmp_path, artifacts, monkeypatch, comparison_input
 ):
     import app.services.evidence_engine as module
 
@@ -363,7 +362,7 @@ def test_bundle_loads_once_and_waivers_do_not_become_a_runtime_gate(
 
     monkeypatch.setattr(module, "_build_reference_extents", counted_extents)
     path, digest = write_bundle(tmp_path, artifacts)
-    engine = EvidenceEngine(mode=mode, bundle_path=str(path), bundle_sha256=digest)
+    engine = EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
     assert engine.status == "ready", engine.reason
     assert engine.reason is None
     assert engine.artifact_version == digest
@@ -393,7 +392,7 @@ def test_reference_extent_uses_language_wide_extremes_not_current_ranges(
             metric["human_quantiles"] = [0.0] * 101
             metric["ai_quantiles"] = [100.0] * 101
     path, digest = write_bundle(tmp_path, artifacts)
-    engine = EvidenceEngine(mode="serve", bundle_path=str(path), bundle_sha256=digest)
+    engine = EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
     assert engine.status == "ready"
     for domain, band, observed in (("news", "short", 0.5), ("novel", "long", 20.0)):
         payload = response()
@@ -411,11 +410,11 @@ def test_reference_extent_uses_language_wide_extremes_not_current_ranges(
 
 
 @pytest.mark.parametrize(
-    "mode,sha", [("unexpected", ROUTER_SHA), ("shadow", "bad-hash"), ("shadow", None)]
+    "sha", ["bad-hash", None]
 )
-def test_invalid_configuration_is_an_evidence_failure(tmp_path, mode, sha):
+def test_invalid_configuration_is_an_evidence_failure(tmp_path, sha):
     engine = EvidenceEngine(
-        mode=mode, bundle_path=str(tmp_path / "private-model-path"), bundle_sha256=sha
+        bundle_path=str(tmp_path / "private-model-path"), bundle_sha256=sha
     )
     assert engine.status == "failed"
     assert engine.reason == "invalid_evidence_config"
@@ -434,16 +433,15 @@ def test_missing_file_bad_hash_and_non_zip_fail_without_retaining_reference(
 ):
     path, digest = write_bundle(tmp_path, artifacts)
     bad_hash = EvidenceEngine(
-        mode="shadow", bundle_path=str(path), bundle_sha256="0" * 64
+        bundle_path=str(path), bundle_sha256="0" * 64
     )
     path.write_bytes(b"not a zip")
     bad_zip = EvidenceEngine(
-        mode="shadow",
         bundle_path=str(path),
         bundle_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
     path.unlink()
-    missing = EvidenceEngine(mode="shadow", bundle_path=str(path), bundle_sha256=digest)
+    missing = EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
     for engine in (bad_hash, bad_zip, missing):
         assert engine.status == "failed"
         assert engine.reason == "invalid_evidence_bundle"
@@ -466,7 +464,7 @@ def test_extra_and_traversal_zip_members_are_rejected(tmp_path, artifacts, extra
         (extra_name, b"private"),
     ]
     path, digest = write_bundle(tmp_path, artifacts, members=members)
-    engine = EvidenceEngine(mode="shadow", bundle_path=str(path), bundle_sha256=digest)
+    engine = EvidenceEngine(bundle_path=str(path), bundle_sha256=digest)
     assert engine.status == "failed"
     assert engine.reason == "invalid_evidence_bundle"
     assert engine.reference is None
@@ -488,7 +486,7 @@ def test_missing_or_duplicate_zip_member_is_rejected(tmp_path, artifacts):
         else:
             path, digest = write_bundle(tmp_path, artifacts, members=members)
         engine = EvidenceEngine(
-            mode="shadow", bundle_path=str(path), bundle_sha256=digest
+            bundle_path=str(path), bundle_sha256=digest
         )
         assert engine.status == "failed"
         assert engine.reason == "invalid_evidence_bundle"
@@ -521,7 +519,7 @@ def test_incompatible_bundle_content_fails_after_matching_external_hash(
     replace_at(artifacts[index], path, value)
     bundle, digest = write_bundle(tmp_path, artifacts)
     engine = EvidenceEngine(
-        mode="shadow", bundle_path=str(bundle), bundle_sha256=digest
+        bundle_path=str(bundle), bundle_sha256=digest
     )
     assert engine.status == "failed"
     assert engine.reason == "invalid_evidence_bundle"
@@ -691,7 +689,7 @@ def test_real_bundle_smoke_is_opt_in_and_checks_the_frozen_artifact():
     if not path:
         pytest.skip("set EVIDENCE_TEST_BUNDLE_PATH to run the real Bundle smoke")
     engine = EvidenceEngine(
-        mode="shadow", bundle_path=path, bundle_sha256=REAL_BUNDLE_SHA
+        bundle_path=path, bundle_sha256=REAL_BUNDLE_SHA
     )
     assert engine.status == "ready", engine.reason
     assert engine.artifact_version == REAL_BUNDLE_SHA
@@ -727,10 +725,10 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from app.services.evidence_engine import EvidenceEngine
 payload = json.loads(sys.argv[4])
-off = EvidenceEngine(bundle_path='unused', bundle_sha256='invalid')
-assert off.extract_features(None, None)['status'] == 'off'
-assert off.analyze(None, None, main_label=None)['status'] == 'off'
-engine = EvidenceEngine(mode='shadow', bundle_path=sys.argv[2], bundle_sha256=sys.argv[3])
+unavailable = EvidenceEngine(bundle_path='unused', bundle_sha256='invalid')
+assert unavailable.extract_features(None, None)['status'] == 'failed'
+assert unavailable.analyze(None, None, main_label=None)['status'] == 'failed'
+engine = EvidenceEngine(bundle_path=sys.argv[2], bundle_sha256=sys.argv[3])
 assert engine.status == 'ready'
 assert engine.extract_features(None, payload)['reason'] == 'invalid_text'
 assert engine.extract_features('private text', {})['reason'] == 'invalid_router_response'

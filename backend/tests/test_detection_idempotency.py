@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.auth import register_user
 from app.api.v1.detections import _build_detection_request_hash, detect
-from app.core.config import get_settings
 from app.db.base_class import Base
 from app.db.deps import ActorContext
 from app.models.detection import Detection
@@ -419,8 +418,7 @@ async def test_reservation_commit_failure_never_calls_detector(committed_db_sess
 
 
 def _failed_evidence_request(monkeypatch):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
-    engine = EvidenceEngine(mode="serve")
+    engine = EvidenceEngine()
     calls = []
     original = engine.run
 

@@ -794,7 +794,7 @@ async def _detect_impl(
     }
 
     evidence = None
-    if evidence_engine is not None and evidence_engine.status != "off":
+    if evidence_engine is not None:
         evidence = await evidence_engine.run(payload.text, main_label=label, client=repre_guard_client)
 
     request_record = None

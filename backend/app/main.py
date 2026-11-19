@@ -13,6 +13,7 @@ from app.api.v1.detections import scan_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.schemas import ErrorResponse, WelcomeResponse
+from app.services.corpus_expressions import LexiconMatcher
 from app.services.evidence_engine import EvidenceEngine
 from app.services.repre_guard_client import repre_guard_client
 from app.services.token_chunker import count_tokens
@@ -31,14 +32,20 @@ async def lifespan(app: FastAPI):
             logger.exception("Detection tokenizer initialization failed")
             raise
         try:
-            app.state.evidence_engine = EvidenceEngine(
-                mode=settings.detect_evidence_mode,
+            engine = EvidenceEngine(
                 bundle_path=settings.detect_evidence_bundle_path,
                 bundle_sha256=settings.detect_evidence_bundle_sha256,
                 timeout_seconds=settings.detect_evidence_timeout_seconds,
             )
         except Exception:
             logger.warning("Optional Evidence initialization failed")
+        else:
+            app.state.evidence_engine = engine
+            if engine.status == "ready":
+                try:
+                    engine.lexicon_matcher = await run_in_threadpool(LexiconMatcher)
+                except Exception:
+                    logger.warning("Corpus expression lexicon initialization failed")
         yield
     finally:
         engine = app.state.evidence_engine

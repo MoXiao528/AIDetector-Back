@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     detect_max_input_tokens: int = Field(default=512, ge=16, le=4096)
     detect_short_segment_visible_chars: int = Field(default=40, ge=1, le=200)
     # Validate optional Evidence configuration inside its engine, never at app startup.
-    detect_evidence_mode: str = "off"
     detect_evidence_bundle_path: str = ""
     detect_evidence_bundle_sha256: str = ""
     detect_evidence_timeout_seconds: str = "12"
@@ -61,6 +60,13 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="postgres")
     postgres_db: str = Field(default="aidetector")
     access_token_expire_minutes: int = Field(default=60, ge=1, le=1440)
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_retired_evidence_mode(cls, data):
+        if isinstance(data, dict):
+            data = {key: value for key, value in data.items() if key.lower() != "detect_evidence_mode"}
+        return data
 
     @field_validator("backend_cors_origins", mode="before")
     @classmethod

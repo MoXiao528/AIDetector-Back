@@ -22,7 +22,7 @@ def probe(monkeypatch):
         options=None,
         engine_options=None,
     )
-    engine = engine_module.EvidenceEngine(mode="off")
+    engine = engine_module.EvidenceEngine()
     engine.status = "ready"
     engine.router_artifact_sha256 = ROUTER_SHA
     engine.timeout_seconds = 1
@@ -52,7 +52,6 @@ def probe(monkeypatch):
                 raise state.close_exception
 
     monkeypatch.setattr(config_module, "get_settings", lambda: SimpleNamespace(
-        detect_evidence_mode="off",
         detect_evidence_bundle_path="private-bundle-path",
         detect_evidence_bundle_sha256="2" * 64,
         detect_evidence_timeout_seconds="12",
@@ -72,7 +71,7 @@ async def test_success_uses_explicit_envelope_and_validates_existing_contract(pr
         "text_envelope_enabled": True,
     }
     assert probe.engine_options == {
-        "mode": "serve", "bundle_path": "private-bundle-path",
+        "bundle_path": "private-bundle-path",
         "bundle_sha256": "2" * 64, "timeout_seconds": "12",
     }
     assert probe.calls == [("detect", smoke.MAIN_TEXT), ("evidence", smoke.EVIDENCE_TEXT)]

@@ -1,0 +1,33 @@
+{
+  "status": "complete",
+  "scope": "local_integration_and_testing",
+  "production_eligible": false,
+  "lexicon_version": "1.0.0",
+  "artifacts": {
+    "lexicon.json": {
+      "bytes": 782989,
+      "sha256": "ea2793dd9b6bbc045194ccd8db8ab018006519dd961629cc879cd0a9cfe80ced"
+    }
+  },
+  "dictionary_sha256": "7197c3211ddd98962b036cdf40324d1ea2bfaa12bd028e68faa70111a88e12a8",
+  "source": {
+    "repository": "AIDetector-public-corpora",
+    "corpus_snapshot": "local-corpus-v1",
+    "build_manifest": "cache/zh-lexicon-six-20261117/manifest.json",
+    "build_manifest_sha256": "697126095d4f16b59be127d689817b8ebe429bc14494d29c364329838b13cfca",
+    "acceptance_sha256": "522acde6330f91d4337efd43e319776d4a9e90d9622301bac83c9ba3d48d3f51",
+    "matcher_source": "src/term_lexicon.py",
+    "matcher_source_sha256": "5277e0e30b09163d18a2a7035ddf50e5a725e453d3e6fc5f36a4af7e7d24d39f",
+    "dataset": "WUJUNCHAO/DetectRL-X",
+    "license_status": "upstream_content_rights_unresolved; existing_offline_research_only",
+    "allowed_uses": ["offline_research", "data_quality_audit"],
+    "forbidden_uses": ["online_raw_text", "redistribution_without_rights_review", "automatic_production_adoption"],
+    "documents_within_domains": 31191,
+    "lexicon_entries": 5190,
+    "unique_expressions_across_domains": 3048
+  },
+  "limitations": [
+    "The local pack contains aggregate expressions; upstream rights remain unresolved.",
+    "The fixed sample had matches in 60/60 Human documents and 60/60 AI documents. Match presence is descriptive and has no role in detection scoring."
+  ]
+}

@@ -192,7 +192,7 @@ def metadata() -> dict:
             for size in (2000, 20_000)
         },
         "pool_size": engine.pool.size(), "pool_max_overflow": engine.pool._max_overflow,
-        "pool_timeout_seconds": engine.pool.timeout(), "evidence_mode": settings.detect_evidence_mode,
+        "pool_timeout_seconds": engine.pool.timeout(),
         "tokenizer_model": model, "detect_service_timeout_seconds": settings.detect_service_timeout,
         "detect_request_timeout_seconds": settings.detect_request_timeout,
         "detect_segment_concurrency": settings.detect_segment_concurrency,

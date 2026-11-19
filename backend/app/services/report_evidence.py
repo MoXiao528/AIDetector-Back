@@ -255,6 +255,7 @@ def build_evidence_section(
     locale: str,
     styles: dict[str, ParagraphStyle],
     width: float,
+    corpus_expressions: list[str] | None = None,
 ) -> list[Flowable]:
     """Present saved comparisons with the same summary filter and scale as the UI."""
     zh = str(locale).startswith("zh")
@@ -414,4 +415,26 @@ def build_evidence_section(
                 )
             )
     story.extend([Spacer(1, 5), Paragraph(disclaimer, styles["muted"])])
+    if corpus_expressions:
+        separator = "、" if zh else ", "
+        story.extend(
+            [
+                Spacer(1, 5),
+                Paragraph(
+                    "疑似 AI 片段中的常见表达"
+                    if zh
+                    else "Common expressions in passages flagged as AI",
+                    heading,
+                ),
+                Paragraph(
+                    separator.join(map(escape, corpus_expressions)), styles["body"]
+                ),
+                Paragraph(
+                    "仅作为用词参考，不参与检测评分"
+                    if zh
+                    else "For wording reference only. These expressions do not affect the detection score.",
+                    styles["muted"],
+                ),
+            ]
+        )
     return story

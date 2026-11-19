@@ -5,7 +5,7 @@ RepreGuard 文本检测平台的后端 API，负责用户与游客会话、检�
 - 接收文本，按顺序累加完整句子，首次达到或超过 256 token 时在句末切块；不足 256 token 的尾块在合并后满足模型硬上限时并入前块，返回整文结果和段落分析。
 - 用幂等请求管理检测任务，保存结果、历史与配额结算。
 - 提供注册登录、游客访问、API Key 和管理后台接口。
-- 可选启用写作特点分析，将整文路由与参考统计保存为结果快照。
+- 默认执行写作特点分析，将整文路由与参考统计保存为结果快照。
 
 ```text
 AIDetector-web → AIDetector-Back → RepreGuard
@@ -45,7 +45,6 @@ BACKEND_CORS_ORIGINS=http://localhost:5300,http://127.0.0.1:5300
 DETECT_SERVICE_URL=http://host.docker.internal:9000
 DETECT_SERVICE_DETECT_URL=
 DETECT_SERVICE_HEALTH_URL=http://host.docker.internal:9000/health
-DETECT_EVIDENCE_MODE=off
 ```
 
 `host.docker.internal` 用于 Docker Desktop 容器访问宿主机。检测端须监听容器可达的接口，例如 `REPRE_GUARD_HOST=0.0.0.0`。检测端在其他主机或使用 Linux Docker Engine 时，改成容器实际可达的地址。
@@ -154,13 +153,18 @@ curl -fsS http://127.0.0.1:8020/api/v1/ready
 curl -fsS https://your-domain.example/api/v1/ready
 ```
 
-`/health` 验证 API 存活，`/ready` 验证数据库和主检测服务。再通过网页完成游客检测、登录检测、历史查询与 PDF 导出。开启 Evidence 时，还需通过实际 PHP/检测入口验证路由结果和制品 SHA。
+`/health` 验证 API 存活，`/ready` 验证数据库和主检测服务。再通过网页完成游客检测、登录检测、历史查询与 PDF 导出。
+
+### 写作特点
+
+后端默认分析并返回有效的 Evidence 快照，旧 `DETECT_EVIDENCE_MODE` 已失效，可从 `.env` 和部署环境删除。要得到可用的参考比较，检测端需启用 `REPRE_GUARD_EVIDENCE_ENABLED` 并加载 Router，后端需挂载匹配的 Bundle，配置 `DETECT_EVIDENCE_BUNDLE_PATH` 和 `DETECT_EVIDENCE_BUNDLE_SHA256`。经 PHP 转发时，沿实际转发路径校验 Router 响应和 SHA。Bundle、Router 或请求不可用时，Evidence 会降级，主检测仍按原流程结算。
+
+本地集成随包携带六领域中文表达词库，复用经校验的整文 Router 领域。词库命中只作为用词参考，参考比较和主检测结果保持独立。词库运行清单保留 `production_eligible=false` 及上游用途限制，本次授权范围为本地集成与测试。见[检测契约](docs/detection-contract.md)和[词库运行清单](backend/app/assets/corpus_expressions/manifest.json)。
 
 ### 可选配置
 
 | 功能 | 配置与启用条件 |
 | --- | --- |
-| 写作特点 | 默认 `DETECT_EVIDENCE_MODE=off`。先启用检测端 Router，再挂载匹配的 Bundle，设置 `DETECT_EVIDENCE_BUNDLE_PATH` 和 `DETECT_EVIDENCE_BUNDLE_SHA256`。`shadow` 保存内部快照，`serve` 对外提供有效结果。前端显示还受 `VITE_EVIDENCE_ENABLED` 控制。 |
 | HTTP 演示 | 仅适用于已支持 `ALLOW_INSECURE_HTTP_COOKIES` 的版本，如 `demo/text-envelope` 分支。设为 `true` 后允许同域 HTTP Cookie，仍保留 `ENVIRONMENT=production` 和下游 HTTPS 要求。HTTP 会明文传输凭据与正文。恢复 HTTPS 后关闭开关、重建 API 并重新登录。 |
 
 切回不支持 HTTP 演示配置的版本前，从 `.env`、Compose 和服务环境删除 `ALLOW_INSECURE_HTTP_COOKIES`。

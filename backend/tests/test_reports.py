@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
 from io import BytesIO
@@ -13,15 +14,18 @@ import yaml
 
 from app.api.v1 import reports as reports_api
 from app.api.v1.auth import register_user
+from app.api.v1.history import get_history
 from app.api.v1.reports import export_pdf_report
 from app.core.config import get_settings
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
-from app.schemas import ReportPdfRequest
+from app.schemas import ReportPdfContent, ReportPdfRequest
 from app.schemas.auth import RegisterRequest
+from app.schemas.evidence import validate_evidence_snapshot
 from app.services.evidence_engine import METRICS
 from app.services.history_service import HistoryService
+from app.services.report_pdf import _visible_corpus_expressions
 
 
 def _build_analysis() -> dict:
@@ -163,14 +167,10 @@ def _evidence_snapshot():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "mode,include_evidence,expected",
-    [("off", True, False), ("shadow", True, False), ("serve", False, False), ("serve", True, True)],
-)
-async def test_report_uses_saved_snapshot_and_evidence_gates(
-    db_session, unique_email, monkeypatch, mode, include_evidence, expected
+@pytest.mark.parametrize("include_evidence", [False, True])
+async def test_report_uses_saved_snapshot_and_respects_include_evidence(
+    db_session, unique_email, monkeypatch, include_evidence
 ):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", mode)
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     history = _create_history(db_session, user.id, title="Saved report title")
     detected_at = datetime(2026, 11, 1, 3, 20, tzinfo=timezone.utc)
@@ -203,18 +203,167 @@ async def test_report_uses_saved_snapshot_and_evidence_gates(
     assert content.analysis.summary.ai == 55
     assert content.analysis.summary.human == 45
     assert [item.probability for item in content.analysis.sentences] == [0.91, 0.18]
-    assert content.include_evidence is expected
-    assert (content.evidence is not None) is expected
-    if expected:
+    assert content.include_evidence is include_evidence
+    assert (content.evidence is not None) is include_evidence
+    if include_evidence:
         assert content.evidence.model_dump() == original_meta["evidence"]
     db_session.refresh(history)
     assert history.meta_json == original_meta
 
 
+CORPUS_EXPRESSIONS = {
+    "status": "matched",
+    "lexiconVersion": "1.0.0",
+    "lexiconSha256": "2" * 64,
+    "expressions": ["值得关注的是", "不仅仅是"],
+}
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"status": "unknown"},
+        {"expressions": ["重复", "重复"]},
+        {"expressions": [" "]},
+        {"expressions": []},
+        {"status": "no_match"},
+        {"status": "unavailable"},
+        {"lexiconSha256": "F" * 64},
+        {"lexiconVersion": None},
+        {"lexiconVersion": None, "lexiconSha256": None},
+        {"rawSource": "must not leak"},
+    ],
+)
+def test_invalid_corpus_expressions_leave_the_parent_snapshot_intact(updates):
+    snapshot = _evidence_snapshot()
+    snapshot["route"]["language"] = "zh"
+    value = {**snapshot, "corpusExpressions": {**CORPUS_EXPRESSIONS, **updates}}
+    before = deepcopy(value)
+    assert validate_evidence_snapshot(value).model_dump() == snapshot
+    assert value == before
+
+
+def test_corpus_expressions_are_omitted_without_a_chinese_route():
+    snapshot = _evidence_snapshot()
+    value = {**snapshot, "corpusExpressions": CORPUS_EXPRESSIONS}
+    assert validate_evidence_snapshot(value).model_dump() == snapshot
+
+
+@pytest.fixture
+def corpus_report_case():
+    fixture_path = Path(__file__).resolve().parents[2] / "contract/fixtures/corpus-expression-visibility.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    snapshot = _evidence_snapshot()
+    snapshot["route"]["language"] = "zh"
+    snapshot["status"] = "insufficient"
+    snapshot["quality"] = {"level": "insufficient", "coverage": 0.0, "reasons": []}
+    for signal in snapshot["signals"]:
+        signal.update(relation=None, referenceRanges=None, humanPercentile=None, aiPercentile=None)
+    snapshot["corpusExpressions"] = fixture["corpusExpressions"]
+    analysis = _build_analysis()
+    segment = analysis["sentences"][0]
+    analysis["summary"] = fixture["summary"]
+    analysis["sentences"] = [
+        {**segment, **entry, "id": f"block-{index}", "text": entry["raw"]}
+        for index, entry in enumerate(fixture["sentences"])
+    ]
+    return {
+        "input_text": fixture["inputText"], "analysis": analysis, "evidence": snapshot,
+    }, fixture["expectedExpressions"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "ai_zero", "human_full", "legacy", "no_match", "no_ai_segment", "human_only_match", "missing_index",
+        "overlap", "missing_paragraph", "raw_mismatch", "text_mismatch", "offset_outside", "offset_mismatch",
+    ],
+)
+def test_pdf_corpus_visibility_hides_without_a_reliable_ai_occurrence(corpus_report_case, case):
+    content, _ = corpus_report_case
+    analysis = content["analysis"]
+    corpus = content["evidence"]["corpusExpressions"]
+    match = corpus["matches"][-1]
+    if case == "ai_zero":
+        analysis["summary"]["ai"] = 0
+    elif case == "human_full":
+        analysis["summary"]["human"] = 100
+    elif case == "legacy":
+        corpus.pop("matches")
+    elif case == "no_match":
+        corpus.pop("matches")
+        corpus.update(status="no_match", expressions=[])
+    elif case == "no_ai_segment":
+        analysis["sentences"][2]["type"] = "human"
+    elif case == "human_only_match":
+        corpus.update(expressions=[match["expression"]], matches=[match])
+    elif case == "missing_index":
+        analysis["sentences"][2].pop("startParagraph")
+    elif case == "overlap":
+        analysis["sentences"][2]["startParagraph"] -= 1
+    elif case == "missing_paragraph":
+        analysis["sentences"].pop()
+    elif case == "raw_mismatch":
+        analysis["sentences"][0]["raw"] = analysis["sentences"][0]["raw"].strip()
+    elif case == "text_mismatch":
+        analysis["sentences"][0]["text"] = analysis["sentences"][0]["text"].strip()
+    elif case == "offset_outside":
+        match["offsets"][0]["end"] = len(content["input_text"]) + 1
+    elif case == "offset_mismatch":
+        match["offsets"][0]["start"] -= 1
+    assert _visible_corpus_expressions(ReportPdfContent(**content)) == []
+
+
+def test_pdf_corpus_visibility_can_use_text_when_raw_is_empty(corpus_report_case):
+    content, expected_expressions = corpus_report_case
+    content["analysis"]["sentences"][2]["raw"] = ""
+    assert _visible_corpus_expressions(ReportPdfContent(**content)) == expected_expressions
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "locale,expected_heading,note",
+    [
+        ("zh-CN", "疑似 AI 片段中的常见表达", "仅作为用词参考，不参与检测评分"),
+        ("en-US", "Common expressions in passages flagged as AI",
+         "For wording reference only. These expressions do not affect the detection score."),
+    ],
+)
+async def test_insufficient_evidence_pdf_filters_saved_matches_to_ai_passages(
+    db_session, unique_email, locale, expected_heading, note, corpus_report_case
+):
+    user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23", name="saved-expression-reader"), db_session)
+    content, expected_expressions = corpus_report_case
+    history = HistoryService(db_session).create_history(
+        user_id=user.id, title="Saved expression report", functions=["scan"],
+        input_text=content["input_text"], editor_html="", analysis=content["analysis"],
+    )
+    snapshot = content["evidence"]
+    history.meta_json = {**history.meta_json, "evidence": snapshot}
+    db_session.commit()
+
+    saved = await get_history(history.id, db=db_session, current_user=user)
+    assert saved.evidence.model_dump() == snapshot
+    for include_evidence in [True, False]:
+        response = await export_pdf_report(
+            ReportPdfRequest(historyId=history.id, locale=locale, includeEvidence=include_evidence),
+            db=db_session,
+            current_user=user,
+        )
+        report = _extract_text(response.body)
+        assert (expected_heading in report) is include_evidence
+        assert (note in report) is include_evidence
+        if include_evidence:
+            rendered = report.split(expected_heading, 1)[1].split(note, 1)[0].strip()
+            separator = "、" if locale == "zh-CN" else ", "
+            assert rendered == separator.join(expected_expressions)
+    db_session.refresh(history)
+    assert history.meta_json["evidence"] == snapshot
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("stored_evidence", [None, {}, {"status": "not-valid"}])
 async def test_report_tolerates_missing_or_invalid_evidence(db_session, unique_email, monkeypatch, stored_evidence):
-    monkeypatch.setattr(get_settings(), "detect_evidence_mode", "serve")
     user = await register_user(RegisterRequest(email=unique_email, password="StrongPass!23"), db_session)
     history = _create_history(db_session, user.id)
     history.meta_json = {**history.meta_json, "evidence": stored_evidence, "options": {"repre_guard": None}}

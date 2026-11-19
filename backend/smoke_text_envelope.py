@@ -29,7 +29,6 @@ async def check(url: str) -> str | None:
 
         settings = get_settings()
         engine = EvidenceEngine(
-            mode="serve",
             bundle_path=settings.detect_evidence_bundle_path,
             bundle_sha256=settings.detect_evidence_bundle_sha256,
             timeout_seconds=settings.detect_evidence_timeout_seconds,

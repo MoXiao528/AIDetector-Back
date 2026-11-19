@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_right
 from datetime import datetime, timezone
 from html import escape
 from io import BytesIO
 from pathlib import Path
+from unicodedata import normalize
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from reportlab.graphics.shapes import Drawing, Rect
@@ -20,6 +22,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from app.models.user import User
 from app.schemas.report import ReportPdfContent
+from app.services.document_metadata import document_paragraphs
 from app.services.report_evidence import build_evidence_section
 
 FONT_NAME = "NotoSansSC"
@@ -230,6 +233,49 @@ def _match_segments(text: str, segments: list) -> list[tuple[int, int]] | None:
     return matches
 
 
+def _visible_corpus_expressions(payload: ReportPdfContent) -> list[str]:
+    analysis = payload.analysis
+    if payload.evidence is None or analysis.summary.ai == 0 or analysis.summary.human == 100:
+        return []
+    corpus = payload.evidence.corpusExpressions
+    if corpus is None or corpus.status != "matched" or not corpus.matches:
+        return []
+
+    text = payload.input_text
+    paragraphs = [line for line in re.finditer(r"[^\r\n]+", text) if line.group().strip()]
+    next_paragraph = 1
+    ai_starts, ai_ends = [], []
+    for segment in analysis.sentences:
+        start, end = segment.start_paragraph, segment.end_paragraph
+        if start != next_paragraph or end is None or not start <= end <= len(paragraphs):
+            return []
+        source_paragraphs = [line.group() for line in paragraphs[start - 1:end]]
+        if document_paragraphs(segment.text) != source_paragraphs or (
+            segment.raw and document_paragraphs(segment.raw) != source_paragraphs
+        ):
+            return []
+        if segment.type == "ai":
+            ai_starts.append(paragraphs[start - 1].start())
+            ai_ends.append(paragraphs[end - 1].end())
+        next_paragraph = end + 1
+    if next_paragraph != len(paragraphs) + 1 or not ai_starts:
+        return []
+
+    expressions = []
+    for match in corpus.matches:
+        in_ai = False
+        for offset in match.offsets:
+            start, end = offset.start, offset.end
+            if not 0 <= start < end <= len(text) or normalize("NFKC", text[start:end]) != match.expression:
+                return []
+            segment_index = bisect_right(ai_starts, start) - 1
+            if segment_index >= 0 and end <= ai_ends[segment_index]:
+                in_ai = True
+        if in_ai:
+            expressions.append(match.expression)
+    return expressions
+
+
 def _append_plain_text(story: list, text: str, style: ParagraphStyle, width: float) -> None:
     # Long paragraphs must be splittable flowables, not a single table cell.
     for paragraph in re.split(r"\n[ \t]*\n", text):
@@ -303,7 +349,10 @@ def build_report_pdf(payload: ReportPdfContent, user: User) -> bytes:
              Paragraph(copy["original"], styles["section"])]
     _append_original(story, payload, copy, styles, width)
     if payload.include_evidence:
-        story.extend(build_evidence_section(payload.evidence, locale=payload.locale, styles=styles, width=width))
+        story.extend(build_evidence_section(
+            payload.evidence, locale=payload.locale, styles=styles, width=width,
+            corpus_expressions=_visible_corpus_expressions(payload),
+        ))
 
     def draw_page(canvas, document):
         canvas.saveState()
